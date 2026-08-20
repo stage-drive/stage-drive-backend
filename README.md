@@ -60,8 +60,6 @@ DATABASE_URL="postgresql://postgres:postgres_password@localhost:5432/stage_drive
 docker compose up -d
 ```
 
-Після цього база даних буде доступна на `localhost:5432`.
-
 ### 6. Генерація Prisma Client
 
 ```bash
@@ -79,8 +77,15 @@ npm run start:dev
 - http://localhost:3000
 
 ---
+*Перегляд таблиць бази даних у браузері*: 
+виконайте в іншому вікні термінала
 
-## 🗄 Робота з базою даних
+```bash
+npx prisma studio 
+```
+
+
+##  Робота з базою даних
 
 У цьому проєкті логіка роботи з БД розподілена так:
 
