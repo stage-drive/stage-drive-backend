@@ -15,7 +15,7 @@
 - Containerization: Docker Compose
 - Testing: Jest
 
-> Swagger / OpenAPI наразі не налаштований у проєкті, тому маршрут документації не доступний за замовчуванням.
+Swagger UI доступний за адресою http://localhost:3000/api/docs після запуску сервера.
 
 ---
 
@@ -75,6 +75,7 @@ npm run start:dev
 Якщо запуск успішний, сервер буде доступний за адресою:
 
 - http://localhost:3000
+- http://localhost:3000/api/docs (Swagger UI)
 
 ---
 *Перегляд таблиць бази даних у браузері*: 
