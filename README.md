@@ -6,7 +6,7 @@
 
 ---
 
-##  Технологічний стек
+## Технологічний стек
 
 - Framework: NestJS (Node.js + TypeScript)
 - Database: PostgreSQL 16
@@ -19,7 +19,7 @@ Swagger UI доступний за адресою http://localhost:3000/api/docs
 
 ---
 
-##  Запуск проєкту
+## Запуск проєкту
 
 ### 1. Попередні вимоги
 
@@ -78,15 +78,15 @@ npm run start:dev
 - http://localhost:3000/api/docs (Swagger UI)
 
 ---
-*Перегляд таблиць бази даних у браузері*: 
+
+_Перегляд таблиць бази даних у браузері_:
 виконайте в іншому вікні термінала
 
 ```bash
-npx prisma studio 
+npx prisma studio
 ```
 
-
-##  Робота з базою даних
+## Робота з базою даних
 
 У цьому проєкті логіка роботи з БД розподілена так:
 
@@ -106,7 +106,7 @@ npx prisma studio
 
 ---
 
-##  Структура проєкту
+## Структура проєкту
 
 ```text
 stage-drive-backend/
@@ -141,7 +141,7 @@ stage-drive-backend/
 
 ---
 
-##  Поточний статус проєкту
+## Поточний статус проєкту
 
 На даний момент проєкт знаходиться на етапі базової інтеграції:
 
@@ -153,7 +153,7 @@ stage-drive-backend/
 
 ---
 
-##  Git workflow та правила розробки
+## Git workflow та правила розробки
 
 Основні гілки:
 
@@ -184,7 +184,7 @@ fix/SCH-05-create-lesson
 
 ---
 
-##  Git cheat sheet
+## Git cheat sheet
 
 ```bash
 # Перейти на develop
