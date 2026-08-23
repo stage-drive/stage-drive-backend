@@ -25,6 +25,8 @@ async function main() {
     create: {
       id: DEMO_ORG_ID,
       name: 'Stage Drive School',
+      slug: 'stage-drive-school',
+      email: DEMO_EMAIL,
       timezone: 'Europe/Kyiv',
     },
   });

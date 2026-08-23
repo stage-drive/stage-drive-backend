@@ -5,7 +5,12 @@ import {
   ApiUnauthorizedResponse,
 } from '@nestjs/swagger';
 import { AuthService } from './auth.service';
-import { LoginDto, LoginResponseDto } from './auth.dto';
+import {
+  LoginDto,
+  LoginResponseDto,
+  RegisterDto,
+  RegisterResponseDto,
+} from './auth.dto';
 
 @ApiTags('auth')
 @Controller('auth')
@@ -17,5 +22,11 @@ export class AuthController {
   @ApiUnauthorizedResponse({ description: 'Невірний email або пароль' })
   async login(@Body() body: LoginDto) {
     return this.authService.login(body.email ?? '', body.password ?? '');
+  }
+
+  @Post('register')
+  @ApiOkResponse({ type: RegisterResponseDto })
+  async register(@Body() body: RegisterDto) {
+    return this.authService.register(body);
   }
 }

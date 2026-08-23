@@ -1,9 +1,13 @@
 import { createHmac, timingSafeEqual } from 'crypto';
 
-const TOKEN_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+const ACCESS_TOKEN_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+const REFRESH_TOKEN_TTL_MS = 30 * 24 * 60 * 60 * 1000;
+
+export type TokenType = 'access' | 'refresh';
 
 export type TokenPayload = {
   sub: string;
+  type: TokenType;
   exp: number;
 };
 
@@ -11,10 +15,11 @@ function getSecret(): string {
   return process.env.AUTH_SECRET ?? 'stage-drive-dev-secret';
 }
 
-export function signAccessToken(userId: string): string {
+function sign(userId: string, type: TokenType, ttlMs: number): string {
   const payload: TokenPayload = {
     sub: userId,
-    exp: Date.now() + TOKEN_TTL_MS,
+    type,
+    exp: Date.now() + ttlMs,
   };
   const payloadPart = Buffer.from(JSON.stringify(payload)).toString(
     'base64url',
@@ -25,7 +30,7 @@ export function signAccessToken(userId: string): string {
   return `${payloadPart}.${signature}`;
 }
 
-export function verifyAccessToken(token: string): TokenPayload {
+function verify(token: string): TokenPayload {
   const [payloadPart, signature] = token.split('.');
   if (!payloadPart || !signature) {
     throw new Error('Invalid token');
@@ -47,9 +52,33 @@ export function verifyAccessToken(token: string): TokenPayload {
     Buffer.from(payloadPart, 'base64url').toString('utf8'),
   ) as TokenPayload;
 
-  if (!payload.sub || payload.exp < Date.now()) {
+  if (!payload.sub || !payload.type || payload.exp < Date.now()) {
     throw new Error('Invalid token');
   }
 
+  return payload;
+}
+
+export function signAccessToken(userId: string): string {
+  return sign(userId, 'access', ACCESS_TOKEN_TTL_MS);
+}
+
+export function signRefreshToken(userId: string): string {
+  return sign(userId, 'refresh', REFRESH_TOKEN_TTL_MS);
+}
+
+export function verifyAccessToken(token: string): TokenPayload {
+  const payload = verify(token);
+  if (payload.type !== 'access') {
+    throw new Error('Invalid token type');
+  }
+  return payload;
+}
+
+export function verifyRefreshToken(token: string): TokenPayload {
+  const payload = verify(token);
+  if (payload.type !== 'refresh') {
+    throw new Error('Invalid token type');
+  }
   return payload;
 }
