@@ -8,6 +8,8 @@ datasource db {
 
 enum UserRole {
   OWNER
+  ADMIN
+  TEACHER
   INSTRUCTOR
   STUDENT
 }
@@ -15,6 +17,11 @@ enum UserRole {
 model Organization {
   id        String   @id @default(uuid())
   name      String
+  slug      String   @unique
+  email     String
+  phone     String?
+  address   String?
+  status    String   @default("ACTIVE")
   logoUrl   String?  @map("logo_url")
   timezone  String   @default("Europe/Kyiv")
   createdAt DateTime @default(now()) @map("created_at")
@@ -33,6 +40,7 @@ model User {
   phone          String?
   avatarUrl      String?      @map("avatar_url")
   role           UserRole
+  status         String       @default("ACTIVE")
   organizationId String       @map("organization_id")
   organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   createdAt      DateTime     @default(now()) @map("created_at")
