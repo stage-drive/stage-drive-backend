@@ -6,13 +6,11 @@ import {
 } from '@nestjs/swagger';
 import { AuthService } from './auth.service';
 import {
-  ForgotPasswordDto,
   LoginDto,
   LoginResponseDto,
   RefreshTokenDto,
   RegisterDto,
   RegisterResponseDto,
-  ResetPasswordDto,
 } from './auth.dto';
 
 @ApiTags('auth')
@@ -43,17 +41,5 @@ export class AuthController {
   @HttpCode(HttpStatus.NO_CONTENT)
   logout(@Body() { refreshToken }: RefreshTokenDto) {
     return this.authService.logout(refreshToken);
-  }
-
-  @Post('forgot-password')
-  @HttpCode(HttpStatus.NO_CONTENT)
-  async forgotPassword(@Body() body: ForgotPasswordDto) {
-    await this.authService.forgotPassword(body.email);
-  }
-
-  @Post('reset-password')
-  @HttpCode(HttpStatus.NO_CONTENT)
-  async resetPassword(@Body() body: ResetPasswordDto) {
-    await this.authService.resetPassword(body.token, body.newPassword);
   }
 }
