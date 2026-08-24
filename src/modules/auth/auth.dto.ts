@@ -1,5 +1,5 @@
 import { ApiProperty } from '@nestjs/swagger';
-import { UserRole } from '@prisma/client';
+import { UserRole, UserStatus } from '@prisma/client';
 import {
   Equals,
   IsBoolean,
@@ -108,8 +108,8 @@ export class RegisteredUserDto {
   @ApiProperty({ enum: UserRole, example: UserRole.OWNER })
   role: UserRole;
 
-  @ApiProperty({ example: 'ACTIVE' })
-  status: string;
+  @ApiProperty({ enum: UserStatus, example: UserStatus.ACTIVE })
+  status: UserStatus;
 
   @ApiProperty()
   organizationId: string;
@@ -126,8 +126,8 @@ export class RegisterResponseDto {
   refreshToken: string;
 }
 
-
 export class RefreshTokenDto {
+  @ApiProperty()
   @IsString()
   @IsNotEmpty()
   refreshToken!: string;

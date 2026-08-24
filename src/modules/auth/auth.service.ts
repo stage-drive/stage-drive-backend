@@ -8,6 +8,7 @@ import * as bcrypt from 'bcrypt';
 import { PrismaService } from '../../prisma/prisma.service';
 import { slugify, randomSlugSuffix } from './slug';
 import { RegisterDto } from './auth.dto';
+import { toRegisteredUser } from './registered-user';
 import { JwtService } from '@nestjs/jwt';
 import { randomBytes } from 'crypto';
 
@@ -87,6 +88,17 @@ export class AuthService {
     return this.issueTokens(storedToken.userId);
   }
 
+  async logout(refreshToken: string) {
+     const storedToken = await this.validateRefreshToken(refreshToken);
+
+     if(!storedToken) return;
+
+    await this.prisma.refreshToken.update({
+      where: { id: storedToken.id },
+      data: { revokedAt: new Date() },
+    });
+  }
+
   async register(payload: RegisterDto) {
     const organizationName = payload.organizationName.trim();
     const firstName = payload.firstName.trim();
@@ -129,15 +141,7 @@ export class AuthService {
 
         const tokens = await this.issueTokens(user.id);
         return {
-          user: {
-            id: user.id,
-            firstName: user.firstName,
-            lastName: user.lastName,
-            email: user.email,
-            role: user.role,
-            status: user.status,
-            organizationId: user.organizationId,
-          },
+          user: toRegisteredUser(user),
           ...tokens,
         };
       } catch (error) {

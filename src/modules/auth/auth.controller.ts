@@ -31,9 +31,15 @@ export class AuthController {
     return this.authService.register(body);
   }
 
-  @Post('/auth/refresh')
+  @Post('refresh')
   @HttpCode(HttpStatus.NO_CONTENT)
   async refresh(@Body() { refreshToken }: RefreshTokenDto) {
     return this.authService.refresh(refreshToken);
+  }
+
+  @Post('logout')
+  @HttpCode(HttpStatus.NO_CONTENT)
+  logout(@Body() { refreshToken }: RefreshTokenDto) {
+    return this.authService.logout(refreshToken);
   }
 }
