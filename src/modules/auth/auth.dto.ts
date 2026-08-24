@@ -132,3 +132,30 @@ export class RefreshTokenDto {
   @IsNotEmpty()
   refreshToken!: string;
 }
+
+export class ForgotPasswordDto {
+  @ApiProperty({ example: 'owner@example.com' })
+  @IsEmail({}, { message: INVALID_EMAIL_MESSAGE })
+  @IsNotEmpty({ message: REQUIRED_FIELD_MESSAGE })
+  email: string;
+}
+
+export class ResetPasswordDto {
+  @ApiProperty()
+  @IsString()
+  @IsNotEmpty({ message: REQUIRED_FIELD_MESSAGE })
+  token: string;
+
+  @ApiProperty({ example: 'NewSecurePassword123!' })
+  @MaxLength(72, { message: 'Пароль занадто довгий.' })
+  @MinLength(8, { message: 'Пароль має містити щонайменше 8 символів.' })
+  @IsString()
+  @IsNotEmpty({ message: REQUIRED_FIELD_MESSAGE })
+  newPassword: string;
+
+  @ApiProperty({ example: 'NewSecurePassword123!' })
+  @Match('newPassword', { message: PASSWORDS_DO_NOT_MATCH_MESSAGE })
+  @IsString()
+  @IsNotEmpty({ message: REQUIRED_FIELD_MESSAGE })
+  newPasswordConfirmation: string;
+}

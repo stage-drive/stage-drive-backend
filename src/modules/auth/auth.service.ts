@@ -1,4 +1,5 @@
 import {
+  BadRequestException,
   ConflictException,
   Injectable,
   UnauthorizedException,
@@ -15,6 +16,8 @@ import { randomBytes } from 'crypto';
 const BCRYPT_ROUNDS = 10;
 const MAX_SLUG_ATTEMPTS = 5;
 const EMAIL_ALREADY_EXISTS_MESSAGE = 'Користувач з таким email уже існує.';
+const INVALID_RESET_TOKEN_MESSAGE =
+  'Посилання для скидання пароля недійсне або застаріле.';
 
 function uniqueConstraintFields(
   error: Prisma.PrismaClientKnownRequestError,
@@ -48,6 +51,7 @@ export class AuthService {
   ) {}
 
   private readonly REFRESH_TOKEN_TTL_MS = 30 * 24 * 60 * 60 * 1000;
+  private readonly RESET_TOKEN_TTL_MS = 60 * 60 * 1000;
 
   async login(email: string, password: string) {
     if (!email || !password) {
@@ -76,22 +80,22 @@ export class AuthService {
   async refresh(refreshToken: string) {
     const storedToken = await this.validateRefreshToken(refreshToken);
 
-    if(!storedToken) {
+    if (!storedToken) {
       throw new UnauthorizedException('Invalid refresh token');
     }
 
     await this.prisma.refreshToken.update({
       where: { id: storedToken.id },
-      data: { revokedAt: new Date() }
+      data: { revokedAt: new Date() },
     });
 
     return this.issueTokens(storedToken.userId);
   }
 
   async logout(refreshToken: string) {
-     const storedToken = await this.validateRefreshToken(refreshToken);
+    const storedToken = await this.validateRefreshToken(refreshToken);
 
-     if(!storedToken) return;
+    if (!storedToken) return;
 
     await this.prisma.refreshToken.update({
       where: { id: storedToken.id },
@@ -160,6 +164,73 @@ export class AuthService {
         throw error;
       }
     }
+  }
+
+  async forgotPassword(email: string): Promise<void> {
+    const user = await this.prisma.user.findUnique({
+      where: { email: email.trim().toLowerCase() },
+    });
+    if (!user) {
+      // Same response regardless of whether the email exists, so the
+      // endpoint can't be used to enumerate registered accounts.
+      return;
+    }
+
+    const secret = randomBytes(32).toString('base64url');
+    const tokenHash = await bcrypt.hash(secret, BCRYPT_ROUNDS);
+
+    const resetToken = await this.prisma.passwordResetToken.create({
+      data: {
+        userId: user.id,
+        tokenHash,
+        expiresAt: new Date(Date.now() + this.RESET_TOKEN_TTL_MS),
+      },
+    });
+
+    const token = `${resetToken.id}.${secret}`;
+    // TODO: send this via email once a mail provider is wired up.
+    console.log(`Password reset token for ${user.email}: ${token}`);
+  }
+
+  async resetPassword(token: string, newPassword: string): Promise<void> {
+    const [tokenId, secret] = token.split('.');
+    if (!tokenId || !secret) {
+      throw new BadRequestException(INVALID_RESET_TOKEN_MESSAGE);
+    }
+
+    const storedToken = await this.prisma.passwordResetToken.findUnique({
+      where: { id: tokenId },
+    });
+
+    if (
+      !storedToken ||
+      storedToken.usedAt ||
+      storedToken.expiresAt < new Date()
+    ) {
+      throw new BadRequestException(INVALID_RESET_TOKEN_MESSAGE);
+    }
+
+    const secretMatches = await bcrypt.compare(secret, storedToken.tokenHash);
+    if (!secretMatches) {
+      throw new BadRequestException(INVALID_RESET_TOKEN_MESSAGE);
+    }
+
+    const passwordHash = await bcrypt.hash(newPassword, BCRYPT_ROUNDS);
+
+    await this.prisma.$transaction([
+      this.prisma.user.update({
+        where: { id: storedToken.userId },
+        data: { passwordHash },
+      }),
+      this.prisma.passwordResetToken.update({
+        where: { id: storedToken.id },
+        data: { usedAt: new Date() },
+      }),
+      this.prisma.refreshToken.updateMany({
+        where: { userId: storedToken.userId, revokedAt: null },
+        data: { revokedAt: new Date() },
+      }),
+    ]);
   }
 
   private async validateRefreshToken(refreshToken: string) {
