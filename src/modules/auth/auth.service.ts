@@ -1,10 +1,15 @@
-import { ConflictException, Injectable, UnauthorizedException } from '@nestjs/common';
+import {
+  ConflictException,
+  Injectable,
+  UnauthorizedException,
+} from '@nestjs/common';
 import { Prisma, UserRole } from '@prisma/client';
 import * as bcrypt from 'bcrypt';
 import { PrismaService } from '../../prisma/prisma.service';
-import { signAccessToken, signRefreshToken } from './token';
 import { slugify, randomSlugSuffix } from './slug';
 import { RegisterDto } from './auth.dto';
+import { JwtService } from '@nestjs/jwt';
+import { randomBytes } from 'crypto';
 
 const BCRYPT_ROUNDS = 10;
 const MAX_SLUG_ATTEMPTS = 5;
@@ -36,7 +41,12 @@ function isUniqueConstraintOn(error: unknown, field: string): boolean {
 
 @Injectable()
 export class AuthService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly jwtService: JwtService,
+  ) {}
+
+  private readonly REFRESH_TOKEN_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 
   async login(email: string, password: string) {
     if (!email || !password) {
@@ -55,10 +65,26 @@ export class AuthService {
       throw new UnauthorizedException('Invalid credentials');
     }
 
+    const tokens = await this.issueTokens(user.id);
     return {
-      accessToken: signAccessToken(user.id),
+      ...tokens,
       tokenType: 'Bearer',
     };
+  }
+
+  async refresh(refreshToken: string) {
+    const storedToken = await this.validateRefreshToken(refreshToken);
+
+    if(!storedToken) {
+      throw new UnauthorizedException('Invalid refresh token');
+    }
+
+    await this.prisma.refreshToken.update({
+      where: { id: storedToken.id },
+      data: { revokedAt: new Date() }
+    });
+
+    return this.issueTokens(storedToken.userId);
   }
 
   async register(payload: RegisterDto) {
@@ -101,6 +127,7 @@ export class AuthService {
           });
         });
 
+        const tokens = await this.issueTokens(user.id);
         return {
           user: {
             id: user.id,
@@ -111,8 +138,7 @@ export class AuthService {
             status: user.status,
             organizationId: user.organizationId,
           },
-          accessToken: signAccessToken(user.id),
-          refreshToken: signRefreshToken(user.id),
+          ...tokens,
         };
       } catch (error) {
         if (isUniqueConstraintOn(error, 'email')) {
@@ -121,11 +147,56 @@ export class AuthService {
             errors: [{ field: 'email', message: EMAIL_ALREADY_EXISTS_MESSAGE }],
           });
         }
-        if (isUniqueConstraintOn(error, 'slug') && attempt < MAX_SLUG_ATTEMPTS) {
+        if (
+          isUniqueConstraintOn(error, 'slug') &&
+          attempt < MAX_SLUG_ATTEMPTS
+        ) {
           continue;
         }
         throw error;
       }
     }
+  }
+
+  private async validateRefreshToken(refreshToken: string) {
+    const [tokenId, secret] = refreshToken.split('.');
+    if (!tokenId || !secret) {
+      return null;
+    }
+
+    const storedToken = await this.prisma.refreshToken.findUnique({
+      where: { id: tokenId },
+    });
+
+    if (
+      !storedToken ||
+      storedToken.revokedAt ||
+      storedToken.expiresAt < new Date()
+    ) {
+      return null;
+    }
+
+    const secretMatches = await bcrypt.compare(secret, storedToken.tokenHash);
+    return secretMatches ? storedToken : null;
+  }
+
+  private async issueTokens(userId: string) {
+    const accessToken = await this.jwtService.signAsync({ sub: userId });
+
+    const refreshSecret = randomBytes(32).toString('base64url');
+    const tokenHash = await bcrypt.hash(refreshSecret, BCRYPT_ROUNDS);
+
+    const refreshTokenRow = await this.prisma.refreshToken.create({
+      data: {
+        userId,
+        tokenHash,
+        expiresAt: new Date(Date.now() + this.REFRESH_TOKEN_TTL_MS),
+      },
+    });
+
+    return {
+      accessToken,
+      refreshToken: `${refreshTokenRow.id}.${refreshSecret}`,
+    };
   }
 }

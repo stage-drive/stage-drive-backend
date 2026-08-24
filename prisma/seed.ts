@@ -2,10 +2,9 @@ import 'dotenv/config';
 import { PrismaPg } from '@prisma/adapter-pg';
 import { PrismaClient, UserRole } from '@prisma/client';
 import * as bcrypt from 'bcrypt';
+import { requireEnv } from '../src/common/config/env';
 
-const DATABASE_URL =
-  process.env.DATABASE_URL ??
-  'postgresql://postgres:postgres_password@localhost:5432/stage_drive';
+const DATABASE_URL = requireEnv('DATABASE_URL');
 
 const DEMO_ORG_ID = '11111111-1111-1111-1111-111111111111';
 const DEMO_USER_ID = '22222222-2222-2222-2222-222222222222';

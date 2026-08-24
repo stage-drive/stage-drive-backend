@@ -59,13 +59,13 @@ model User {
   updatedAt      DateTime     @updatedAt @map("updated_at")
 
   organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
-  refreshToken RefreshTocken[]
+  refreshToken RefreshToken[]
   passwordResetToken PasswordResetToken[]
 
   @@map("users")
 }
 
-model RefreshTocken {
+model RefreshToken {
   id String @id @default(uuid())
   userId    String    @map("user_id")
   tokenHash String    @unique @map("token_hash")

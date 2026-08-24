@@ -1,13 +1,18 @@
+import 'dotenv/config';
 import { INestApplication } from '@nestjs/common';
+import { JwtService } from '@nestjs/jwt';
 import { NestExpressApplication } from '@nestjs/platform-express';
 import { Test, TestingModule } from '@nestjs/testing';
 import * as bcrypt from 'bcrypt';
 import request from 'supertest';
 import { App } from 'supertest/types';
 import { AppModule } from '../src/app.module';
+import { requireEnv } from '../src/common/config/env';
 import { configureApp } from '../src/configure-app';
-import { signAccessToken } from '../src/modules/auth/token';
 import { PrismaService } from '../src/prisma/prisma.service';
+
+const jwtService = new JwtService({ secret: requireEnv('JWT_ACCESS_SECRET') });
+const signAccessToken = (userId: string) => jwtService.sign({ sub: userId });
 
 type TestUser = {
   id: string;
