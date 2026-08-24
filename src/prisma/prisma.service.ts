@@ -1,6 +1,7 @@
 import { Injectable, OnModuleInit, OnModuleDestroy } from '@nestjs/common';
 import { PrismaPg } from '@prisma/adapter-pg';
 import { PrismaClient } from '@prisma/client';
+import { requireEnv } from '../common/config/env';
 
 @Injectable()
 export class PrismaService
@@ -9,9 +10,7 @@ export class PrismaService
 {
   constructor() {
     const adapter = new PrismaPg({
-      connectionString:
-        process.env.DATABASE_URL ??
-        'postgresql://postgres:postgres_password@localhost:5432/stage_drive',
+      connectionString: requireEnv('DATABASE_URL'),
     });
     super({ adapter });
   }

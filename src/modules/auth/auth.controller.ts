@@ -1,4 +1,4 @@
-import { Body, Controller, Post } from '@nestjs/common';
+import { Body, Controller, HttpCode, HttpStatus, Post } from '@nestjs/common';
 import {
   ApiOkResponse,
   ApiTags,
@@ -8,6 +8,7 @@ import { AuthService } from './auth.service';
 import {
   LoginDto,
   LoginResponseDto,
+  RefreshTokenDto,
   RegisterDto,
   RegisterResponseDto,
 } from './auth.dto';
@@ -28,5 +29,17 @@ export class AuthController {
   @ApiOkResponse({ type: RegisterResponseDto })
   async register(@Body() body: RegisterDto) {
     return this.authService.register(body);
+  }
+
+  @Post('refresh')
+  @HttpCode(HttpStatus.NO_CONTENT)
+  async refresh(@Body() { refreshToken }: RefreshTokenDto) {
+    return this.authService.refresh(refreshToken);
+  }
+
+  @Post('logout')
+  @HttpCode(HttpStatus.NO_CONTENT)
+  logout(@Body() { refreshToken }: RefreshTokenDto) {
+    return this.authService.logout(refreshToken);
   }
 }
