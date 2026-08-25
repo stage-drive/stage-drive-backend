@@ -75,6 +75,16 @@ describe('API (e2e)', () => {
       findUnique: jest.fn(),
       update: jest.fn(),
     },
+    oAuthAuthorization: {
+      findUnique: jest.fn(),
+      create: jest.fn(),
+      deleteMany: jest.fn(),
+      delete: jest.fn(),
+    },
+    oAuthAccount: {
+      findUnique: jest.fn(),
+      create: jest.fn(),
+    },
   };
 
   beforeAll(async () => {
@@ -87,6 +97,12 @@ describe('API (e2e)', () => {
     prismaMock.user.update.mockReset();
     prismaMock.organization.findUnique.mockReset();
     prismaMock.organization.update.mockReset();
+    prismaMock.oAuthAuthorization.findUnique.mockReset();
+    prismaMock.oAuthAuthorization.create.mockReset();
+    prismaMock.oAuthAuthorization.deleteMany.mockReset();
+    prismaMock.oAuthAuthorization.delete.mockReset();
+    prismaMock.oAuthAccount.findUnique.mockReset();
+    prismaMock.oAuthAccount.create.mockReset();
 
     prismaMock.user.findUnique.mockImplementation(
       (args: { where: { id?: string; email?: string } }) => {
@@ -105,6 +121,9 @@ describe('API (e2e)', () => {
       (args: { data: Partial<TestOrganization> }) =>
         Promise.resolve({ ...organization, ...args.data }),
     );
+    prismaMock.oAuthAuthorization.create.mockResolvedValue({});
+    prismaMock.oAuthAuthorization.deleteMany.mockResolvedValue({ count: 0 });
+    prismaMock.oAuthAuthorization.findUnique.mockResolvedValue(null);
 
     const moduleFixture: TestingModule = await Test.createTestingModule({
       imports: [AppModule],
@@ -127,6 +146,15 @@ describe('API (e2e)', () => {
       .get('/')
       .expect(200)
       .expect('Hello World!');
+  });
+
+  it('OPTIONS preflight from Vite origin is allowed', () => {
+    return request(app.getHttpServer())
+      .options('/api/auth/register')
+      .set('Origin', 'http://localhost:5173')
+      .set('Access-Control-Request-Method', 'POST')
+      .expect(204)
+      .expect('Access-Control-Allow-Origin', 'http://localhost:5173');
   });
 
   it('GET /api/docs serves Swagger UI', () => {
@@ -192,6 +220,31 @@ describe('API (e2e)', () => {
       .post('/api/users/me/email/verify')
       .set('Authorization', `Bearer ${token}`)
       .expect(501);
+  });
+
+  it('GET /api/auth/google redirects to Google with PKCE', async () => {
+    const response = await request(app.getHttpServer())
+      .get('/api/auth/google')
+      .redirects(0)
+      .expect(302);
+
+    expect(response.headers.location).toContain(
+      'https://accounts.google.com/o/oauth2/v2/auth',
+    );
+    expect(response.headers.location).toContain('code_challenge_method=S256');
+    expect(prismaMock.oAuthAuthorization.create).toHaveBeenCalled();
+  });
+
+  it('GET /api/auth/google/callback with invalid state is rejected', async () => {
+    const response = await request(app.getHttpServer())
+      .get('/api/auth/google/callback')
+      .query({ code: 'oauth-code', state: 'unknown-state' })
+      .expect(401);
+
+    expect(response.body).toMatchObject({
+      statusCode: 401,
+      message: 'Не вдалося увійти через Google.',
+    });
   });
 
   it('GET /api/organization returns current organization', async () => {

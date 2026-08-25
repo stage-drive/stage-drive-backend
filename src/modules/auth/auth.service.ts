@@ -3,51 +3,31 @@ import {
   Injectable,
   UnauthorizedException,
 } from '@nestjs/common';
-import { Prisma, UserRole } from '@prisma/client';
+import { User, UserRole } from '@prisma/client';
 import * as bcrypt from 'bcrypt';
+import { isUniqueConstraintOn } from '../../common/prisma/unique-constraint';
 import { PrismaService } from '../../prisma/prisma.service';
-import { slugify, randomSlugSuffix } from './slug';
+import { toAuthSession } from './auth-session';
 import { RegisterDto } from './auth.dto';
-import { toRegisteredUser } from './registered-user';
-import { JwtService } from '@nestjs/jwt';
-import { randomBytes } from 'crypto';
+import { randomSlugSuffix, slugify } from './slug';
+import { signAccessToken, signRefreshToken } from './token';
 
 const BCRYPT_ROUNDS = 10;
 const MAX_SLUG_ATTEMPTS = 5;
 const EMAIL_ALREADY_EXISTS_MESSAGE = 'Користувач з таким email уже існує.';
 
-function uniqueConstraintFields(
-  error: Prisma.PrismaClientKnownRequestError,
-): string[] {
-  const meta = error.meta as
-    | {
-        target?: string[];
-        driverAdapterError?: {
-          cause?: { constraint?: { fields?: string[] } };
-        };
-      }
-    | undefined;
-  return (
-    meta?.target ?? meta?.driverAdapterError?.cause?.constraint?.fields ?? []
-  );
-}
-
-function isUniqueConstraintOn(error: unknown, field: string): boolean {
-  return (
-    error instanceof Prisma.PrismaClientKnownRequestError &&
-    error.code === 'P2002' &&
-    uniqueConstraintFields(error).includes(field)
-  );
-}
+export type CreateOwnerInput = {
+  organizationName: string;
+  firstName: string;
+  lastName: string;
+  email: string;
+  phone?: string | null;
+  passwordHash: string | null;
+};
 
 @Injectable()
 export class AuthService {
-  constructor(
-    private readonly prisma: PrismaService,
-    private readonly jwtService: JwtService,
-  ) {}
-
-  private readonly REFRESH_TOKEN_TTL_MS = 30 * 24 * 60 * 60 * 1000;
+  constructor(private readonly prisma: PrismaService) {}
 
   async login(email: string, password: string) {
     if (!email || !password) {
@@ -57,7 +37,7 @@ export class AuthService {
     const user = await this.prisma.user.findUnique({
       where: { email: email.trim().toLowerCase() },
     });
-    if (!user) {
+    if (!user?.passwordHash) {
       throw new UnauthorizedException('Invalid credentials');
     }
 
@@ -66,47 +46,19 @@ export class AuthService {
       throw new UnauthorizedException('Invalid credentials');
     }
 
-    const tokens = await this.issueTokens(user.id);
     return {
-      ...tokens,
+      accessToken: signAccessToken(user.id),
+      refreshToken: signRefreshToken(user.id),
       tokenType: 'Bearer',
     };
   }
 
-  async refresh(refreshToken: string) {
-    const storedToken = await this.validateRefreshToken(refreshToken);
-
-    if (!storedToken) {
-      throw new UnauthorizedException('Invalid refresh token');
-    }
-
-    await this.prisma.refreshToken.update({
-      where: { id: storedToken.id },
-      data: { revokedAt: new Date() },
-    });
-
-    return this.issueTokens(storedToken.userId);
-  }
-
-  async logout(refreshToken: string) {
-    const storedToken = await this.validateRefreshToken(refreshToken);
-
-    if (!storedToken) return;
-
-    await this.prisma.refreshToken.update({
-      where: { id: storedToken.id },
-      data: { revokedAt: new Date() },
-    });
-  }
-
-  async register(payload: RegisterDto) {
-    const organizationName = payload.organizationName.trim();
-    const firstName = payload.firstName.trim();
-    const lastName = payload.lastName.trim();
-    const email = payload.email.trim().toLowerCase();
-    const phone = payload.phone?.trim() || null;
-
-    const passwordHash = await bcrypt.hash(payload.password, BCRYPT_ROUNDS);
+  async createOwnerUser(input: CreateOwnerInput): Promise<User> {
+    const organizationName = input.organizationName.trim();
+    const firstName = input.firstName.trim();
+    const lastName = input.lastName.trim();
+    const email = input.email.trim().toLowerCase();
+    const phone = input.phone?.trim() || null;
     const baseSlug = slugify(organizationName);
 
     for (let attempt = 0; ; attempt += 1) {
@@ -114,7 +66,7 @@ export class AuthService {
         attempt === 0 ? baseSlug : `${baseSlug}-${randomSlugSuffix()}`;
 
       try {
-        const user = await this.prisma.$transaction(async (tx) => {
+        return await this.prisma.$transaction(async (tx) => {
           const organization = await tx.organization.create({
             data: {
               name: organizationName,
@@ -129,7 +81,7 @@ export class AuthService {
             data: {
               organizationId: organization.id,
               email,
-              passwordHash,
+              passwordHash: input.passwordHash,
               firstName,
               lastName,
               phone,
@@ -138,12 +90,6 @@ export class AuthService {
             },
           });
         });
-
-        const tokens = await this.issueTokens(user.id);
-        return {
-          user: toRegisteredUser(user),
-          ...tokens,
-        };
       } catch (error) {
         if (isUniqueConstraintOn(error, 'email')) {
           throw new ConflictException({
@@ -162,45 +108,16 @@ export class AuthService {
     }
   }
 
-  private async validateRefreshToken(refreshToken: string) {
-    const [tokenId, secret] = refreshToken.split('.');
-    if (!tokenId || !secret) {
-      return null;
-    }
-
-    const storedToken = await this.prisma.refreshToken.findUnique({
-      where: { id: tokenId },
+  async register(payload: RegisterDto) {
+    const passwordHash = await bcrypt.hash(payload.password, BCRYPT_ROUNDS);
+    const user = await this.createOwnerUser({
+      organizationName: payload.organizationName,
+      firstName: payload.firstName,
+      lastName: payload.lastName,
+      email: payload.email,
+      phone: payload.phone,
+      passwordHash,
     });
-
-    if (
-      !storedToken ||
-      storedToken.revokedAt ||
-      storedToken.expiresAt < new Date()
-    ) {
-      return null;
-    }
-
-    const secretMatches = await bcrypt.compare(secret, storedToken.tokenHash);
-    return secretMatches ? storedToken : null;
-  }
-
-  private async issueTokens(userId: string) {
-    const accessToken = await this.jwtService.signAsync({ sub: userId });
-
-    const refreshSecret = randomBytes(32).toString('base64url');
-    const tokenHash = await bcrypt.hash(refreshSecret, BCRYPT_ROUNDS);
-
-    const refreshTokenRow = await this.prisma.refreshToken.create({
-      data: {
-        userId,
-        tokenHash,
-        expiresAt: new Date(Date.now() + this.REFRESH_TOKEN_TTL_MS),
-      },
-    });
-
-    return {
-      accessToken,
-      refreshToken: `${refreshTokenRow.id}.${refreshSecret}`,
-    };
+    return toAuthSession(user);
   }
 }

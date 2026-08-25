@@ -39,6 +39,11 @@ services:
       PORT: ${PORT:-3000}
       DATABASE_URL: ${DOCKER_DATABASE_URL:-postgresql://postgres:postgres_password@postgres:5432/stage_drive}
       AUTH_SECRET: ${AUTH_SECRET:-stage-drive-dev-secret}
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:5173,http://127.0.0.1:5173}
+      GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:-}
+      GOOGLE_CLIENT_SECRET: ${GOOGLE_CLIENT_SECRET:-}
+      GOOGLE_REDIRECT_URI: ${GOOGLE_REDIRECT_URI:-}
+      GOOGLE_OAUTH_SUCCESS_REDIRECT: ${GOOGLE_OAUTH_SUCCESS_REDIRECT:-}
     ports:
       - "${PORT:-3000}:3000"
     volumes:
