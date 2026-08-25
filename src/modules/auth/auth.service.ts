@@ -1,38 +1,29 @@
-import { ConflictException, Injectable, UnauthorizedException } from '@nestjs/common';
-import { Prisma, UserRole } from '@prisma/client';
+import {
+  ConflictException,
+  Injectable,
+  UnauthorizedException,
+} from '@nestjs/common';
+import { User, UserRole } from '@prisma/client';
 import * as bcrypt from 'bcrypt';
+import { isUniqueConstraintOn } from '../../common/prisma/unique-constraint';
 import { PrismaService } from '../../prisma/prisma.service';
-import { signAccessToken, signRefreshToken } from './token';
-import { slugify, randomSlugSuffix } from './slug';
+import { toAuthSession } from './auth-session';
 import { RegisterDto } from './auth.dto';
+import { randomSlugSuffix, slugify } from './slug';
+import { signAccessToken, signRefreshToken } from './token';
 
 const BCRYPT_ROUNDS = 10;
 const MAX_SLUG_ATTEMPTS = 5;
 const EMAIL_ALREADY_EXISTS_MESSAGE = 'Користувач з таким email уже існує.';
 
-function uniqueConstraintFields(
-  error: Prisma.PrismaClientKnownRequestError,
-): string[] {
-  const meta = error.meta as
-    | {
-        target?: string[];
-        driverAdapterError?: {
-          cause?: { constraint?: { fields?: string[] } };
-        };
-      }
-    | undefined;
-  return (
-    meta?.target ?? meta?.driverAdapterError?.cause?.constraint?.fields ?? []
-  );
-}
-
-function isUniqueConstraintOn(error: unknown, field: string): boolean {
-  return (
-    error instanceof Prisma.PrismaClientKnownRequestError &&
-    error.code === 'P2002' &&
-    uniqueConstraintFields(error).includes(field)
-  );
-}
+export type CreateOwnerInput = {
+  organizationName: string;
+  firstName: string;
+  lastName: string;
+  email: string;
+  phone?: string | null;
+  passwordHash: string | null;
+};
 
 @Injectable()
 export class AuthService {
@@ -46,7 +37,7 @@ export class AuthService {
     const user = await this.prisma.user.findUnique({
       where: { email: email.trim().toLowerCase() },
     });
-    if (!user) {
+    if (!user?.passwordHash) {
       throw new UnauthorizedException('Invalid credentials');
     }
 
@@ -57,18 +48,17 @@ export class AuthService {
 
     return {
       accessToken: signAccessToken(user.id),
+      refreshToken: signRefreshToken(user.id),
       tokenType: 'Bearer',
     };
   }
 
-  async register(payload: RegisterDto) {
-    const organizationName = payload.organizationName.trim();
-    const firstName = payload.firstName.trim();
-    const lastName = payload.lastName.trim();
-    const email = payload.email.trim().toLowerCase();
-    const phone = payload.phone?.trim() || null;
-
-    const passwordHash = await bcrypt.hash(payload.password, BCRYPT_ROUNDS);
+  async createOwnerUser(input: CreateOwnerInput): Promise<User> {
+    const organizationName = input.organizationName.trim();
+    const firstName = input.firstName.trim();
+    const lastName = input.lastName.trim();
+    const email = input.email.trim().toLowerCase();
+    const phone = input.phone?.trim() || null;
     const baseSlug = slugify(organizationName);
 
     for (let attempt = 0; ; attempt += 1) {
@@ -76,7 +66,7 @@ export class AuthService {
         attempt === 0 ? baseSlug : `${baseSlug}-${randomSlugSuffix()}`;
 
       try {
-        const user = await this.prisma.$transaction(async (tx) => {
+        return await this.prisma.$transaction(async (tx) => {
           const organization = await tx.organization.create({
             data: {
               name: organizationName,
@@ -91,7 +81,7 @@ export class AuthService {
             data: {
               organizationId: organization.id,
               email,
-              passwordHash,
+              passwordHash: input.passwordHash,
               firstName,
               lastName,
               phone,
@@ -100,20 +90,6 @@ export class AuthService {
             },
           });
         });
-
-        return {
-          user: {
-            id: user.id,
-            firstName: user.firstName,
-            lastName: user.lastName,
-            email: user.email,
-            role: user.role,
-            status: user.status,
-            organizationId: user.organizationId,
-          },
-          accessToken: signAccessToken(user.id),
-          refreshToken: signRefreshToken(user.id),
-        };
       } catch (error) {
         if (isUniqueConstraintOn(error, 'email')) {
           throw new ConflictException({
@@ -121,11 +97,27 @@ export class AuthService {
             errors: [{ field: 'email', message: EMAIL_ALREADY_EXISTS_MESSAGE }],
           });
         }
-        if (isUniqueConstraintOn(error, 'slug') && attempt < MAX_SLUG_ATTEMPTS) {
+        if (
+          isUniqueConstraintOn(error, 'slug') &&
+          attempt < MAX_SLUG_ATTEMPTS
+        ) {
           continue;
         }
         throw error;
       }
     }
+  }
+
+  async register(payload: RegisterDto) {
+    const passwordHash = await bcrypt.hash(payload.password, BCRYPT_ROUNDS);
+    const user = await this.createOwnerUser({
+      organizationName: payload.organizationName,
+      firstName: payload.firstName,
+      lastName: payload.lastName,
+      email: payload.email,
+      phone: payload.phone,
+      passwordHash,
+    });
+    return toAuthSession(user);
   }
 }

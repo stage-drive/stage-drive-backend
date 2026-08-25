@@ -88,6 +88,9 @@ export class LoginResponseDto {
   @ApiProperty()
   accessToken: string;
 
+  @ApiProperty()
+  refreshToken: string;
+
   @ApiProperty({ example: 'Bearer' })
   tokenType: string;
 }

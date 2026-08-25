@@ -81,6 +81,10 @@ export class UsersService {
       throw new NotFoundException('User not found');
     }
 
+    if (!fresh.passwordHash) {
+      throw new BadRequestException('Current password is incorrect');
+    }
+
     const matches = await bcrypt.compare(currentPassword, fresh.passwordHash);
     if (!matches) {
       throw new BadRequestException('Current password is incorrect');

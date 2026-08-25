@@ -67,6 +67,19 @@ export function signRefreshToken(userId: string): string {
   return sign(userId, 'refresh', REFRESH_TOKEN_TTL_MS);
 }
 
+export function tryGetAccessTokenUserId(
+  authorization?: string,
+): string | undefined {
+  if (!authorization?.startsWith('Bearer ')) {
+    return undefined;
+  }
+  try {
+    return verifyAccessToken(authorization.slice(7)).sub;
+  } catch {
+    return undefined;
+  }
+}
+
 export function verifyAccessToken(token: string): TokenPayload {
   const payload = verify(token);
   if (payload.type !== 'access') {
