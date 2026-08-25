@@ -18,18 +18,30 @@ enum AuthProvider {
   GOOGLE
 }
 
+enum UserStatus {
+  INVITED
+  ACTIVE
+  BLOCKED
+  ARCHIVED
+}
+
+enum OrganizationStatus {
+  ACTIVE
+  BLOCKED
+}
+
 model Organization {
-  id        String   @id @default(uuid())
+  id        String             @id @default(uuid())
   name      String
-  slug      String   @unique
+  slug      String             @unique
   email     String
   phone     String?
   address   String?
-  status    String   @default("ACTIVE")
-  logoUrl   String?  @map("logo_url")
-  timezone  String   @default("Europe/Kyiv")
-  createdAt DateTime @default(now()) @map("created_at")
-  updatedAt DateTime @updatedAt @map("updated_at")
+  status    OrganizationStatus @default(ACTIVE)
+  logoUrl   String?            @map("logo_url")
+  timezone  String             @default("Europe/Kyiv")
+  createdAt DateTime           @default(now()) @map("created_at")
+  updatedAt DateTime           @updatedAt @map("updated_at")
   users     User[]
 
   @@map("organizations")
@@ -44,13 +56,16 @@ model User {
   phone               String?
   avatarUrl           String?              @map("avatar_url")
   role                UserRole
-  status              String               @default("ACTIVE")
+  status              UserStatus           @default(ACTIVE)
   organizationId      String               @map("organization_id")
+  lastLoginAt         DateTime?            @map("last_login_at")
+  createdAt           DateTime             @default(now()) @map("created_at")
+  updatedAt           DateTime             @updatedAt @map("updated_at")
   organization        Organization         @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   oauthAccounts       OAuthAccount[]
   oauthAuthorizations OAuthAuthorization[]
-  createdAt           DateTime             @default(now()) @map("created_at")
-  updatedAt           DateTime             @updatedAt @map("updated_at")
+  refreshToken        RefreshToken[]
+  passwordResetToken  PasswordResetToken[]
 
   @@map("users")
 }
@@ -82,4 +97,34 @@ model OAuthAuthorization {
 
   @@index([expiresAt])
   @@map("oauth_authorizations")
+}
+
+model RefreshToken {
+  id        String    @id @default(uuid())
+  userId    String    @map("user_id")
+  tokenHash String    @unique @map("token_hash")
+  expiresAt DateTime  @map("expires_at")
+  revokedAt DateTime? @map("revoked_at")
+  ipAddress String?   @map("ip_address")
+  userAgent String?   @map("user_agent")
+  createdAt DateTime  @default(now()) @map("created_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@map("refresh_token")
+}
+
+model PasswordResetToken {
+  id        String    @id @default(uuid())
+  userId    String    @map("user_id")
+  tokenHash String    @unique @map("token_hash")
+  expiresAt DateTime  @map("expires_at")
+  usedAt    DateTime? @map("used_at")
+  createdAt DateTime  @default(now()) @map("created_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@map("password_reset_tokens")
 }

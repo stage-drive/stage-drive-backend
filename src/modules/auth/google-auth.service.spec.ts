@@ -1,5 +1,5 @@
 import { ConflictException, UnauthorizedException } from '@nestjs/common';
-import { AuthProvider, Prisma, User, UserRole } from '@prisma/client';
+import { Prisma, UserRole } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
 import { AuthService } from './auth.service';
 import { GoogleAuthService } from './google-auth.service';
@@ -10,22 +10,23 @@ import { verifyAccessToken, verifyRefreshToken } from './token';
 
 const GOOGLE_AUTH_FAILED = 'Не вдалося увійти через Google.';
 
-const owner: User = {
+const owner = {
   id: 'user-existing',
   email: 'owner@example.com',
-  passwordHash: 'hash',
+  passwordHash: 'hash' as string | null,
   firstName: 'Ivan',
   lastName: 'Petrenko',
-  phone: null,
-  avatarUrl: null,
+  phone: null as string | null,
+  avatarUrl: null as string | null,
   role: UserRole.OWNER,
   status: 'ACTIVE',
   organizationId: 'org-1',
+  lastLoginAt: null as Date | null,
   createdAt: new Date('2026-01-01'),
   updatedAt: new Date('2026-01-01'),
 };
 
-const googleUser: User = {
+const googleUser = {
   ...owner,
   id: 'user-google',
   email: 'ada@gmail.com',
@@ -62,7 +63,7 @@ type PendingAuth = {
 type OauthRow = {
   id?: string;
   userId: string;
-  provider: AuthProvider;
+  provider: 'GOOGLE';
   providerAccountId: string;
   email?: string;
 };
@@ -71,7 +72,7 @@ describe('GoogleAuthService', () => {
   let service: GoogleAuthService;
   let authorizations: Map<string, PendingAuth>;
   let accounts: OauthRow[];
-  let users: User[];
+  let users: (typeof owner)[];
   let prisma: {
     oAuthAuthorization: {
       deleteMany: jest.Mock;
@@ -137,7 +138,7 @@ describe('GoogleAuthService', () => {
           }: {
             where: {
               provider_providerAccountId: {
-                provider: AuthProvider;
+                provider: 'GOOGLE';
                 providerAccountId: string;
               };
             };
@@ -277,7 +278,7 @@ describe('GoogleAuthService', () => {
     expect(accounts).toHaveLength(1);
     expect(accounts[0]).toMatchObject({
       userId: googleUser.id,
-      provider: AuthProvider.GOOGLE,
+      provider: 'GOOGLE',
       providerAccountId: 'google-sub-1',
     });
     expect(verifyAccessToken(session.accessToken).sub).toBe(googleUser.id);
@@ -321,7 +322,7 @@ describe('GoogleAuthService', () => {
   it('does not attach one Google identity to a second user', async () => {
     accounts.push({
       userId: owner.id,
-      provider: AuthProvider.GOOGLE,
+      provider: 'GOOGLE',
       providerAccountId: 'google-sub-1',
     });
     seedPending({ userId: 'another-user' });
