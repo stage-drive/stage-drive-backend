@@ -11,19 +11,13 @@ WORKDIR /app
 
 COPY . .
 
-# Prisma generate does not need a live database.
-ENV DATABASE_URL="postgresql://postgres:postgres@localhost:5432/stage_drive"
-
-RUN npx prisma generate
+RUN DATABASE_URL="postgresql://postgres:postgres@localhost:5432/stage_drive" npx prisma generate
 RUN npm run build
 
 FROM node:22-alpine AS production
 WORKDIR /app
 
 RUN apk add --no-cache openssl libc6-compat
-
-ENV NODE_ENV=production
-ENV PORT=3000
 
 COPY --from=build /app/package.json ./package.json
 COPY --from=build /app/package-lock.json ./package-lock.json

@@ -83,7 +83,8 @@
     "rootDir": "src",
     "testRegex": ".*\\.spec\\.ts$",
     "setupFiles": [
-      "<rootDir>/test-setup.ts"
+      "<rootDir>/test-setup.ts",
+      "<rootDir>/../test/set-google-env.ts"
     ],
     "transform": {
       "^.+\\.(t|j)s$": "ts-jest"
@@ -92,9 +93,6 @@
       "**/*.(t|j)s"
     ],
     "coverageDirectory": "../coverage",
-    "testEnvironment": "node",
-    "setupFiles": [
-      "<rootDir>/../test/set-google-env.ts"
-    ]
+    "testEnvironment": "node"
   }
 }

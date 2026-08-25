@@ -1,18 +1,13 @@
-import 'dotenv/config';
 import { INestApplication } from '@nestjs/common';
-import { JwtService } from '@nestjs/jwt';
 import { NestExpressApplication } from '@nestjs/platform-express';
 import { Test, TestingModule } from '@nestjs/testing';
 import * as bcrypt from 'bcrypt';
 import request from 'supertest';
 import { App } from 'supertest/types';
 import { AppModule } from '../src/app.module';
-import { requireEnv } from '../src/common/config/env';
 import { configureApp } from '../src/configure-app';
+import { signAccessToken } from '../src/modules/auth/token';
 import { PrismaService } from '../src/prisma/prisma.service';
-
-const jwtService = new JwtService({ secret: requireEnv('JWT_ACCESS_SECRET') });
-const signAccessToken = (userId: string) => jwtService.sign({ sub: userId });
 
 type TestUser = {
   id: string;
@@ -23,7 +18,9 @@ type TestUser = {
   phone: string | null;
   avatarUrl: string | null;
   role: 'OWNER' | 'INSTRUCTOR' | 'STUDENT';
+  status: 'ACTIVE';
   organizationId: string;
+  lastLoginAt: Date | null;
   createdAt: Date;
   updatedAt: Date;
 };
@@ -59,7 +56,9 @@ describe('API (e2e)', () => {
     phone: null,
     avatarUrl: null,
     role: 'OWNER',
+    status: 'ACTIVE',
     organizationId: organization.id,
+    lastLoginAt: null,
     createdAt: new Date(),
     updatedAt: new Date(),
   };
