@@ -160,6 +160,18 @@ describe('API (e2e)', () => {
     return request(app.getHttpServer()).get('/api/docs').expect(200);
   });
 
+  it('OpenAPI documents GET /api/auth/google', async () => {
+    const response = await request(app.getHttpServer())
+      .get('/api/docs-json')
+      .expect(200);
+
+    const paths = (response.body as { paths: Record<string, unknown> }).paths;
+    expect(paths['/api/auth/google'] ?? paths['/auth/google']).toBeDefined();
+    expect(
+      paths['/api/auth/google/callback'] ?? paths['/auth/google/callback'],
+    ).toBeDefined();
+  });
+
   it('GET /api/users/me without token returns 401', () => {
     return request(app.getHttpServer()).get('/api/users/me').expect(401);
   });

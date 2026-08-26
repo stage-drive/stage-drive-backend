@@ -5,15 +5,14 @@ import { ensureUploadDir } from './common/files/image-upload';
 import { validationExceptionFactory } from './common/validation/field-error';
 import { configureSwagger } from './configure-swagger';
 
+const DEFAULT_CORS_ORIGINS = ['http://localhost:5173', 'http://127.0.0.1:5173'];
+
 function parseCorsOrigins(): string[] {
-  const raw = process.env.CORS_ORIGINS?.trim();
-  if (!raw) {
-    return ['http://localhost:5173', 'http://127.0.0.1:5173'];
-  }
-  return raw
+  const fromEnv = (process.env.CORS_ORIGINS ?? '')
     .split(',')
     .map((origin) => origin.trim())
     .filter(Boolean);
+  return [...new Set([...DEFAULT_CORS_ORIGINS, ...fromEnv])];
 }
 
 export function configureApp(app: NestExpressApplication) {
@@ -22,6 +21,8 @@ export function configureApp(app: NestExpressApplication) {
   app.enableCors({
     origin: parseCorsOrigins(),
     credentials: true,
+    methods: ['GET', 'HEAD', 'PUT', 'PATCH', 'POST', 'DELETE', 'OPTIONS'],
+    allowedHeaders: ['Content-Type', 'Authorization', 'Accept'],
   });
   app.useStaticAssets(join(process.cwd(), 'uploads'), { prefix: '/uploads/' });
   app.setGlobalPrefix('api', { exclude: ['/'] });
