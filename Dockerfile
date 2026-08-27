@@ -11,7 +11,7 @@ WORKDIR /app
 
 COPY . .
 
-RUN DATABASE_URL="postgresql://postgres:postgres@localhost:5432/stage_drive" npx prisma generate
+RUN npx prisma generate
 RUN npm run build
 
 FROM node:22-alpine AS production

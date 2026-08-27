@@ -1,4 +1,4 @@
-import { GoogleOAuthConfig } from './google-oauth.config';
+import { GoogleOAuthConfig } from '../src/modules/auth/google-oauth.config';
 
 const REQUIRED = [
   'GOOGLE_CLIENT_ID',
