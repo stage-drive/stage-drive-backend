@@ -1,18 +1,13 @@
-import 'dotenv/config';
 import { INestApplication } from '@nestjs/common';
-import { JwtService } from '@nestjs/jwt';
 import { NestExpressApplication } from '@nestjs/platform-express';
 import { Test, TestingModule } from '@nestjs/testing';
 import * as bcrypt from 'bcrypt';
 import request from 'supertest';
 import { App } from 'supertest/types';
 import { AppModule } from '../src/app.module';
-import { requireEnv } from '../src/common/config/env';
 import { configureApp } from '../src/configure-app';
+import { signAccessToken } from '../src/modules/auth/token';
 import { PrismaService } from '../src/prisma/prisma.service';
-
-const jwtService = new JwtService({ secret: requireEnv('JWT_ACCESS_SECRET') });
-const signAccessToken = (userId: string) => jwtService.sign({ sub: userId });
 
 type TestUser = {
   id: string;
@@ -23,7 +18,9 @@ type TestUser = {
   phone: string | null;
   avatarUrl: string | null;
   role: 'OWNER' | 'INSTRUCTOR' | 'STUDENT';
+  status: 'ACTIVE';
   organizationId: string;
+  lastLoginAt: Date | null;
   createdAt: Date;
   updatedAt: Date;
 };
@@ -59,7 +56,9 @@ describe('API (e2e)', () => {
     phone: null,
     avatarUrl: null,
     role: 'OWNER',
+    status: 'ACTIVE',
     organizationId: organization.id,
+    lastLoginAt: null,
     createdAt: new Date(),
     updatedAt: new Date(),
   };
@@ -159,6 +158,18 @@ describe('API (e2e)', () => {
 
   it('GET /api/docs serves Swagger UI', () => {
     return request(app.getHttpServer()).get('/api/docs').expect(200);
+  });
+
+  it('OpenAPI documents GET /api/auth/google', async () => {
+    const response = await request(app.getHttpServer())
+      .get('/api/docs-json')
+      .expect(200);
+
+    const paths = (response.body as { paths: Record<string, unknown> }).paths;
+    expect(paths['/api/auth/google'] ?? paths['/auth/google']).toBeDefined();
+    expect(
+      paths['/api/auth/google/callback'] ?? paths['/auth/google/callback'],
+    ).toBeDefined();
   });
 
   it('GET /api/users/me without token returns 401', () => {

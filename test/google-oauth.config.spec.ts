@@ -1,4 +1,4 @@
-import { GoogleOAuthConfig } from './google-oauth.config';
+import { GoogleOAuthConfig } from '../src/modules/auth/google-oauth.config';
 
 const REQUIRED = [
   'GOOGLE_CLIENT_ID',
@@ -47,10 +47,36 @@ describe('GoogleOAuthConfig', () => {
     expect(config.successRedirect).toBeNull();
   });
 
+  it('defaults redirect URI when credentials are set without GOOGLE_REDIRECT_URI', () => {
+    process.env.GOOGLE_CLIENT_ID = 'client-id';
+    process.env.GOOGLE_CLIENT_SECRET = 'client-secret';
+    delete process.env.GOOGLE_REDIRECT_URI;
+    delete process.env.GOOGLE_OAUTH_SUCCESS_REDIRECT;
+
+    const config = new GoogleOAuthConfig();
+
+    expect(config.enabled).toBe(true);
+    expect(config.redirectUri).toBe(
+      'http://localhost:3000/api/auth/google/callback',
+    );
+  });
+
   it('starts with Google disabled when no Google variables are set', () => {
     delete process.env.GOOGLE_CLIENT_ID;
     delete process.env.GOOGLE_CLIENT_SECRET;
     delete process.env.GOOGLE_REDIRECT_URI;
+    delete process.env.GOOGLE_OAUTH_SUCCESS_REDIRECT;
+
+    const config = new GoogleOAuthConfig();
+
+    expect(config.enabled).toBe(false);
+  });
+
+  it('starts with Google disabled when only redirect URI is set', () => {
+    delete process.env.GOOGLE_CLIENT_ID;
+    delete process.env.GOOGLE_CLIENT_SECRET;
+    process.env.GOOGLE_REDIRECT_URI =
+      'http://localhost:3000/api/auth/google/callback';
     delete process.env.GOOGLE_OAUTH_SUCCESS_REDIRECT;
 
     const config = new GoogleOAuthConfig();

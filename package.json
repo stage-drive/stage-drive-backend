@@ -80,21 +80,27 @@
       "json",
       "ts"
     ],
-    "rootDir": "src",
+    "rootDir": ".",
+    "roots": [
+      "<rootDir>/src",
+      "<rootDir>/test"
+    ],
     "testRegex": ".*\\.spec\\.ts$",
+    "testPathIgnorePatterns": [
+      "/node_modules/",
+      "\\.e2e-spec\\.ts$"
+    ],
     "setupFiles": [
-      "<rootDir>/test-setup.ts"
+      "<rootDir>/src/test-setup.ts",
+      "<rootDir>/test/set-google-env.ts"
     ],
     "transform": {
       "^.+\\.(t|j)s$": "ts-jest"
     },
     "collectCoverageFrom": [
-      "**/*.(t|j)s"
+      "src/**/*.(t|j)s"
     ],
-    "coverageDirectory": "../coverage",
-    "testEnvironment": "node",
-    "setupFiles": [
-      "<rootDir>/../test/set-google-env.ts"
-    ]
+    "coverageDirectory": "./coverage",
+    "testEnvironment": "node"
   }
 }

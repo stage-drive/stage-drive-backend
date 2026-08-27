@@ -1,10 +1,6 @@
 import { Injectable } from '@nestjs/common';
 
-const REQUIRED_GOOGLE_ENV = [
-  'GOOGLE_CLIENT_ID',
-  'GOOGLE_CLIENT_SECRET',
-  'GOOGLE_REDIRECT_URI',
-] as const;
+const DEFAULT_REDIRECT_URI = 'http://localhost:3000/api/auth/google/callback';
 
 function readEnv(name: string): string {
   return process.env[name]?.trim() ?? '';
@@ -21,10 +17,10 @@ export class GoogleOAuthConfig {
   constructor() {
     const clientId = readEnv('GOOGLE_CLIENT_ID');
     const clientSecret = readEnv('GOOGLE_CLIENT_SECRET');
-    const redirectUri = readEnv('GOOGLE_REDIRECT_URI');
-    const present = [clientId, clientSecret, redirectUri].filter(Boolean);
+    const redirectUri = readEnv('GOOGLE_REDIRECT_URI') || DEFAULT_REDIRECT_URI;
+    const hasCredentials = Boolean(clientId || clientSecret);
 
-    if (present.length === 0) {
+    if (!hasCredentials) {
       this.enabled = false;
       this.clientId = '';
       this.clientSecret = '';
@@ -33,8 +29,11 @@ export class GoogleOAuthConfig {
       return;
     }
 
-    if (present.length < REQUIRED_GOOGLE_ENV.length) {
-      const missing = REQUIRED_GOOGLE_ENV.filter((name) => !readEnv(name));
+    if (!clientId || !clientSecret) {
+      const missing = [
+        !clientId ? 'GOOGLE_CLIENT_ID' : '',
+        !clientSecret ? 'GOOGLE_CLIENT_SECRET' : '',
+      ].filter(Boolean);
       throw new Error(
         `Missing required environment variable ${missing.join(', ')}`,
       );

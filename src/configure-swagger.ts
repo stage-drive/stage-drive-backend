@@ -6,6 +6,7 @@ export function configureSwagger(app: INestApplication) {
     .setTitle('Stage Drive API')
     .setDescription('Бекенд платформи управління автошколами')
     .setVersion('0.0.1')
+    .addTag('auth')
     .addBearerAuth()
     .build();
 
