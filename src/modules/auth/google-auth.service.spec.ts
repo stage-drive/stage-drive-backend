@@ -87,7 +87,7 @@ describe('GoogleAuthService', () => {
     user: { findUnique: jest.Mock };
   };
   let oidc: { exchangeCode: jest.Mock; verifyIdToken: jest.Mock };
-  let authService: { createOwnerUser: jest.Mock };
+  let authService: { createOwnerUser: jest.Mock; assertActiveUser: jest.Mock };
 
   beforeEach(() => {
     authorizations = new Map();
@@ -196,6 +196,11 @@ describe('GoogleAuthService', () => {
     };
     authService = {
       createOwnerUser: jest.fn().mockResolvedValue(googleUser),
+      assertActiveUser: jest.fn((user: { status: string }) => {
+        if (user.status !== 'ACTIVE') {
+          throw new UnauthorizedException(GOOGLE_AUTH_FAILED);
+        }
+      }),
     };
 
     const config: Pick<

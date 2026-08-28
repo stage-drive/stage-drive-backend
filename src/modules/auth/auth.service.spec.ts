@@ -78,10 +78,24 @@ describe('AuthService', () => {
       ).rejects.toThrow(UnauthorizedException);
     });
 
+    it('rejects when the user is not active', async () => {
+      prisma.user.findUnique.mockResolvedValue({
+        id: 'user-1',
+        passwordHash: 'stored-hash',
+        status: 'BLOCKED',
+      });
+      (bcrypt.compare as jest.Mock).mockResolvedValue(true);
+
+      await expect(
+        service.login('owner@example.com', 'Password1'),
+      ).rejects.toThrow(UnauthorizedException);
+    });
+
     it('normalizes email casing/whitespace before lookup', async () => {
       prisma.user.findUnique.mockResolvedValue({
         id: 'user-1',
         passwordHash: 'stored-hash',
+        status: 'ACTIVE',
       });
       (bcrypt.compare as jest.Mock).mockResolvedValue(true);
 
@@ -96,6 +110,7 @@ describe('AuthService', () => {
       prisma.user.findUnique.mockResolvedValue({
         id: 'user-1',
         passwordHash: 'stored-hash',
+        status: 'ACTIVE',
       });
       (bcrypt.compare as jest.Mock).mockResolvedValue(true);
 

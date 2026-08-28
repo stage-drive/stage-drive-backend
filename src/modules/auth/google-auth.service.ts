@@ -41,6 +41,17 @@ export class GoogleAuthService {
 
   async start(userId?: string): Promise<string> {
     this.ensureConfigured();
+
+    if (userId) {
+      const user = await this.prisma.user.findUnique({
+        where: { id: userId },
+      });
+      if (!user) {
+        fail();
+      }
+      this.authService.assertActiveUser(user);
+    }
+
     await this.prisma.oAuthAuthorization.deleteMany({
       where: { expiresAt: { lt: new Date() } },
     });
@@ -122,6 +133,7 @@ export class GoogleAuthService {
       if (pending.userId && pending.userId !== existingLink.userId) {
         fail();
       }
+      this.authService.assertActiveUser(existingLink.user);
       return toAuthSession(existingLink.user);
     }
 
@@ -132,6 +144,7 @@ export class GoogleAuthService {
       if (!user) {
         fail();
       }
+      this.authService.assertActiveUser(user);
       await this.linkAccount(user.id, profile);
       return toAuthSession(user);
     }
@@ -140,6 +153,7 @@ export class GoogleAuthService {
       where: { email: profile.email },
     });
     if (byEmail) {
+      this.authService.assertActiveUser(byEmail);
       await this.linkAccount(byEmail.id, profile);
       return toAuthSession(byEmail);
     }
@@ -160,6 +174,7 @@ export class GoogleAuthService {
           where: { email: profile.email },
         });
         if (raced) {
+          this.authService.assertActiveUser(raced);
           await this.linkAccount(raced.id, profile);
           return toAuthSession(raced);
         }

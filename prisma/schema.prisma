@@ -34,7 +34,7 @@ model Organization {
   id        String             @id @default(uuid())
   name      String
   slug      String             @unique
-  email     String
+  email     String             @unique
   phone     String?
   address   String?
   status    OrganizationStatus @default(ACTIVE)

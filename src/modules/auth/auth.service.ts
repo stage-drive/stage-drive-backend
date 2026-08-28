@@ -3,7 +3,7 @@ import {
   Injectable,
   UnauthorizedException,
 } from '@nestjs/common';
-import { User, UserRole } from '@prisma/client';
+import { User, UserRole, UserStatus } from '@prisma/client';
 import * as bcrypt from 'bcrypt';
 import { isUniqueConstraintOn } from '../../common/prisma/unique-constraint';
 import { PrismaService } from '../../prisma/prisma.service';
@@ -15,6 +15,7 @@ import { signAccessToken, signRefreshToken } from './token';
 const BCRYPT_ROUNDS = 10;
 const MAX_SLUG_ATTEMPTS = 5;
 const EMAIL_ALREADY_EXISTS_MESSAGE = 'Користувач з таким email уже існує.';
+const ACCOUNT_NOT_ACTIVE_MESSAGE = 'Обліковий запис заблоковано або неактивний.';
 
 export type CreateOwnerInput = {
   organizationName: string;
@@ -46,11 +47,19 @@ export class AuthService {
       throw new UnauthorizedException('Invalid credentials');
     }
 
+    this.assertActiveUser(user);
+
     return {
       accessToken: signAccessToken(user.id),
       refreshToken: signRefreshToken(user.id),
       tokenType: 'Bearer',
     };
+  }
+
+  assertActiveUser(user: Pick<User, 'status'>): void {
+    if (user.status !== UserStatus.ACTIVE) {
+      throw new UnauthorizedException(ACCOUNT_NOT_ACTIVE_MESSAGE);
+    }
   }
 
   async createOwnerUser(input: CreateOwnerInput): Promise<User> {
