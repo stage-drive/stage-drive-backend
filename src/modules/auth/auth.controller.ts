@@ -11,6 +11,7 @@ import {
 } from '@nestjs/common';
 import {
   ApiBearerAuth,
+  ApiForbiddenResponse,
   ApiFoundResponse,
   ApiOkResponse,
   ApiOperation,
@@ -82,7 +83,8 @@ export class AuthController {
     description:
       'Це не API для фронта і не для Postman/Swagger Try it out. Google сам ' +
       'відкриває цей URL після згоди (code + state). Без валідного одноразового ' +
-      'state з GET /api/auth/google відповідь буде 401. Якщо задано ' +
+      'state з GET /api/auth/google відповідь буде 401. Новий Google-акаунт ' +
+      'без існуючого користувача (Owner або запрошений email) — 403. Якщо задано ' +
       'GOOGLE_OAUTH_SUCCESS_REDIRECT — замість JSON буде 302 на фронт ' +
       '(токени в URL hash, не в query).',
   })
@@ -117,6 +119,10 @@ export class AuthController {
   @ApiUnauthorizedResponse({
     description:
       'Немає code/state, прострочений/чужий state, або Google відхилив обмін коду.',
+  })
+  @ApiForbiddenResponse({
+    description:
+      'Немає користувача з цим email (не Owner і не запрошений), або акаунт заблоковано.',
   })
   @ApiServiceUnavailableResponse({
     description: 'Немає GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET у середовищі.',
