@@ -56,8 +56,8 @@ export class AuthService {
     };
   }
 
-  assertActiveUser(user: Pick<User, 'status'>): void {
-    if (user.status !== UserStatus.ACTIVE) {
+  assertActiveUser(user: Pick<User, 'status' | 'deletedAt'>): void {
+    if (user.deletedAt || user.status !== UserStatus.ACTIVE) {
       throw new UnauthorizedException(ACCOUNT_NOT_ACTIVE_MESSAGE);
     }
   }
