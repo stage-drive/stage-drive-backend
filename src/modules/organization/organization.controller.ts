@@ -1,7 +1,10 @@
 import {
   Body,
   Controller,
+  Delete,
   Get,
+  HttpCode,
+  HttpStatus,
   Patch,
   UploadedFile,
   UseGuards,
@@ -78,5 +81,13 @@ export class OrganizationController {
       body,
       file ? publicUploadUrl('logos', file.filename) : undefined,
     );
+  }
+
+  @Delete()
+  @UseGuards(RolesGuard)
+  @Roles(UserRole.OWNER)
+  @HttpCode(HttpStatus.NO_CONTENT)
+  deleteOrganization(@CurrentUser() user: User) {
+    return this.organizationService.deleteOrganization(user);
   }
 }

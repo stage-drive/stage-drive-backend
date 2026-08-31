@@ -45,6 +45,17 @@ export class GoogleAuthService {
 
   async start(userId?: string): Promise<string> {
     this.ensureConfigured();
+
+    if (userId) {
+      const user = await this.prisma.user.findUnique({
+        where: { id: userId },
+      });
+      if (!user) {
+        fail();
+      }
+      this.authService.assertActiveUser(user);
+    }
+
     await this.prisma.oAuthAuthorization.deleteMany({
       where: { expiresAt: { lt: new Date() } },
     });
@@ -126,8 +137,9 @@ export class GoogleAuthService {
       if (pending.userId && pending.userId !== existingLink.userId) {
         fail();
       }
-      this.assertAllowed(existingLink.user);
-      return this.sessionFor(existingLink.user);
+      this.authService.assertActiveUser(existingLink.user);
+      await this.authService.recordLogin(existingLink.user.id);
+      return toAuthSession(existingLink.user);
     }
 
     if (pending.userId) {
@@ -137,16 +149,20 @@ export class GoogleAuthService {
       if (!user) {
         fail();
       }
-      this.assertAllowed(user);
+      this.authService.assertActiveUser(user);
       await this.linkAccount(user.id, profile);
-      return this.sessionFor(user);
+      await this.authService.recordLogin(user.id);
+      return toAuthSession(user);
     }
 
     const byEmail = await this.prisma.user.findUnique({
       where: { email: profile.email },
     });
-    if (!byEmail) {
-      deny();
+    if (byEmail) {
+      this.authService.assertActiveUser(byEmail);
+      await this.linkAccount(byEmail.id, profile);
+      await this.authService.recordLogin(byEmail.id);
+      return toAuthSession(byEmail);
     }
     this.assertAllowed(byEmail);
     await this.linkAccount(byEmail.id, profile);
@@ -165,6 +181,19 @@ export class GoogleAuthService {
   private async sessionFor(user: User) {
     if (user.status !== UserStatus.INVITED) {
       return toAuthSession(user);
+    } catch (error) {
+      if (error instanceof ConflictException) {
+        const raced = await this.prisma.user.findUnique({
+          where: { email: profile.email },
+        });
+        if (raced) {
+          this.authService.assertActiveUser(raced);
+          await this.linkAccount(raced.id, profile);
+          await this.authService.recordLogin(raced.id);
+          return toAuthSession(raced);
+        }
+      }
+      fail();
     }
     const activated = await this.prisma.user.update({
       where: { id: user.id },

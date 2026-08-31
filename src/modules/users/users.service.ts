@@ -117,6 +117,13 @@ export class UsersService {
     return toPublicUser(updated);
   }
 
+  async deleteUser(user: User): Promise<void> {
+    await this.prisma.user.update({
+      where: { id: user.id },
+      data: { deletedAt: new Date() },
+    });
+  }
+
   private deleteLocalUpload(url?: string | null) {
     if (!url?.startsWith('/uploads/')) {
       return;

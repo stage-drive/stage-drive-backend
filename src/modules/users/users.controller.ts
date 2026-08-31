@@ -97,6 +97,12 @@ export class UsersController {
     return this.usersService.deleteAvatar(user);
   }
 
+  @Delete('me')
+  @HttpCode(HttpStatus.NO_CONTENT)
+  deleteUser(@CurrentUser() user: User) {
+    return this.usersService.deleteUser(user);
+  }
+
   @Patch('me/password')
   @ApiOkResponse({ type: MessageResponseDto })
   changePassword(@CurrentUser() user: User, @Body() body: ChangePasswordDto) {
