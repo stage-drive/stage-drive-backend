@@ -1,14 +1,15 @@
-import { ConflictException, UnauthorizedException } from '@nestjs/common';
-import { Prisma, UserRole } from '@prisma/client';
+import { UnauthorizedException } from '@nestjs/common';
+import { Prisma, UserRole, UserStatus } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
-import { AuthService } from './auth.service';
 import { GoogleAuthService } from './google-auth.service';
 import { GoogleProfile } from './google-id-token';
 import { GoogleOAuthConfig } from './google-oauth.config';
 import { GoogleOidcClient } from './google-oidc.client';
-import { verifyAccessToken, verifyRefreshToken } from './token';
+import { verifyAccessToken } from './token';
 
 const GOOGLE_AUTH_FAILED = 'Не вдалося увійти через Google.';
+const GOOGLE_AUTH_FORBIDDEN =
+  'Вхід через Google доступний лише власнику або запрошеним користувачам.';
 
 const owner = {
   id: 'user-existing',
@@ -19,18 +20,20 @@ const owner = {
   phone: null as string | null,
   avatarUrl: null as string | null,
   role: UserRole.OWNER,
-  status: 'ACTIVE',
+  status: UserStatus.ACTIVE as UserStatus,
   organizationId: 'org-1',
   lastLoginAt: null as Date | null,
   createdAt: new Date('2026-01-01'),
   updatedAt: new Date('2026-01-01'),
 };
 
-const googleUser = {
+const invited = {
   ...owner,
-  id: 'user-google',
+  id: 'user-invited',
   email: 'ada@gmail.com',
   passwordHash: null,
+  role: UserRole.TEACHER,
+  status: UserStatus.INVITED as UserStatus,
   firstName: 'Ada',
   lastName: 'Lovelace',
 };
@@ -72,7 +75,7 @@ describe('GoogleAuthService', () => {
   let service: GoogleAuthService;
   let authorizations: Map<string, PendingAuth>;
   let accounts: OauthRow[];
-  let users: (typeof owner)[];
+  let users: Array<typeof owner | typeof invited>;
   let prisma: {
     oAuthAuthorization: {
       deleteMany: jest.Mock;
@@ -84,7 +87,7 @@ describe('GoogleAuthService', () => {
       findUnique: jest.Mock;
       create: jest.Mock;
     };
-    user: { findUnique: jest.Mock };
+    user: { findUnique: jest.Mock; update: jest.Mock };
   };
   let oidc: { exchangeCode: jest.Mock; verifyIdToken: jest.Mock };
   let authService: {
@@ -191,6 +194,22 @@ describe('GoogleAuthService', () => {
             return Promise.resolve(null);
           },
         ),
+        update: jest.fn(
+          ({
+            where,
+            data,
+          }: {
+            where: { id: string };
+            data: { status: UserStatus };
+          }) => {
+            const index = users.findIndex((item) => item.id === where.id);
+            if (index < 0) {
+              return Promise.resolve(null);
+            }
+            users[index] = { ...users[index], ...data };
+            return Promise.resolve(users[index]);
+          },
+        ),
       },
     };
 
@@ -227,7 +246,6 @@ describe('GoogleAuthService', () => {
       prisma as unknown as PrismaService,
       config,
       oidc as unknown as GoogleOidcClient,
-      authService as unknown as AuthService,
     );
   });
 
@@ -270,30 +288,17 @@ describe('GoogleAuthService', () => {
     );
   });
 
-  it('creates a new user for a first-time Google identity', async () => {
+  it('rejects an unknown Google email with 403', async () => {
     seedPending();
 
-    const session = await service.complete({
-      code: 'code-1',
-      state: 'state-1',
+    await expect(
+      service.complete({ code: 'code-1', state: 'state-1' }),
+    ).rejects.toMatchObject({
+      message: GOOGLE_AUTH_FORBIDDEN,
+      status: 403,
     });
 
-    expect(authService.createOwnerUser).toHaveBeenCalledWith({
-      organizationName: 'Ada Lovelace',
-      firstName: 'Ada',
-      lastName: 'Lovelace',
-      email: 'ada@gmail.com',
-      passwordHash: null,
-    });
-    expect(accounts).toHaveLength(1);
-    expect(accounts[0]).toMatchObject({
-      userId: googleUser.id,
-      provider: 'GOOGLE',
-      providerAccountId: 'google-sub-1',
-    });
-    expect(verifyAccessToken(session.accessToken).sub).toBe(googleUser.id);
-    expect(verifyRefreshToken(session.refreshToken).sub).toBe(googleUser.id);
-    expect(session.user.email).toBe('ada@gmail.com');
+    expect(accounts).toHaveLength(0);
   });
 
   it('links a verified Google email to an existing user', async () => {
@@ -305,7 +310,6 @@ describe('GoogleAuthService', () => {
       state: 'state-1',
     });
 
-    expect(authService.createOwnerUser).not.toHaveBeenCalled();
     expect(accounts[0]).toMatchObject({
       userId: owner.id,
       providerAccountId: 'google-sub-1',
@@ -321,7 +325,6 @@ describe('GoogleAuthService', () => {
       state: 'state-1',
     });
 
-    expect(authService.createOwnerUser).not.toHaveBeenCalled();
     expect(accounts[0]).toMatchObject({
       userId: owner.id,
       providerAccountId: 'google-sub-1',
@@ -351,7 +354,6 @@ describe('GoogleAuthService', () => {
     ).rejects.toThrow(GOOGLE_AUTH_FAILED);
 
     expect(oidc.exchangeCode).not.toHaveBeenCalled();
-    expect(authService.createOwnerUser).not.toHaveBeenCalled();
   });
 
   it('rejects expired callback state', async () => {
@@ -373,27 +375,42 @@ describe('GoogleAuthService', () => {
       service.complete({ code: 'code-1', state: 'state-1' }),
     ).rejects.toThrow(GOOGLE_AUTH_FAILED);
 
-    expect(authService.createOwnerUser).not.toHaveBeenCalled();
     expect(accounts).toHaveLength(0);
     expect(prisma.oAuthAccount.create).not.toHaveBeenCalled();
   });
 
-  it('links after a create race on email without returning 409', async () => {
+  it('lets an invited user sign in and marks them active', async () => {
+    users = [{ ...invited }];
     seedPending();
-    authService.createOwnerUser.mockRejectedValue(
-      new ConflictException({
-        statusCode: 409,
-        errors: [{ field: 'email', message: 'exists' }],
-      }),
-    );
-    users = [{ ...owner, email: 'ada@gmail.com' }];
 
     const session = await service.complete({
       code: 'code-1',
       state: 'state-1',
     });
 
-    expect(session.user.id).toBe(owner.id);
-    expect(accounts[0].userId).toBe(owner.id);
+    expect(prisma.user.update).toHaveBeenCalledWith({
+      where: { id: invited.id },
+      data: { status: UserStatus.ACTIVE },
+    });
+    expect(session.user.id).toBe(invited.id);
+    expect(session.user.status).toBe(UserStatus.ACTIVE);
+    expect(accounts[0]).toMatchObject({
+      userId: invited.id,
+      providerAccountId: 'google-sub-1',
+    });
+  });
+
+  it('rejects a blocked existing user with 403', async () => {
+    users = [{ ...owner, email: 'ada@gmail.com', status: UserStatus.BLOCKED }];
+    seedPending();
+
+    await expect(
+      service.complete({ code: 'code-1', state: 'state-1' }),
+    ).rejects.toMatchObject({
+      message: GOOGLE_AUTH_FORBIDDEN,
+      status: 403,
+    });
+
+    expect(accounts).toHaveLength(0);
   });
 });

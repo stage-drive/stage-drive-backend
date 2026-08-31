@@ -11,6 +11,7 @@ import {
 } from '@nestjs/common';
 import {
   ApiBearerAuth,
+  ApiForbiddenResponse,
   ApiFoundResponse,
   ApiOkResponse,
   ApiOperation,
@@ -80,19 +81,51 @@ export class AuthController {
   @ApiOperation({
     summary: 'Завершити вхід через Google',
     description:
-      'Google викликає цей URL після згоди. Не викликайте з фронтенду самостійно.',
+      'Це не API для фронта і не для Postman/Swagger Try it out. Google сам ' +
+      'відкриває цей URL після згоди (code + state). Без валідного одноразового ' +
+      'state з GET /api/auth/google відповідь буде 401. Новий Google-акаунт ' +
+      'без існуючого користувача (Owner або запрошений email) — 403. Якщо задано ' +
+      'GOOGLE_OAUTH_SUCCESS_REDIRECT — замість JSON буде 302 на фронт ' +
+      '(токени в URL hash, не в query).',
   })
-  @ApiQuery({ name: 'code', required: false })
-  @ApiQuery({ name: 'state', required: false })
-  @ApiQuery({ name: 'error', required: false })
-  @ApiOkResponse({ type: RegisterResponseDto })
+  @ApiQuery({
+    name: 'code',
+    required: false,
+    description:
+      'Authorization code від Google. Без нього (або з error) — 401.',
+  })
+  @ApiQuery({
+    name: 'state',
+    required: false,
+    description:
+      'Одноразовий state, виданий у GET /api/auth/google і збережений у БД.',
+  })
+  @ApiQuery({
+    name: 'error',
+    required: false,
+    description:
+      'Якщо користувач відхилив згоду, Google передає error=access_denied.',
+  })
+  @ApiOkResponse({
+    type: RegisterResponseDto,
+    description:
+      'Сесія JSON. Лише якщо GOOGLE_OAUTH_SUCCESS_REDIRECT не задано.',
+  })
   @ApiFoundResponse({
     description:
-      'Якщо задано GOOGLE_OAUTH_SUCCESS_REDIRECT — 302 на фронт із токенами в hash.',
+      'GOOGLE_OAUTH_SUCCESS_REDIRECT задано: Location на фронт, токени в hash ' +
+      '(#accessToken=...&refreshToken=...).',
   })
-  @ApiUnauthorizedResponse({ description: 'Не вдалося увійти через Google.' })
+  @ApiUnauthorizedResponse({
+    description:
+      'Немає code/state, прострочений/чужий state, або Google відхилив обмін коду.',
+  })
+  @ApiForbiddenResponse({
+    description:
+      'Немає користувача з цим email (не Owner і не запрошений), або акаунт заблоковано.',
+  })
   @ApiServiceUnavailableResponse({
-    description: 'Вхід через Google не налаштовано.',
+    description: 'Немає GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET у середовищі.',
   })
   async googleCallback(
     @Query('code') code: string | undefined,

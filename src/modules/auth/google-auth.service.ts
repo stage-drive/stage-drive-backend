@@ -1,13 +1,12 @@
 import {
-  ConflictException,
+  ForbiddenException,
   Injectable,
   ServiceUnavailableException,
   UnauthorizedException,
 } from '@nestjs/common';
-import { AuthProvider } from '@prisma/client';
+import { AuthProvider, User, UserStatus } from '@prisma/client';
 import { isUniqueConstraintOn } from '../../common/prisma/unique-constraint';
 import { PrismaService } from '../../prisma/prisma.service';
-import { AuthService } from './auth.service';
 import { toAuthSession } from './auth-session';
 import { GoogleProfile } from './google-id-token';
 import { GoogleOAuthConfig } from './google-oauth.config';
@@ -15,11 +14,17 @@ import { GoogleOidcClient } from './google-oidc.client';
 import { createPkcePair, randomOAuthValue } from './google-pkce';
 
 const GOOGLE_AUTH_FAILED_MESSAGE = 'Не вдалося увійти через Google.';
+const GOOGLE_AUTH_FORBIDDEN_MESSAGE =
+  'Вхід через Google доступний лише власнику або запрошеним користувачам.';
 const AUTHORIZATION_TTL_MS = 10 * 60 * 1000;
 const GOOGLE_AUTH_URL = 'https://accounts.google.com/o/oauth2/v2/auth';
 
 function fail(): never {
   throw new UnauthorizedException(GOOGLE_AUTH_FAILED_MESSAGE);
+}
+
+function deny(): never {
+  throw new ForbiddenException(GOOGLE_AUTH_FORBIDDEN_MESSAGE);
 }
 
 @Injectable()
@@ -28,7 +33,6 @@ export class GoogleAuthService {
     private readonly prisma: PrismaService,
     private readonly config: GoogleOAuthConfig,
     private readonly oidc: GoogleOidcClient,
-    private readonly authService: AuthService,
   ) {}
 
   private ensureConfigured() {
@@ -160,16 +164,22 @@ export class GoogleAuthService {
       await this.authService.recordLogin(byEmail.id);
       return toAuthSession(byEmail);
     }
+    this.assertAllowed(byEmail);
+    await this.linkAccount(byEmail.id, profile);
+    return this.sessionFor(byEmail);
+  }
 
-    try {
-      const user = await this.authService.createOwnerUser({
-        organizationName: profile.name,
-        firstName: profile.givenName,
-        lastName: profile.familyName,
-        email: profile.email,
-        passwordHash: null,
-      });
-      await this.linkAccount(user.id, profile);
+  private assertAllowed(user: User) {
+    if (
+      user.status === UserStatus.BLOCKED ||
+      user.status === UserStatus.ARCHIVED
+    ) {
+      deny();
+    }
+  }
+
+  private async sessionFor(user: User) {
+    if (user.status !== UserStatus.INVITED) {
       return toAuthSession(user);
     } catch (error) {
       if (error instanceof ConflictException) {
@@ -185,6 +195,11 @@ export class GoogleAuthService {
       }
       fail();
     }
+    const activated = await this.prisma.user.update({
+      where: { id: user.id },
+      data: { status: UserStatus.ACTIVE },
+    });
+    return toAuthSession(activated);
   }
 
   private async linkAccount(userId: string, profile: GoogleProfile) {
