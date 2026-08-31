@@ -21,7 +21,7 @@ describe('AuthService', () => {
   let service: AuthService;
 
   const prisma = {
-    user: { findUnique: jest.fn() },
+    user: { findUnique: jest.fn(), update: jest.fn() },
     $transaction: jest.fn(),
   };
 

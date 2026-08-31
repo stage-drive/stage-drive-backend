@@ -134,6 +134,7 @@ export class GoogleAuthService {
         fail();
       }
       this.authService.assertActiveUser(existingLink.user);
+      await this.authService.recordLogin(existingLink.user.id);
       return toAuthSession(existingLink.user);
     }
 
@@ -146,6 +147,7 @@ export class GoogleAuthService {
       }
       this.authService.assertActiveUser(user);
       await this.linkAccount(user.id, profile);
+      await this.authService.recordLogin(user.id);
       return toAuthSession(user);
     }
 
@@ -155,6 +157,7 @@ export class GoogleAuthService {
     if (byEmail) {
       this.authService.assertActiveUser(byEmail);
       await this.linkAccount(byEmail.id, profile);
+      await this.authService.recordLogin(byEmail.id);
       return toAuthSession(byEmail);
     }
 
@@ -176,6 +179,7 @@ export class GoogleAuthService {
         if (raced) {
           this.authService.assertActiveUser(raced);
           await this.linkAccount(raced.id, profile);
+          await this.authService.recordLogin(raced.id);
           return toAuthSession(raced);
         }
       }

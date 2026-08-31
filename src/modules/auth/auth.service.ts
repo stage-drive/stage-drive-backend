@@ -48,6 +48,7 @@ export class AuthService {
     }
 
     this.assertActiveUser(user);
+    await this.recordLogin(user.id);
 
     return {
       accessToken: signAccessToken(user.id),
@@ -60,6 +61,13 @@ export class AuthService {
     if (user.deletedAt || user.status !== UserStatus.ACTIVE) {
       throw new UnauthorizedException(ACCOUNT_NOT_ACTIVE_MESSAGE);
     }
+  }
+
+  async recordLogin(userId: string): Promise<void> {
+    await this.prisma.user.update({
+      where: { id: userId },
+      data: { lastLoginAt: new Date() },
+    });
   }
 
   async createOwnerUser(input: CreateOwnerInput): Promise<User> {
@@ -96,6 +104,7 @@ export class AuthService {
               phone,
               role: UserRole.OWNER,
               status: 'ACTIVE',
+              lastLoginAt: new Date()
             },
           });
         });
