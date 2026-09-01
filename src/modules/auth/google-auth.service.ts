@@ -9,6 +9,7 @@ import { isUniqueConstraintOn } from '../../common/prisma/unique-constraint';
 import { PrismaService } from '../../prisma/prisma.service';
 import { assertSignInAllowed } from './auth-access';
 import { toAuthSession } from './auth-session';
+import { AuthService } from './auth.service';
 import { GoogleProfile } from './google-id-token';
 import { GoogleOAuthConfig } from './google-oauth.config';
 import { GoogleOidcClient } from './google-oidc.client';
@@ -34,6 +35,7 @@ export class GoogleAuthService {
     private readonly prisma: PrismaService,
     private readonly config: GoogleOAuthConfig,
     private readonly oidc: GoogleOidcClient,
+    private readonly authService: AuthService,
   ) {}
 
   private ensureConfigured() {
@@ -46,6 +48,17 @@ export class GoogleAuthService {
 
   async start(userId?: string): Promise<string> {
     this.ensureConfigured();
+
+    if (userId) {
+      const user = await this.prisma.user.findUnique({
+        where: { id: userId },
+      });
+      if (!user) {
+        fail();
+      }
+      this.assertAllowed(user);
+    }
+
     await this.prisma.oAuthAuthorization.deleteMany({
       where: { expiresAt: { lt: new Date() } },
     });
@@ -128,7 +141,9 @@ export class GoogleAuthService {
         fail();
       }
       this.assertAllowed(existingLink.user);
-      return this.sessionFor(existingLink.user);
+      const session = await this.sessionFor(existingLink.user);
+      await this.authService.recordLogin(existingLink.user.id);
+      return session;
     }
 
     if (pending.userId) {
@@ -140,7 +155,9 @@ export class GoogleAuthService {
       }
       this.assertAllowed(user);
       await this.linkAccount(user.id, profile);
-      return this.sessionFor(user);
+      const session = await this.sessionFor(user);
+      await this.authService.recordLogin(user.id);
+      return session;
     }
 
     const byEmail = await this.prisma.user.findUnique({
@@ -151,7 +168,9 @@ export class GoogleAuthService {
     }
     this.assertAllowed(byEmail);
     await this.linkAccount(byEmail.id, profile);
-    return this.sessionFor(byEmail);
+    const session = await this.sessionFor(byEmail);
+    await this.authService.recordLogin(byEmail.id);
+    return session;
   }
 
   private assertAllowed(user: User) {

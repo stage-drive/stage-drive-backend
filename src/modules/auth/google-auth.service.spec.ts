@@ -2,6 +2,7 @@ import { UnauthorizedException } from '@nestjs/common';
 import { Prisma, UserRole, UserStatus } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
 import { ACCESS_DENIED_MESSAGE } from './auth-access';
+import { AuthService } from './auth.service';
 import { GoogleAuthService } from './google-auth.service';
 import { GoogleProfile } from './google-id-token';
 import { GoogleOAuthConfig } from './google-oauth.config';
@@ -24,6 +25,7 @@ const owner = {
   status: UserStatus.ACTIVE as UserStatus,
   organizationId: 'org-1',
   lastLoginAt: null as Date | null,
+  deletedAt: null as Date | null,
   createdAt: new Date('2026-01-01'),
   updatedAt: new Date('2026-01-01'),
 };
@@ -91,6 +93,9 @@ describe('GoogleAuthService', () => {
     user: { findUnique: jest.Mock; update: jest.Mock };
   };
   let oidc: { exchangeCode: jest.Mock; verifyIdToken: jest.Mock };
+  let authService: {
+    recordLogin: jest.Mock;
+  };
 
   beforeEach(() => {
     authorizations = new Map();
@@ -213,6 +218,9 @@ describe('GoogleAuthService', () => {
       exchangeCode: jest.fn().mockResolvedValue('id-token'),
       verifyIdToken: jest.fn().mockResolvedValue(profile),
     };
+    authService = {
+      recordLogin: jest.fn().mockResolvedValue(undefined),
+    };
 
     const config: Pick<
       GoogleOAuthConfig,
@@ -231,8 +239,9 @@ describe('GoogleAuthService', () => {
 
     service = new GoogleAuthService(
       prisma as unknown as PrismaService,
-      config,
+      config as GoogleOAuthConfig,
       oidc as unknown as GoogleOidcClient,
+      authService as unknown as AuthService,
     );
   });
 

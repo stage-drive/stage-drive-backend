@@ -25,6 +25,7 @@ type TestUser = {
   status: 'ACTIVE';
   organizationId: string;
   lastLoginAt: Date | null;
+  deletedAt: Date | null;
   createdAt: Date;
   updatedAt: Date;
 };
@@ -63,6 +64,7 @@ describe('API (e2e)', () => {
     status: 'ACTIVE',
     organizationId: organization.id,
     lastLoginAt: null,
+    deletedAt: null,
     createdAt: new Date(),
     updatedAt: new Date(),
   };
@@ -70,6 +72,7 @@ describe('API (e2e)', () => {
   const prismaMock = {
     $connect: jest.fn(),
     $disconnect: jest.fn(),
+    $queryRaw: jest.fn(),
     user: {
       findUnique: jest.fn(),
       update: jest.fn(),
@@ -96,6 +99,8 @@ describe('API (e2e)', () => {
   });
 
   beforeEach(async () => {
+    prismaMock.$queryRaw.mockReset();
+    prismaMock.$queryRaw.mockResolvedValue([{ '?column?': 1 }]);
     prismaMock.user.findUnique.mockReset();
     prismaMock.user.update.mockReset();
     prismaMock.organization.findUnique.mockReset();
@@ -144,11 +149,16 @@ describe('API (e2e)', () => {
     await app.close();
   });
 
-  it('GET / returns Hello World', () => {
-    return request(app.getHttpServer())
-      .get('/')
-      .expect(200)
-      .expect('Hello World!');
+  it('GET / reports healthy when the database is reachable', async () => {
+    const response = await request(app.getHttpServer()).get('/').expect(200);
+
+    expect(response.body).toEqual({ status: 'ok', database: 'up' });
+  });
+
+  it('GET / returns 503 when the database is unreachable', async () => {
+    prismaMock.$queryRaw.mockRejectedValueOnce(new Error('connection refused'));
+
+    await request(app.getHttpServer()).get('/').expect(503);
   });
 
   it('OPTIONS preflight from Vite origin is allowed', () => {

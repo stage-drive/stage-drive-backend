@@ -7,9 +7,11 @@ export const ACCESS_DENIED_MESSAGE =
 
 export function assertSignInAllowed(user: {
   status: UserStatus;
+  deletedAt?: Date | null;
   organization?: { status: OrganizationStatus } | null;
 }): void {
   if (
+    user.deletedAt ||
     user.status === UserStatus.BLOCKED ||
     user.status === UserStatus.ARCHIVED ||
     user.organization?.status === OrganizationStatus.BLOCKED

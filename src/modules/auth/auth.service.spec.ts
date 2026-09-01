@@ -45,6 +45,7 @@ describe('AuthService', () => {
       id: 'user-1',
       passwordHash: 'stored-hash',
       status: UserStatus.ACTIVE,
+      deletedAt: null as Date | null,
       organization: { status: 'ACTIVE' },
     };
 
@@ -157,6 +158,21 @@ describe('AuthService', () => {
       });
     });
 
+    it('rejects a soft-deleted user with a matching password using 403', async () => {
+      prisma.user.findUnique.mockResolvedValue({
+        ...activeUser,
+        deletedAt: new Date('2026-01-01'),
+      });
+      (bcrypt.compare as jest.Mock).mockResolvedValue(true);
+
+      await expect(
+        service.login('owner@example.com', 'Password1'),
+      ).rejects.toMatchObject({
+        message: ACCESS_DENIED_MESSAGE,
+        status: 403,
+      });
+    });
+
     it('normalizes email casing/whitespace before lookup', async () => {
       prisma.user.findUnique.mockResolvedValue(activeUser);
       (bcrypt.compare as jest.Mock).mockResolvedValue(true);
@@ -195,6 +211,10 @@ describe('AuthService', () => {
 
       const result = await service.login('owner@example.com', 'Password1');
 
+      expect(prisma.user.update).toHaveBeenCalledWith({
+        where: { id: 'user-1' },
+        data: { lastLoginAt: expect.any(Date) },
+      });
       expect(verifyAccessToken(result.accessToken).sub).toBe('user-1');
       expect(verifyRefreshToken(result.refreshToken).sub).toBe('user-1');
       expect(result.tokenType).toBe('Bearer');

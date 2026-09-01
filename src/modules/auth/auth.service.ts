@@ -19,6 +19,7 @@ import { signAccessToken, signRefreshToken } from './token';
 const BCRYPT_ROUNDS = 10;
 const MAX_SLUG_ATTEMPTS = 5;
 const EMAIL_ALREADY_EXISTS_MESSAGE = 'Користувач з таким email уже існує.';
+const ACCOUNT_NOT_ACTIVE_MESSAGE = 'Обліковий запис заблоковано або неактивний.';
 
 export type CreateOwnerInput = {
   organizationName: string;
@@ -60,11 +61,26 @@ export class AuthService {
       });
     }
 
+    await this.recordLogin(user.id);
+
     return {
       accessToken: signAccessToken(user.id),
       refreshToken: signRefreshToken(user.id),
       tokenType: 'Bearer',
     };
+  }
+
+  assertActiveUser(user: Pick<User, 'status' | 'deletedAt'>): void {
+    if (user.deletedAt || user.status !== UserStatus.ACTIVE) {
+      throw new UnauthorizedException(ACCOUNT_NOT_ACTIVE_MESSAGE);
+    }
+  }
+
+  async recordLogin(userId: string): Promise<void> {
+    await this.prisma.user.update({
+      where: { id: userId },
+      data: { lastLoginAt: new Date() },
+    });
   }
 
   async createOwnerUser(input: CreateOwnerInput): Promise<User> {
@@ -101,6 +117,7 @@ export class AuthService {
               phone,
               role: UserRole.OWNER,
               status: 'ACTIVE',
+              lastLoginAt: new Date(),
             },
           });
         });
