@@ -7,6 +7,7 @@ import {
 import { AuthProvider, User, UserStatus } from '@prisma/client';
 import { isUniqueConstraintOn } from '../../common/prisma/unique-constraint';
 import { PrismaService } from '../../prisma/prisma.service';
+import { assertSignInAllowed } from './auth-access';
 import { toAuthSession } from './auth-session';
 import { GoogleProfile } from './google-id-token';
 import { GoogleOAuthConfig } from './google-oauth.config';
@@ -154,12 +155,7 @@ export class GoogleAuthService {
   }
 
   private assertAllowed(user: User) {
-    if (
-      user.status === UserStatus.BLOCKED ||
-      user.status === UserStatus.ARCHIVED
-    ) {
-      deny();
-    }
+    assertSignInAllowed(user);
   }
 
   private async sessionFor(user: User) {

@@ -3,10 +3,14 @@ import {
   Injectable,
   UnauthorizedException,
 } from '@nestjs/common';
-import { User, UserRole } from '@prisma/client';
+import { User, UserRole, UserStatus } from '@prisma/client';
 import * as bcrypt from 'bcrypt';
 import { isUniqueConstraintOn } from '../../common/prisma/unique-constraint';
 import { PrismaService } from '../../prisma/prisma.service';
+import {
+  assertSignInAllowed,
+  INVALID_CREDENTIALS_MESSAGE,
+} from './auth-access';
 import { toAuthSession } from './auth-session';
 import { RegisterDto } from './auth.dto';
 import { randomSlugSuffix, slugify } from './slug';
@@ -31,19 +35,29 @@ export class AuthService {
 
   async login(email: string, password: string) {
     if (!email || !password) {
-      throw new UnauthorizedException('Email and password are required');
+      throw new UnauthorizedException(INVALID_CREDENTIALS_MESSAGE);
     }
 
     const user = await this.prisma.user.findUnique({
       where: { email: email.trim().toLowerCase() },
+      include: { organization: true },
     });
     if (!user?.passwordHash) {
-      throw new UnauthorizedException('Invalid credentials');
+      throw new UnauthorizedException(INVALID_CREDENTIALS_MESSAGE);
     }
 
     const matches = await bcrypt.compare(password, user.passwordHash);
     if (!matches) {
-      throw new UnauthorizedException('Invalid credentials');
+      throw new UnauthorizedException(INVALID_CREDENTIALS_MESSAGE);
+    }
+
+    assertSignInAllowed(user);
+
+    if (user.status === UserStatus.INVITED) {
+      await this.prisma.user.update({
+        where: { id: user.id },
+        data: { status: UserStatus.ACTIVE },
+      });
     }
 
     return {

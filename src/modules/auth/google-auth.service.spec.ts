@@ -1,6 +1,7 @@
 import { UnauthorizedException } from '@nestjs/common';
 import { Prisma, UserRole, UserStatus } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
+import { ACCESS_DENIED_MESSAGE } from './auth-access';
 import { GoogleAuthService } from './google-auth.service';
 import { GoogleProfile } from './google-id-token';
 import { GoogleOAuthConfig } from './google-oauth.config';
@@ -393,7 +394,7 @@ describe('GoogleAuthService', () => {
     await expect(
       service.complete({ code: 'code-1', state: 'state-1' }),
     ).rejects.toMatchObject({
-      message: GOOGLE_AUTH_FORBIDDEN,
+      message: ACCESS_DENIED_MESSAGE,
       status: 403,
     });
 

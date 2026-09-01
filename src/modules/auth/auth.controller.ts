@@ -43,7 +43,13 @@ export class AuthController {
 
   @Post('login')
   @ApiOkResponse({ type: LoginResponseDto })
-  @ApiUnauthorizedResponse({ description: 'Невірний email або пароль' })
+  @ApiUnauthorizedResponse({
+    description: 'Невірний email або пароль (Invalid credentials).',
+  })
+  @ApiForbiddenResponse({
+    description:
+      'Користувача знайдено, але доступ заборонено: акаунт заблоковано/архівовано або організація заблокована.',
+  })
   async login(@Body() body: LoginDto) {
     return this.authService.login(body.email ?? '', body.password ?? '');
   }
@@ -122,7 +128,8 @@ export class AuthController {
   })
   @ApiForbiddenResponse({
     description:
-      'Немає користувача з цим email (не Owner і не запрошений), або акаунт заблоковано.',
+      'Google підтвердив особу, але доступу немає: немає користувача з цим email ' +
+      '(не Owner і не запрошений), акаунт заблоковано/архівовано.',
   })
   @ApiServiceUnavailableResponse({
     description: 'Немає GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET у середовищі.',
