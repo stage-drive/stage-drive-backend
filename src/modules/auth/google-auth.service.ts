@@ -7,7 +7,9 @@ import {
 import { AuthProvider, User, UserStatus } from '@prisma/client';
 import { isUniqueConstraintOn } from '../../common/prisma/unique-constraint';
 import { PrismaService } from '../../prisma/prisma.service';
+import { assertSignInAllowed } from './auth-access';
 import { toAuthSession } from './auth-session';
+import { AuthService } from './auth.service';
 import { GoogleProfile } from './google-id-token';
 import { GoogleOAuthConfig } from './google-oauth.config';
 import { GoogleOidcClient } from './google-oidc.client';
@@ -33,6 +35,7 @@ export class GoogleAuthService {
     private readonly prisma: PrismaService,
     private readonly config: GoogleOAuthConfig,
     private readonly oidc: GoogleOidcClient,
+    private readonly authService: AuthService,
   ) {}
 
   private ensureConfigured() {
@@ -53,7 +56,7 @@ export class GoogleAuthService {
       if (!user) {
         fail();
       }
-      this.authService.assertActiveUser(user);
+      this.assertAllowed(user);
     }
 
     await this.prisma.oAuthAuthorization.deleteMany({
@@ -137,9 +140,10 @@ export class GoogleAuthService {
       if (pending.userId && pending.userId !== existingLink.userId) {
         fail();
       }
-      this.authService.assertActiveUser(existingLink.user);
+      this.assertAllowed(existingLink.user);
+      const session = await this.sessionFor(existingLink.user);
       await this.authService.recordLogin(existingLink.user.id);
-      return toAuthSession(existingLink.user);
+      return session;
     }
 
     if (pending.userId) {
@@ -149,51 +153,33 @@ export class GoogleAuthService {
       if (!user) {
         fail();
       }
-      this.authService.assertActiveUser(user);
+      this.assertAllowed(user);
       await this.linkAccount(user.id, profile);
+      const session = await this.sessionFor(user);
       await this.authService.recordLogin(user.id);
-      return toAuthSession(user);
+      return session;
     }
 
     const byEmail = await this.prisma.user.findUnique({
       where: { email: profile.email },
     });
-    if (byEmail) {
-      this.authService.assertActiveUser(byEmail);
-      await this.linkAccount(byEmail.id, profile);
-      await this.authService.recordLogin(byEmail.id);
-      return toAuthSession(byEmail);
+    if (!byEmail) {
+      deny();
     }
     this.assertAllowed(byEmail);
     await this.linkAccount(byEmail.id, profile);
-    return this.sessionFor(byEmail);
+    const session = await this.sessionFor(byEmail);
+    await this.authService.recordLogin(byEmail.id);
+    return session;
   }
 
   private assertAllowed(user: User) {
-    if (
-      user.status === UserStatus.BLOCKED ||
-      user.status === UserStatus.ARCHIVED
-    ) {
-      deny();
-    }
+    assertSignInAllowed(user);
   }
 
   private async sessionFor(user: User) {
     if (user.status !== UserStatus.INVITED) {
       return toAuthSession(user);
-    } catch (error) {
-      if (error instanceof ConflictException) {
-        const raced = await this.prisma.user.findUnique({
-          where: { email: profile.email },
-        });
-        if (raced) {
-          this.authService.assertActiveUser(raced);
-          await this.linkAccount(raced.id, profile);
-          await this.authService.recordLogin(raced.id);
-          return toAuthSession(raced);
-        }
-      }
-      fail();
     }
     const activated = await this.prisma.user.update({
       where: { id: user.id },

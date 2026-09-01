@@ -1,6 +1,8 @@
 import { UnauthorizedException } from '@nestjs/common';
 import { Prisma, UserRole, UserStatus } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
+import { ACCESS_DENIED_MESSAGE } from './auth-access';
+import { AuthService } from './auth.service';
 import { GoogleAuthService } from './google-auth.service';
 import { GoogleProfile } from './google-id-token';
 import { GoogleOAuthConfig } from './google-oauth.config';
@@ -23,6 +25,7 @@ const owner = {
   status: UserStatus.ACTIVE as UserStatus,
   organizationId: 'org-1',
   lastLoginAt: null as Date | null,
+  deletedAt: null as Date | null,
   createdAt: new Date('2026-01-01'),
   updatedAt: new Date('2026-01-01'),
 };
@@ -91,8 +94,6 @@ describe('GoogleAuthService', () => {
   };
   let oidc: { exchangeCode: jest.Mock; verifyIdToken: jest.Mock };
   let authService: {
-    createOwnerUser: jest.Mock;
-    assertActiveUser: jest.Mock;
     recordLogin: jest.Mock;
   };
 
@@ -218,12 +219,6 @@ describe('GoogleAuthService', () => {
       verifyIdToken: jest.fn().mockResolvedValue(profile),
     };
     authService = {
-      createOwnerUser: jest.fn().mockResolvedValue(googleUser),
-      assertActiveUser: jest.fn((user: { status: string }) => {
-        if (user.status !== 'ACTIVE') {
-          throw new UnauthorizedException(GOOGLE_AUTH_FAILED);
-        }
-      }),
       recordLogin: jest.fn().mockResolvedValue(undefined),
     };
 
@@ -244,8 +239,9 @@ describe('GoogleAuthService', () => {
 
     service = new GoogleAuthService(
       prisma as unknown as PrismaService,
-      config,
+      config as GoogleOAuthConfig,
       oidc as unknown as GoogleOidcClient,
+      authService as unknown as AuthService,
     );
   });
 
@@ -407,7 +403,7 @@ describe('GoogleAuthService', () => {
     await expect(
       service.complete({ code: 'code-1', state: 'state-1' }),
     ).rejects.toMatchObject({
-      message: GOOGLE_AUTH_FORBIDDEN,
+      message: ACCESS_DENIED_MESSAGE,
       status: 403,
     });
 

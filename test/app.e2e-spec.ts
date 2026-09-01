@@ -6,6 +6,10 @@ import request from 'supertest';
 import { App } from 'supertest/types';
 import { AppModule } from '../src/app.module';
 import { configureApp } from '../src/configure-app';
+import {
+  ACCESS_DENIED_MESSAGE,
+  INVALID_CREDENTIALS_MESSAGE,
+} from '../src/modules/auth/auth-access';
 import { signAccessToken } from '../src/modules/auth/token';
 import { PrismaService } from '../src/prisma/prisma.service';
 
@@ -21,6 +25,7 @@ type TestUser = {
   status: 'ACTIVE';
   organizationId: string;
   lastLoginAt: Date | null;
+  deletedAt: Date | null;
   createdAt: Date;
   updatedAt: Date;
 };
@@ -59,6 +64,7 @@ describe('API (e2e)', () => {
     status: 'ACTIVE',
     organizationId: organization.id,
     lastLoginAt: null,
+    deletedAt: null,
     createdAt: new Date(),
     updatedAt: new Date(),
   };
@@ -178,6 +184,51 @@ describe('API (e2e)', () => {
     expect(
       paths['/api/auth/google/callback'] ?? paths['/auth/google/callback'],
     ).toBeDefined();
+  });
+
+  it('POST /api/auth/login with a wrong password returns 401', async () => {
+    const response = await request(app.getHttpServer())
+      .post('/api/auth/login')
+      .send({ email: owner.email, password: 'WrongPassword' })
+      .expect(401);
+
+    expect(response.body).toMatchObject({
+      statusCode: 401,
+      message: INVALID_CREDENTIALS_MESSAGE,
+    });
+  });
+
+  it('POST /api/auth/login with an unknown email returns 401', async () => {
+    const response = await request(app.getHttpServer())
+      .post('/api/auth/login')
+      .send({ email: 'missing@example.com', password: 'Password1' })
+      .expect(401);
+
+    expect(response.body).toMatchObject({
+      statusCode: 401,
+      message: INVALID_CREDENTIALS_MESSAGE,
+    });
+  });
+
+  it('POST /api/auth/login for a blocked user returns 403', async () => {
+    prismaMock.user.findUnique.mockImplementation(
+      (args: { where: { id?: string; email?: string } }) => {
+        if (args.where.id === owner.id || args.where.email === owner.email) {
+          return Promise.resolve({ ...owner, status: 'BLOCKED' });
+        }
+        return Promise.resolve(null);
+      },
+    );
+
+    const response = await request(app.getHttpServer())
+      .post('/api/auth/login')
+      .send({ email: owner.email, password: 'Password1' })
+      .expect(403);
+
+    expect(response.body).toMatchObject({
+      statusCode: 403,
+      message: ACCESS_DENIED_MESSAGE,
+    });
   });
 
   it('GET /api/users/me without token returns 401', () => {
