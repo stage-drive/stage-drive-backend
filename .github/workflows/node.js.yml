@@ -7,10 +7,6 @@ on:
 jobs:
   build-and-test:
     runs-on: ubuntu-latest
-    env:
-      AUTH_SECRET: test-auth-secret
-      # Unit tests construct PrismaService but do not open a live connection.
-      DATABASE_URL: postgresql://placeholder:placeholder@localhost:5432/placeholder
 
     steps:
       - name: Checkout
