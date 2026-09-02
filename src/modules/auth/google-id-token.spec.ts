@@ -1,11 +1,17 @@
-import { createLocalJWKSet, exportJWK, generateKeyPair, SignJWT } from 'jose';
+import {
+  createLocalJWKSet,
+  exportJWK,
+  generateKeyPair,
+  type KeyLike,
+  SignJWT,
+} from 'jose';
 import { verifyGoogleIdToken } from './google-id-token';
 
 const CLIENT_ID = 'test-google-client-id';
 const NONCE = 'test-nonce';
 
 async function signedIdToken(
-  privateKey: CryptoKey,
+  privateKey: KeyLike,
   claims: Record<string, unknown> = {},
   options?: {
     audience?: string;
@@ -34,7 +40,7 @@ async function signedIdToken(
 }
 
 describe('verifyGoogleIdToken', () => {
-  let privateKey: CryptoKey;
+  let privateKey: KeyLike;
   let jwks: ReturnType<typeof createLocalJWKSet>;
 
   beforeAll(async () => {

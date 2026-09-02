@@ -2,8 +2,8 @@ import { Injectable } from '@nestjs/common';
 
 const DEFAULT_REDIRECT_URI = 'http://localhost:3000/api/auth/google/callback';
 
-function readEnv(name: string): string {
-  return process.env[name]?.trim() ?? '';
+function readEnv(key: string): string {
+  return (process.env[key] ?? '').trim();
 }
 
 @Injectable()
@@ -17,7 +17,6 @@ export class GoogleOAuthConfig {
   constructor() {
     const clientId = readEnv('GOOGLE_CLIENT_ID');
     const clientSecret = readEnv('GOOGLE_CLIENT_SECRET');
-    const redirectUri = readEnv('GOOGLE_REDIRECT_URI') || DEFAULT_REDIRECT_URI;
     const hasCredentials = Boolean(clientId || clientSecret);
 
     if (!hasCredentials) {
@@ -42,8 +41,7 @@ export class GoogleOAuthConfig {
     this.enabled = true;
     this.clientId = clientId;
     this.clientSecret = clientSecret;
-    this.redirectUri = redirectUri;
-    this.successRedirect =
-      process.env.GOOGLE_OAUTH_SUCCESS_REDIRECT?.trim() || null;
+    this.redirectUri = readEnv('GOOGLE_REDIRECT_URI') || DEFAULT_REDIRECT_URI;
+    this.successRedirect = readEnv('GOOGLE_OAUTH_SUCCESS_REDIRECT') || null;
   }
 }
