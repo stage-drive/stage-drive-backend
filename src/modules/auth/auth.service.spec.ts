@@ -1,8 +1,12 @@
-import { ConflictException, UnauthorizedException } from '@nestjs/common';
+import { ConflictException, ForbiddenException } from '@nestjs/common';
 import { Test, TestingModule } from '@nestjs/testing';
-import { Prisma, UserRole } from '@prisma/client';
+import { Prisma, UserRole, UserStatus } from '@prisma/client';
 import * as bcrypt from 'bcrypt';
 import { PrismaService } from '../../prisma/prisma.service';
+import {
+  ACCESS_DENIED_MESSAGE,
+  INVALID_CREDENTIALS_MESSAGE,
+} from './auth-access';
 import { RegisterDto } from './auth.dto';
 import { AuthService } from './auth.service';
 import { verifyAccessToken, verifyRefreshToken } from './token';
@@ -21,7 +25,7 @@ describe('AuthService', () => {
   let service: AuthService;
 
   const prisma = {
-    user: { findUnique: jest.fn() },
+    user: { findUnique: jest.fn(), update: jest.fn() },
     $transaction: jest.fn(),
   };
 
@@ -37,12 +41,24 @@ describe('AuthService', () => {
   });
 
   describe('login', () => {
+    const activeUser = {
+      id: 'user-1',
+      passwordHash: 'stored-hash',
+      status: UserStatus.ACTIVE,
+      deletedAt: null as Date | null,
+      organization: { status: 'ACTIVE' },
+    };
+
     it('rejects when email or password is missing', async () => {
-      await expect(service.login('', 'password')).rejects.toThrow(
-        UnauthorizedException,
-      );
-      await expect(service.login('owner@example.com', '')).rejects.toThrow(
-        UnauthorizedException,
+      await expect(service.login('', 'password')).rejects.toMatchObject({
+        message: INVALID_CREDENTIALS_MESSAGE,
+        status: 401,
+      });
+      await expect(service.login('owner@example.com', '')).rejects.toMatchObject(
+        {
+          message: INVALID_CREDENTIALS_MESSAGE,
+          status: 401,
+        },
       );
     });
 
@@ -51,56 +67,154 @@ describe('AuthService', () => {
 
       await expect(
         service.login('missing@example.com', 'Password1'),
-      ).rejects.toThrow(UnauthorizedException);
+      ).rejects.toMatchObject({
+        message: INVALID_CREDENTIALS_MESSAGE,
+        status: 401,
+      });
     });
 
     it('rejects a Google-only user without a password', async () => {
       prisma.user.findUnique.mockResolvedValue({
-        id: 'user-1',
+        ...activeUser,
         passwordHash: null,
       });
 
       await expect(
         service.login('owner@example.com', 'Password1'),
-      ).rejects.toThrow(UnauthorizedException);
+      ).rejects.toMatchObject({
+        message: INVALID_CREDENTIALS_MESSAGE,
+        status: 401,
+      });
       expect(bcrypt.compare).not.toHaveBeenCalled();
     });
 
     it('rejects when the password does not match', async () => {
+      prisma.user.findUnique.mockResolvedValue(activeUser);
+      (bcrypt.compare as jest.Mock).mockResolvedValue(false);
+
+      await expect(
+        service.login('owner@example.com', 'WrongPassword'),
+      ).rejects.toMatchObject({
+        message: INVALID_CREDENTIALS_MESSAGE,
+        status: 401,
+      });
+    });
+
+    it('rejects a blocked user with a matching password using 403', async () => {
       prisma.user.findUnique.mockResolvedValue({
-        id: 'user-1',
-        passwordHash: 'stored-hash',
+        ...activeUser,
+        status: UserStatus.BLOCKED,
+      });
+      (bcrypt.compare as jest.Mock).mockResolvedValue(true);
+
+      await expect(
+        service.login('owner@example.com', 'Password1'),
+      ).rejects.toMatchObject({
+        message: ACCESS_DENIED_MESSAGE,
+        status: 403,
+      });
+      expect(prisma.user.update).not.toHaveBeenCalled();
+    });
+
+    it('rejects an archived user with a matching password using 403', async () => {
+      prisma.user.findUnique.mockResolvedValue({
+        ...activeUser,
+        status: UserStatus.ARCHIVED,
+      });
+      (bcrypt.compare as jest.Mock).mockResolvedValue(true);
+
+      await expect(
+        service.login('owner@example.com', 'Password1'),
+      ).rejects.toBeInstanceOf(ForbiddenException);
+    });
+
+    it('rejects a user from a blocked organization using 403', async () => {
+      prisma.user.findUnique.mockResolvedValue({
+        ...activeUser,
+        organization: { status: 'BLOCKED' },
+      });
+      (bcrypt.compare as jest.Mock).mockResolvedValue(true);
+
+      await expect(
+        service.login('owner@example.com', 'Password1'),
+      ).rejects.toMatchObject({
+        message: ACCESS_DENIED_MESSAGE,
+        status: 403,
+      });
+    });
+
+    it('still returns 401 when a blocked user enters the wrong password', async () => {
+      prisma.user.findUnique.mockResolvedValue({
+        ...activeUser,
+        status: UserStatus.BLOCKED,
       });
       (bcrypt.compare as jest.Mock).mockResolvedValue(false);
 
       await expect(
         service.login('owner@example.com', 'WrongPassword'),
-      ).rejects.toThrow(UnauthorizedException);
+      ).rejects.toMatchObject({
+        message: INVALID_CREDENTIALS_MESSAGE,
+        status: 401,
+      });
+    });
+
+    it('rejects a soft-deleted user with a matching password using 403', async () => {
+      prisma.user.findUnique.mockResolvedValue({
+        ...activeUser,
+        deletedAt: new Date('2026-01-01'),
+      });
+      (bcrypt.compare as jest.Mock).mockResolvedValue(true);
+
+      await expect(
+        service.login('owner@example.com', 'Password1'),
+      ).rejects.toMatchObject({
+        message: ACCESS_DENIED_MESSAGE,
+        status: 403,
+      });
     });
 
     it('normalizes email casing/whitespace before lookup', async () => {
-      prisma.user.findUnique.mockResolvedValue({
-        id: 'user-1',
-        passwordHash: 'stored-hash',
-      });
+      prisma.user.findUnique.mockResolvedValue(activeUser);
       (bcrypt.compare as jest.Mock).mockResolvedValue(true);
 
       await service.login('  Owner@Example.com ', 'Password1');
 
       expect(prisma.user.findUnique).toHaveBeenCalledWith({
         where: { email: 'owner@example.com' },
+        include: { organization: true },
       });
     });
 
-    it('returns a token pair on success', async () => {
+    it('activates an invited user after a successful password check', async () => {
       prisma.user.findUnique.mockResolvedValue({
-        id: 'user-1',
-        passwordHash: 'stored-hash',
+        ...activeUser,
+        status: UserStatus.INVITED,
+      });
+      prisma.user.update.mockResolvedValue({
+        ...activeUser,
+        status: UserStatus.ACTIVE,
       });
       (bcrypt.compare as jest.Mock).mockResolvedValue(true);
 
       const result = await service.login('owner@example.com', 'Password1');
 
+      expect(prisma.user.update).toHaveBeenCalledWith({
+        where: { id: 'user-1' },
+        data: { status: UserStatus.ACTIVE },
+      });
+      expect(verifyAccessToken(result.accessToken).sub).toBe('user-1');
+    });
+
+    it('returns a token pair on success', async () => {
+      prisma.user.findUnique.mockResolvedValue(activeUser);
+      (bcrypt.compare as jest.Mock).mockResolvedValue(true);
+
+      const result = await service.login('owner@example.com', 'Password1');
+
+      expect(prisma.user.update).toHaveBeenCalledWith({
+        where: { id: 'user-1' },
+        data: { lastLoginAt: expect.any(Date) },
+      });
       expect(verifyAccessToken(result.accessToken).sub).toBe('user-1');
       expect(verifyRefreshToken(result.refreshToken).sub).toBe('user-1');
       expect(result.tokenType).toBe('Bearer');

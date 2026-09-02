@@ -1,6 +1,10 @@
 import { Controller, Get } from '@nestjs/common';
-import { ApiOkResponse, ApiTags } from '@nestjs/swagger';
-import { AppService } from './app.service';
+import {
+  ApiOkResponse,
+  ApiServiceUnavailableResponse,
+  ApiTags,
+} from '@nestjs/swagger';
+import { AppService, HealthStatus } from './app.service';
 
 @ApiTags('health')
 @Controller()
@@ -8,8 +12,9 @@ export class AppController {
   constructor(private readonly appService: AppService) {}
 
   @Get()
-  @ApiOkResponse({ type: String, description: 'Перевірка, що сервер запущено' })
-  getHello(): string {
-    return this.appService.getHello();
+  @ApiOkResponse({ description: 'Сервер запущено, БД доступна' })
+  @ApiServiceUnavailableResponse({ description: "Немає з'єднання з БД" })
+  getHealth(): Promise<HealthStatus> {
+    return this.appService.getHealth();
   }
 }

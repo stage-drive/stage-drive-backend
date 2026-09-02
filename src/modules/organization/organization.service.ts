@@ -58,6 +58,13 @@ export class OrganizationService {
     return toPublicOrganization(updated);
   }
 
+  async deleteOrganization(user: User): Promise<void> {
+    await this.prisma.organization.update({
+      where: { id: user.organizationId },
+      data: { deletedAt: new Date() },
+    });
+  }
+
   private deleteLocalUpload(url?: string | null) {
     if (!url?.startsWith('/uploads/')) {
       return;

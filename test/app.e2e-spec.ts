@@ -6,6 +6,10 @@ import request from 'supertest';
 import { App } from 'supertest/types';
 import { AppModule } from '../src/app.module';
 import { configureApp } from '../src/configure-app';
+import {
+  ACCESS_DENIED_MESSAGE,
+  INVALID_CREDENTIALS_MESSAGE,
+} from '../src/modules/auth/auth-access';
 import { signAccessToken } from '../src/modules/auth/token';
 import { PrismaService } from '../src/prisma/prisma.service';
 
@@ -21,6 +25,7 @@ type TestUser = {
   status: 'ACTIVE';
   organizationId: string;
   lastLoginAt: Date | null;
+  deletedAt: Date | null;
   createdAt: Date;
   updatedAt: Date;
 };
@@ -59,6 +64,7 @@ describe('API (e2e)', () => {
     status: 'ACTIVE',
     organizationId: organization.id,
     lastLoginAt: null,
+    deletedAt: null,
     createdAt: new Date(),
     updatedAt: new Date(),
   };
@@ -66,6 +72,7 @@ describe('API (e2e)', () => {
   const prismaMock = {
     $connect: jest.fn(),
     $disconnect: jest.fn(),
+    $queryRaw: jest.fn(),
     user: {
       findUnique: jest.fn(),
       update: jest.fn(),
@@ -92,6 +99,8 @@ describe('API (e2e)', () => {
   });
 
   beforeEach(async () => {
+    prismaMock.$queryRaw.mockReset();
+    prismaMock.$queryRaw.mockResolvedValue([{ '?column?': 1 }]);
     prismaMock.user.findUnique.mockReset();
     prismaMock.user.update.mockReset();
     prismaMock.organization.findUnique.mockReset();
@@ -140,11 +149,16 @@ describe('API (e2e)', () => {
     await app.close();
   });
 
-  it('GET / returns Hello World', () => {
-    return request(app.getHttpServer())
-      .get('/')
-      .expect(200)
-      .expect('Hello World!');
+  it('GET / reports healthy when the database is reachable', async () => {
+    const response = await request(app.getHttpServer()).get('/').expect(200);
+
+    expect(response.body).toEqual({ status: 'ok', database: 'up' });
+  });
+
+  it('GET / returns 503 when the database is unreachable', async () => {
+    prismaMock.$queryRaw.mockRejectedValueOnce(new Error('connection refused'));
+
+    await request(app.getHttpServer()).get('/').expect(503);
   });
 
   it('OPTIONS preflight from Vite origin is allowed', () => {
@@ -170,6 +184,51 @@ describe('API (e2e)', () => {
     expect(
       paths['/api/auth/google/callback'] ?? paths['/auth/google/callback'],
     ).toBeDefined();
+  });
+
+  it('POST /api/auth/login with a wrong password returns 401', async () => {
+    const response = await request(app.getHttpServer())
+      .post('/api/auth/login')
+      .send({ email: owner.email, password: 'WrongPassword' })
+      .expect(401);
+
+    expect(response.body).toMatchObject({
+      statusCode: 401,
+      message: INVALID_CREDENTIALS_MESSAGE,
+    });
+  });
+
+  it('POST /api/auth/login with an unknown email returns 401', async () => {
+    const response = await request(app.getHttpServer())
+      .post('/api/auth/login')
+      .send({ email: 'missing@example.com', password: 'Password1' })
+      .expect(401);
+
+    expect(response.body).toMatchObject({
+      statusCode: 401,
+      message: INVALID_CREDENTIALS_MESSAGE,
+    });
+  });
+
+  it('POST /api/auth/login for a blocked user returns 403', async () => {
+    prismaMock.user.findUnique.mockImplementation(
+      (args: { where: { id?: string; email?: string } }) => {
+        if (args.where.id === owner.id || args.where.email === owner.email) {
+          return Promise.resolve({ ...owner, status: 'BLOCKED' });
+        }
+        return Promise.resolve(null);
+      },
+    );
+
+    const response = await request(app.getHttpServer())
+      .post('/api/auth/login')
+      .send({ email: owner.email, password: 'Password1' })
+      .expect(403);
+
+    expect(response.body).toMatchObject({
+      statusCode: 403,
+      message: ACCESS_DENIED_MESSAGE,
+    });
   });
 
   it('GET /api/users/me without token returns 401', () => {

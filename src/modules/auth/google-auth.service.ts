@@ -1,25 +1,32 @@
 import {
-  ConflictException,
+  ForbiddenException,
   Injectable,
   ServiceUnavailableException,
   UnauthorizedException,
 } from '@nestjs/common';
-import { AuthProvider } from '@prisma/client';
+import { AuthProvider, User, UserStatus } from '@prisma/client';
 import { isUniqueConstraintOn } from '../../common/prisma/unique-constraint';
 import { PrismaService } from '../../prisma/prisma.service';
-import { AuthService } from './auth.service';
+import { assertSignInAllowed } from './auth-access';
 import { toAuthSession } from './auth-session';
+import { AuthService } from './auth.service';
 import { GoogleProfile } from './google-id-token';
 import { GoogleOAuthConfig } from './google-oauth.config';
 import { GoogleOidcClient } from './google-oidc.client';
 import { createPkcePair, randomOAuthValue } from './google-pkce';
 
 const GOOGLE_AUTH_FAILED_MESSAGE = 'Не вдалося увійти через Google.';
+const GOOGLE_AUTH_FORBIDDEN_MESSAGE =
+  'Вхід через Google доступний лише власнику або запрошеним користувачам.';
 const AUTHORIZATION_TTL_MS = 10 * 60 * 1000;
 const GOOGLE_AUTH_URL = 'https://accounts.google.com/o/oauth2/v2/auth';
 
 function fail(): never {
   throw new UnauthorizedException(GOOGLE_AUTH_FAILED_MESSAGE);
+}
+
+function deny(): never {
+  throw new ForbiddenException(GOOGLE_AUTH_FORBIDDEN_MESSAGE);
 }
 
 @Injectable()
@@ -41,6 +48,17 @@ export class GoogleAuthService {
 
   async start(userId?: string): Promise<string> {
     this.ensureConfigured();
+
+    if (userId) {
+      const user = await this.prisma.user.findUnique({
+        where: { id: userId },
+      });
+      if (!user) {
+        fail();
+      }
+      this.assertAllowed(user);
+    }
+
     await this.prisma.oAuthAuthorization.deleteMany({
       where: { expiresAt: { lt: new Date() } },
     });
@@ -122,7 +140,10 @@ export class GoogleAuthService {
       if (pending.userId && pending.userId !== existingLink.userId) {
         fail();
       }
-      return toAuthSession(existingLink.user);
+      this.assertAllowed(existingLink.user);
+      const session = await this.sessionFor(existingLink.user);
+      await this.authService.recordLogin(existingLink.user.id);
+      return session;
     }
 
     if (pending.userId) {
@@ -132,40 +153,39 @@ export class GoogleAuthService {
       if (!user) {
         fail();
       }
+      this.assertAllowed(user);
       await this.linkAccount(user.id, profile);
-      return toAuthSession(user);
+      const session = await this.sessionFor(user);
+      await this.authService.recordLogin(user.id);
+      return session;
     }
 
     const byEmail = await this.prisma.user.findUnique({
       where: { email: profile.email },
     });
-    if (byEmail) {
-      await this.linkAccount(byEmail.id, profile);
-      return toAuthSession(byEmail);
+    if (!byEmail) {
+      deny();
     }
+    this.assertAllowed(byEmail);
+    await this.linkAccount(byEmail.id, profile);
+    const session = await this.sessionFor(byEmail);
+    await this.authService.recordLogin(byEmail.id);
+    return session;
+  }
 
-    try {
-      const user = await this.authService.createOwnerUser({
-        organizationName: profile.name,
-        firstName: profile.givenName,
-        lastName: profile.familyName,
-        email: profile.email,
-        passwordHash: null,
-      });
-      await this.linkAccount(user.id, profile);
+  private assertAllowed(user: User) {
+    assertSignInAllowed(user);
+  }
+
+  private async sessionFor(user: User) {
+    if (user.status !== UserStatus.INVITED) {
       return toAuthSession(user);
-    } catch (error) {
-      if (error instanceof ConflictException) {
-        const raced = await this.prisma.user.findUnique({
-          where: { email: profile.email },
-        });
-        if (raced) {
-          await this.linkAccount(raced.id, profile);
-          return toAuthSession(raced);
-        }
-      }
-      fail();
     }
+    const activated = await this.prisma.user.update({
+      where: { id: user.id },
+      data: { status: UserStatus.ACTIVE },
+    });
+    return toAuthSession(activated);
   }
 
   private async linkAccount(userId: string, profile: GoogleProfile) {

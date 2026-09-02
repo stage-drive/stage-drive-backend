@@ -3,10 +3,14 @@ import {
   Injectable,
   UnauthorizedException,
 } from '@nestjs/common';
-import { User, UserRole } from '@prisma/client';
+import { User, UserRole, UserStatus } from '@prisma/client';
 import * as bcrypt from 'bcrypt';
 import { isUniqueConstraintOn } from '../../common/prisma/unique-constraint';
 import { PrismaService } from '../../prisma/prisma.service';
+import {
+  assertSignInAllowed,
+  INVALID_CREDENTIALS_MESSAGE,
+} from './auth-access';
 import { toAuthSession } from './auth-session';
 import { RegisterDto } from './auth.dto';
 import { randomSlugSuffix, slugify } from './slug';
@@ -15,6 +19,7 @@ import { signAccessToken, signRefreshToken } from './token';
 const BCRYPT_ROUNDS = 10;
 const MAX_SLUG_ATTEMPTS = 5;
 const EMAIL_ALREADY_EXISTS_MESSAGE = 'Користувач з таким email уже існує.';
+const ACCOUNT_NOT_ACTIVE_MESSAGE = 'Обліковий запис заблоковано або неактивний.';
 
 export type CreateOwnerInput = {
   organizationName: string;
@@ -31,26 +36,51 @@ export class AuthService {
 
   async login(email: string, password: string) {
     if (!email || !password) {
-      throw new UnauthorizedException('Email and password are required');
+      throw new UnauthorizedException(INVALID_CREDENTIALS_MESSAGE);
     }
 
     const user = await this.prisma.user.findUnique({
       where: { email: email.trim().toLowerCase() },
+      include: { organization: true },
     });
     if (!user?.passwordHash) {
-      throw new UnauthorizedException('Invalid credentials');
+      throw new UnauthorizedException(INVALID_CREDENTIALS_MESSAGE);
     }
 
     const matches = await bcrypt.compare(password, user.passwordHash);
     if (!matches) {
-      throw new UnauthorizedException('Invalid credentials');
+      throw new UnauthorizedException(INVALID_CREDENTIALS_MESSAGE);
     }
+
+    assertSignInAllowed(user);
+
+    if (user.status === UserStatus.INVITED) {
+      await this.prisma.user.update({
+        where: { id: user.id },
+        data: { status: UserStatus.ACTIVE },
+      });
+    }
+
+    await this.recordLogin(user.id);
 
     return {
       accessToken: signAccessToken(user.id),
       refreshToken: signRefreshToken(user.id),
       tokenType: 'Bearer',
     };
+  }
+
+  assertActiveUser(user: Pick<User, 'status' | 'deletedAt'>): void {
+    if (user.deletedAt || user.status !== UserStatus.ACTIVE) {
+      throw new UnauthorizedException(ACCOUNT_NOT_ACTIVE_MESSAGE);
+    }
+  }
+
+  async recordLogin(userId: string): Promise<void> {
+    await this.prisma.user.update({
+      where: { id: userId },
+      data: { lastLoginAt: new Date() },
+    });
   }
 
   async createOwnerUser(input: CreateOwnerInput): Promise<User> {
@@ -87,6 +117,7 @@ export class AuthService {
               phone,
               role: UserRole.OWNER,
               status: 'ACTIVE',
+              lastLoginAt: new Date(),
             },
           });
         });

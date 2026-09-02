@@ -1,4 +1,5 @@
 import { createHmac, timingSafeEqual } from 'crypto';
+import { requireEnv } from '../../common/config/env';
 
 const ACCESS_TOKEN_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 const REFRESH_TOKEN_TTL_MS = 30 * 24 * 60 * 60 * 1000;
@@ -12,7 +13,7 @@ export type TokenPayload = {
 };
 
 function getSecret(): string {
-  return process.env.AUTH_SECRET ?? 'stage-drive-dev-secret';
+  return requireEnv('AUTH_SECRET');
 }
 
 function sign(userId: string, type: TokenType, ttlMs: number): string {
