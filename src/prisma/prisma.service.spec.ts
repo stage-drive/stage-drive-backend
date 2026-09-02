@@ -12,6 +12,10 @@ describe('PrismaService', () => {
     service = module.get<PrismaService>(PrismaService);
   });
 
+  afterEach(async () => {
+    await service?.$disconnect();
+  });
+
   it('should be defined', () => {
     expect(service).toBeDefined();
   });
