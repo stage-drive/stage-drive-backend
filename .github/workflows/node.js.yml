@@ -1,0 +1,35 @@
+name: Backend CI
+
+on:
+  pull_request:
+    branches: ["main", "test", "develop"]
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    env:
+      AUTH_SECRET: test-auth-secret
+      # Unit tests construct PrismaService but do not open a live connection.
+      DATABASE_URL: postgresql://placeholder:placeholder@localhost:5432/placeholder
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Use Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22.x
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Generate Prisma Client
+        run: npx prisma generate
+
+      - name: Build
+        run: npm run build
+
+      - name: Test
+        run: npm test
