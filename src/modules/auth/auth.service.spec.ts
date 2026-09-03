@@ -9,7 +9,8 @@ import {
 } from './auth-access';
 import { RegisterDto } from './auth.dto';
 import { AuthService } from './auth.service';
-import { verifyAccessToken, verifyRefreshToken } from './token';
+import { RefreshTokenService } from './refresh-token.service';
+import { verifyAccessToken } from './token';
 
 jest.mock('bcrypt');
 
@@ -28,12 +29,20 @@ describe('AuthService', () => {
     user: { findUnique: jest.fn(), update: jest.fn() },
     $transaction: jest.fn(),
   };
+  const refreshTokenService = {
+    issue: jest.fn().mockResolvedValue('mock-refresh-token'),
+  };
 
   beforeEach(async () => {
     jest.clearAllMocks();
+    refreshTokenService.issue.mockResolvedValue('mock-refresh-token');
 
     const module: TestingModule = await Test.createTestingModule({
-      providers: [AuthService, { provide: PrismaService, useValue: prisma }],
+      providers: [
+        AuthService,
+        { provide: PrismaService, useValue: prisma },
+        { provide: RefreshTokenService, useValue: refreshTokenService },
+      ],
     }).compile();
 
     service = module.get(AuthService);
@@ -216,7 +225,8 @@ describe('AuthService', () => {
         data: { lastLoginAt: expect.any(Date) },
       });
       expect(verifyAccessToken(result.accessToken).sub).toBe('user-1');
-      expect(verifyRefreshToken(result.refreshToken).sub).toBe('user-1');
+      expect(refreshTokenService.issue).toHaveBeenCalledWith('user-1');
+      expect(result.refreshToken).toBe('mock-refresh-token');
       expect(result.tokenType).toBe('Bearer');
     });
   });
@@ -270,7 +280,8 @@ describe('AuthService', () => {
       );
       expect(result.user).toEqual(createdUser);
       expect(verifyAccessToken(result.accessToken).sub).toBe('user-1');
-      expect(verifyRefreshToken(result.refreshToken).sub).toBe('user-1');
+      expect(refreshTokenService.issue).toHaveBeenCalledWith('user-1');
+      expect(result.refreshToken).toBe('mock-refresh-token');
     });
 
     it('rejects with ConflictException when the email is already taken', async () => {

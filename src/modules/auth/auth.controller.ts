@@ -2,6 +2,7 @@ import {
   Body,
   Controller,
   Get,
+  HttpCode,
   HttpStatus,
   Post,
   Query,
@@ -25,11 +26,13 @@ import { AuthService } from './auth.service';
 import {
   LoginDto,
   LoginResponseDto,
+  RefreshTokenDto,
   RegisterDto,
   RegisterResponseDto,
 } from './auth.dto';
 import { GoogleAuthService } from './google-auth.service';
 import { GoogleOAuthConfig } from './google-oauth.config';
+import { RefreshTokenService } from './refresh-token.service';
 import { tryGetAccessTokenUserId } from './token';
 
 @ApiTags('auth')
@@ -39,6 +42,7 @@ export class AuthController {
     private readonly authService: AuthService,
     private readonly googleAuthService: GoogleAuthService,
     private readonly googleOAuthConfig: GoogleOAuthConfig,
+    private readonly refreshTokenService: RefreshTokenService,
   ) {}
 
   @Post('login')
@@ -58,6 +62,17 @@ export class AuthController {
   @ApiOkResponse({ type: RegisterResponseDto })
   async register(@Body() body: RegisterDto) {
     return this.authService.register(body);
+  }
+
+  @Post('refresh')
+  @HttpCode(HttpStatus.OK)
+  @ApiOkResponse({ type: LoginResponseDto })
+  @ApiUnauthorizedResponse({
+    description:
+      'Refresh token недійсний, прострочений або вже був використаний.',
+  })
+  async refresh(@Body() body: RefreshTokenDto) {
+    return this.refreshTokenService.rotate(body.refreshToken);
   }
 
   @Get('google')

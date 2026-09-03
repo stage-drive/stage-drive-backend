@@ -8,6 +8,7 @@ import * as bcrypt from 'bcrypt';
 import { existsSync, unlinkSync } from 'fs';
 import { join } from 'path';
 import { PrismaService } from '../../prisma/prisma.service';
+import { RefreshTokenService } from '../auth/refresh-token.service';
 import { toPublicUser } from './user-public';
 
 const BCRYPT_ROUNDS = 10;
@@ -20,7 +21,10 @@ export type UpdateProfileInput = {
 
 @Injectable()
 export class UsersService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly refreshTokenService: RefreshTokenService,
+  ) {}
 
   getMe(user: User) {
     return toPublicUser(user);
@@ -93,8 +97,9 @@ export class UsersService {
     const passwordHash = await bcrypt.hash(newPassword, BCRYPT_ROUNDS);
     await this.prisma.user.update({
       where: { id: user.id },
-      data: { passwordHash },
+      data: { passwordHash, tokensInvalidBefore: new Date() },
     });
+    await this.refreshTokenService.revokeAllForUser(user.id);
 
     return { message: 'Password updated' };
   }

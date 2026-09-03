@@ -1,5 +1,6 @@
 import { User } from '@prisma/client';
-import { signAccessToken, signRefreshToken } from './token';
+import { RefreshTokenService } from './refresh-token.service';
+import { signAccessToken } from './token';
 
 export type AuthSession = {
   user: {
@@ -15,7 +16,10 @@ export type AuthSession = {
   refreshToken: string;
 };
 
-export function toAuthSession(user: User): AuthSession {
+export async function toAuthSession(
+  user: User,
+  refreshTokenService: RefreshTokenService,
+): Promise<AuthSession> {
   return {
     user: {
       id: user.id,
@@ -27,6 +31,6 @@ export function toAuthSession(user: User): AuthSession {
       organizationId: user.organizationId,
     },
     accessToken: signAccessToken(user.id),
-    refreshToken: signRefreshToken(user.id),
+    refreshToken: await refreshTokenService.issue(user.id),
   };
 }
