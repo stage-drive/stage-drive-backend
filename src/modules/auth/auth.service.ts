@@ -13,13 +13,13 @@ import {
 } from './auth-access';
 import { toAuthSession } from './auth-session';
 import { RegisterDto } from './auth.dto';
+import { RefreshTokenService } from './refresh-token.service';
 import { randomSlugSuffix, slugify } from './slug';
-import { signAccessToken, signRefreshToken } from './token';
+import { signAccessToken } from './token';
 
 const BCRYPT_ROUNDS = 10;
 const MAX_SLUG_ATTEMPTS = 5;
 const EMAIL_ALREADY_EXISTS_MESSAGE = 'Користувач з таким email уже існує.';
-const ACCOUNT_NOT_ACTIVE_MESSAGE = 'Обліковий запис заблоковано або неактивний.';
 
 export type CreateOwnerInput = {
   organizationName: string;
@@ -32,7 +32,10 @@ export type CreateOwnerInput = {
 
 @Injectable()
 export class AuthService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly refreshTokenService: RefreshTokenService,
+  ) {}
 
   async login(email: string, password: string) {
     if (!email || !password) {
@@ -65,15 +68,9 @@ export class AuthService {
 
     return {
       accessToken: signAccessToken(user.id),
-      refreshToken: signRefreshToken(user.id),
+      refreshToken: await this.refreshTokenService.issue(user.id),
       tokenType: 'Bearer',
     };
-  }
-
-  assertActiveUser(user: Pick<User, 'status' | 'deletedAt'>): void {
-    if (user.deletedAt || user.status !== UserStatus.ACTIVE) {
-      throw new UnauthorizedException(ACCOUNT_NOT_ACTIVE_MESSAGE);
-    }
   }
 
   async recordLogin(userId: string): Promise<void> {
@@ -149,6 +146,6 @@ export class AuthService {
       phone: payload.phone,
       passwordHash,
     });
-    return toAuthSession(user);
+    return toAuthSession(user, this.refreshTokenService);
   }
 }

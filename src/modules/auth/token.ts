@@ -2,13 +2,11 @@ import { createHmac, timingSafeEqual } from 'crypto';
 import { requireEnv } from '../../common/config/env';
 
 const ACCESS_TOKEN_TTL_MS = 7 * 24 * 60 * 60 * 1000;
-const REFRESH_TOKEN_TTL_MS = 30 * 24 * 60 * 60 * 1000;
-
-export type TokenType = 'access' | 'refresh';
+export const REFRESH_TOKEN_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 
 export type TokenPayload = {
   sub: string;
-  type: TokenType;
+  iat: number;
   exp: number;
 };
 
@@ -16,11 +14,12 @@ function getSecret(): string {
   return requireEnv('AUTH_SECRET');
 }
 
-function sign(userId: string, type: TokenType, ttlMs: number): string {
+function sign(userId: string, ttlMs: number): string {
+  const now = Date.now();
   const payload: TokenPayload = {
     sub: userId,
-    type,
-    exp: Date.now() + ttlMs,
+    iat: now,
+    exp: now + ttlMs,
   };
   const payloadPart = Buffer.from(JSON.stringify(payload)).toString(
     'base64url',
@@ -53,7 +52,7 @@ function verify(token: string): TokenPayload {
     Buffer.from(payloadPart, 'base64url').toString('utf8'),
   ) as TokenPayload;
 
-  if (!payload.sub || !payload.type || payload.exp < Date.now()) {
+  if (!payload.sub || payload.exp < Date.now()) {
     throw new Error('Invalid token');
   }
 
@@ -61,11 +60,7 @@ function verify(token: string): TokenPayload {
 }
 
 export function signAccessToken(userId: string): string {
-  return sign(userId, 'access', ACCESS_TOKEN_TTL_MS);
-}
-
-export function signRefreshToken(userId: string): string {
-  return sign(userId, 'refresh', REFRESH_TOKEN_TTL_MS);
+  return sign(userId, ACCESS_TOKEN_TTL_MS);
 }
 
 export function tryGetAccessTokenUserId(
@@ -82,17 +77,5 @@ export function tryGetAccessTokenUserId(
 }
 
 export function verifyAccessToken(token: string): TokenPayload {
-  const payload = verify(token);
-  if (payload.type !== 'access') {
-    throw new Error('Invalid token type');
-  }
-  return payload;
-}
-
-export function verifyRefreshToken(token: string): TokenPayload {
-  const payload = verify(token);
-  if (payload.type !== 'refresh') {
-    throw new Error('Invalid token type');
-  }
-  return payload;
+  return verify(token);
 }

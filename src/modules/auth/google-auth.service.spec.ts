@@ -7,6 +7,7 @@ import { GoogleAuthService } from './google-auth.service';
 import { GoogleProfile } from './google-id-token';
 import { GoogleOAuthConfig } from './google-oauth.config';
 import { GoogleOidcClient } from './google-oidc.client';
+import { RefreshTokenService } from './refresh-token.service';
 import { verifyAccessToken } from './token';
 
 const GOOGLE_AUTH_FAILED = 'Не вдалося увійти через Google.';
@@ -221,6 +222,12 @@ describe('GoogleAuthService', () => {
     authService = {
       recordLogin: jest.fn().mockResolvedValue(undefined),
     };
+    let refreshTokenCounter = 0;
+    const refreshTokenService = {
+      issue: jest.fn().mockImplementation(() =>
+        Promise.resolve(`mock-refresh-token-${++refreshTokenCounter}`),
+      ),
+    };
 
     const config: Pick<
       GoogleOAuthConfig,
@@ -242,6 +249,7 @@ describe('GoogleAuthService', () => {
       config as GoogleOAuthConfig,
       oidc as unknown as GoogleOidcClient,
       authService as unknown as AuthService,
+      refreshTokenService as unknown as RefreshTokenService,
     );
   });
 

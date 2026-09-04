@@ -14,6 +14,7 @@ import { GoogleProfile } from './google-id-token';
 import { GoogleOAuthConfig } from './google-oauth.config';
 import { GoogleOidcClient } from './google-oidc.client';
 import { createPkcePair, randomOAuthValue } from './google-pkce';
+import { RefreshTokenService } from './refresh-token.service';
 
 const GOOGLE_AUTH_FAILED_MESSAGE = 'Не вдалося увійти через Google.';
 const GOOGLE_AUTH_FORBIDDEN_MESSAGE =
@@ -36,6 +37,7 @@ export class GoogleAuthService {
     private readonly config: GoogleOAuthConfig,
     private readonly oidc: GoogleOidcClient,
     private readonly authService: AuthService,
+    private readonly refreshTokenService: RefreshTokenService,
   ) {}
 
   private ensureConfigured() {
@@ -179,13 +181,13 @@ export class GoogleAuthService {
 
   private async sessionFor(user: User) {
     if (user.status !== UserStatus.INVITED) {
-      return toAuthSession(user);
+      return toAuthSession(user, this.refreshTokenService);
     }
     const activated = await this.prisma.user.update({
       where: { id: user.id },
       data: { status: UserStatus.ACTIVE },
     });
-    return toAuthSession(activated);
+    return toAuthSession(activated, this.refreshTokenService);
   }
 
   private async linkAccount(userId: string, profile: GoogleProfile) {
