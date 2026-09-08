@@ -2,7 +2,6 @@ FROM node:22-alpine AS deps
 WORKDIR /app
 
 RUN apk add --no-cache openssl libc6-compat
-RUN npm install -g npm@11.6.1
 
 COPY package.json package-lock.json ./
 RUN npm ci
