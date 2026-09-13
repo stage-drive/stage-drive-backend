@@ -1,6 +1,7 @@
 import { INestApplication } from '@nestjs/common';
 import { NestExpressApplication } from '@nestjs/platform-express';
 import { Test, TestingModule } from '@nestjs/testing';
+import { Prisma } from '@prisma/client';
 import * as bcrypt from 'bcrypt';
 import request from 'supertest';
 import { App } from 'supertest/types';
@@ -11,6 +12,7 @@ import {
   INVALID_CREDENTIALS_MESSAGE,
 } from '../src/modules/auth/auth-access';
 import { signAccessToken } from '../src/modules/auth/token';
+import { MailService } from '../src/modules/mail/mail.service';
 import { PrismaService } from '../src/prisma/prisma.service';
 
 type TestUser = {
@@ -21,7 +23,7 @@ type TestUser = {
   lastName: string;
   phone: string | null;
   avatarUrl: string | null;
-  role: 'OWNER' | 'INSTRUCTOR' | 'STUDENT';
+  role: 'OWNER' | 'ADMIN' | 'INSTRUCTOR' | 'STUDENT';
   status: 'ACTIVE';
   organizationId: string;
   lastLoginAt: Date | null;
@@ -69,6 +71,48 @@ describe('API (e2e)', () => {
     updatedAt: new Date(),
   };
 
+  const instructor: TestUser = {
+    id: '55555555-5555-5555-5555-555555555555',
+    email: 'instructor@example.com',
+    passwordHash: '',
+    firstName: 'Oksana',
+    lastName: 'Shevchenko',
+    phone: null,
+    avatarUrl: null,
+    role: 'INSTRUCTOR',
+    status: 'ACTIVE',
+    organizationId: organization.id,
+    lastLoginAt: null,
+    deletedAt: null,
+    createdAt: new Date(),
+    updatedAt: new Date(),
+  };
+
+  const createdAdmin = {
+    id: '33333333-3333-3333-3333-333333333333',
+    email: 'admin@example.com',
+    firstName: 'Olena',
+    lastName: 'Koval',
+    phone: null,
+    role: 'ADMIN',
+    status: 'INVITED',
+    organizationId: organization.id,
+  };
+
+  const createdInvitation = {
+    id: '44444444-4444-4444-4444-444444444444',
+    email: 'admin@example.com',
+    role: 'ADMIN',
+    status: 'PENDING',
+    expiresAt: new Date('2026-09-20T12:00:00.000Z'),
+    userId: createdAdmin.id,
+    organizationId: organization.id,
+  };
+
+  const mailServiceMock = {
+    sendEmail: jest.fn().mockResolvedValue(undefined),
+  };
+
   const prismaMock = {
     $connect: jest.fn(),
     $disconnect: jest.fn(),
@@ -76,7 +120,16 @@ describe('API (e2e)', () => {
     user: {
       findUnique: jest.fn(),
       update: jest.fn(),
+      create: jest.fn(),
+      delete: jest.fn(),
     },
+    invitation: {
+      create: jest.fn(),
+    },
+    refreshToken: {
+      updateMany: jest.fn(),
+    },
+    $transaction: jest.fn(),
     organization: {
       findUnique: jest.fn(),
       update: jest.fn(),
@@ -103,6 +156,11 @@ describe('API (e2e)', () => {
     prismaMock.$queryRaw.mockResolvedValue([{ '?column?': 1 }]);
     prismaMock.user.findUnique.mockReset();
     prismaMock.user.update.mockReset();
+    prismaMock.user.create.mockReset();
+    prismaMock.user.delete.mockReset();
+    prismaMock.invitation.create.mockReset();
+    prismaMock.refreshToken.updateMany.mockReset();
+    prismaMock.$transaction.mockReset();
     prismaMock.organization.findUnique.mockReset();
     prismaMock.organization.update.mockReset();
     prismaMock.oAuthAuthorization.findUnique.mockReset();
@@ -116,6 +174,12 @@ describe('API (e2e)', () => {
       (args: { where: { id?: string; email?: string } }) => {
         if (args.where.id === owner.id || args.where.email === owner.email) {
           return Promise.resolve({ ...owner });
+        }
+        if (
+          args.where.id === instructor.id ||
+          args.where.email === instructor.email
+        ) {
+          return Promise.resolve({ ...instructor });
         }
         return Promise.resolve(null);
       },
@@ -132,12 +196,22 @@ describe('API (e2e)', () => {
     prismaMock.oAuthAuthorization.create.mockResolvedValue({});
     prismaMock.oAuthAuthorization.deleteMany.mockResolvedValue({ count: 0 });
     prismaMock.oAuthAuthorization.findUnique.mockResolvedValue(null);
+    prismaMock.user.create.mockResolvedValue(createdAdmin);
+    prismaMock.invitation.create.mockResolvedValue(createdInvitation);
+    prismaMock.refreshToken.updateMany.mockResolvedValue({ count: 0 });
+    prismaMock.$transaction.mockImplementation(
+      (cb: (client: typeof prismaMock) => unknown) => cb(prismaMock),
+    );
+    mailServiceMock.sendEmail.mockReset();
+    mailServiceMock.sendEmail.mockResolvedValue(undefined);
 
     const moduleFixture: TestingModule = await Test.createTestingModule({
       imports: [AppModule],
     })
       .overrideProvider(PrismaService)
       .useValue(prismaMock)
+      .overrideProvider(MailService)
+      .useValue(mailServiceMock)
       .compile();
 
     app = moduleFixture.createNestApplication<NestExpressApplication>();
@@ -340,5 +414,119 @@ describe('API (e2e)', () => {
       .expect(200);
 
     expect(response.body).toMatchObject({ name: 'New School Name' });
+  });
+
+  it('POST /api/invitations without token returns 401', () => {
+    return request(app.getHttpServer())
+      .post('/api/invitations')
+      .send({
+        firstName: 'Olena',
+        lastName: 'Koval',
+        email: 'admin@example.com',
+      })
+      .expect(401);
+  });
+
+  it('POST /api/invitations is forbidden for INSTRUCTOR', async () => {
+    const token = signAccessToken(instructor.id);
+    const response = await request(app.getHttpServer())
+      .post('/api/invitations')
+      .set('Authorization', `Bearer ${token}`)
+      .send({
+        firstName: 'Olena',
+        lastName: 'Koval',
+        email: 'admin@example.com',
+      })
+      .expect(403);
+
+    expect(response.body).toMatchObject({
+      statusCode: 403,
+      message: 'Insufficient permissions',
+    });
+    expect(mailServiceMock.sendEmail).not.toHaveBeenCalled();
+  });
+
+  it('POST /api/invitations rejects an invalid payload', async () => {
+    const token = signAccessToken(owner.id);
+    const response = await request(app.getHttpServer())
+      .post('/api/invitations')
+      .set('Authorization', `Bearer ${token}`)
+      .send({ firstName: '', lastName: 'Koval', email: 'admin@example.com' })
+      .expect(400);
+
+    expect(response.body).toMatchObject({
+      statusCode: 400,
+      errors: [{ field: 'firstName', message: "Заповніть обов'язкове поле." }],
+    });
+    expect(mailServiceMock.sendEmail).not.toHaveBeenCalled();
+  });
+
+  it('POST /api/invitations creates an INVITED ADMIN and sends the invitation', async () => {
+    const token = signAccessToken(owner.id);
+    const response = await request(app.getHttpServer())
+      .post('/api/invitations')
+      .set('Authorization', `Bearer ${token}`)
+      .send({
+        firstName: 'Olena',
+        lastName: 'Koval',
+        email: 'admin@example.com',
+      })
+      .expect(201);
+
+    expect(response.body).toMatchObject({
+      user: {
+        id: createdAdmin.id,
+        email: 'admin@example.com',
+        firstName: 'Olena',
+        lastName: 'Koval',
+        role: 'ADMIN',
+        status: 'INVITED',
+        organizationId: organization.id,
+      },
+      invitation: {
+        id: createdInvitation.id,
+        email: 'admin@example.com',
+        role: 'ADMIN',
+        status: 'PENDING',
+        userId: createdAdmin.id,
+        organizationId: organization.id,
+      },
+    });
+    expect(response.body).not.toHaveProperty('token');
+    expect(mailServiceMock.sendEmail).toHaveBeenCalledWith(
+      expect.objectContaining({
+        to: 'admin@example.com',
+        subject: expect.stringContaining(organization.name),
+      }),
+    );
+  });
+
+  it('POST /api/invitations returns 409 when the email already exists', async () => {
+    prismaMock.$transaction.mockRejectedValue(
+      new Prisma.PrismaClientKnownRequestError('Unique constraint failed', {
+        code: 'P2002',
+        clientVersion: '7.9.1',
+        meta: { target: ['email'] },
+      }),
+    );
+
+    const token = signAccessToken(owner.id);
+    const response = await request(app.getHttpServer())
+      .post('/api/invitations')
+      .set('Authorization', `Bearer ${token}`)
+      .send({
+        firstName: 'Olena',
+        lastName: 'Koval',
+        email: 'admin@example.com',
+      })
+      .expect(409);
+
+    expect(response.body).toMatchObject({
+      statusCode: 409,
+      errors: [
+        { field: 'email', message: 'Користувач з таким email уже існує.' },
+      ],
+    });
+    expect(mailServiceMock.sendEmail).not.toHaveBeenCalled();
   });
 });
