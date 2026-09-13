@@ -30,6 +30,12 @@ enum OrganizationStatus {
   BLOCKED
 }
 
+enum InvitationStatus {
+  PENDING
+  ACCEPTED
+  CANCELLED
+}
+
 model Organization {
   id        String             @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   name      String             @db.VarChar(255)
@@ -44,6 +50,7 @@ model Organization {
   updatedAt DateTime           @updatedAt @map("updated_at")
   deletedAt DateTime?          @map("deleted_at")
   users     User[]
+  invitations Invitation[]
 
   @@index([deletedAt])
   @@map("organizations")
@@ -65,11 +72,13 @@ model User {
   createdAt           DateTime             @default(now()) @map("created_at")
   updatedAt           DateTime             @updatedAt @map("updated_at")
   deletedAt           DateTime?            @map("deleted_at")
-  organization        Organization         @relation(fields: [organizationId], references: [id], onDelete: Cascade)
-  oauthAccounts       OAuthAccount[]
-  oauthAuthorizations OAuthAuthorization[]
-  refreshToken        RefreshToken[]
-  passwordResetToken  PasswordResetToken[]
+  organization          Organization         @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  oauthAccounts         OAuthAccount[]
+  oauthAuthorizations   OAuthAuthorization[]
+  refreshToken          RefreshToken[]
+  passwordResetToken    PasswordResetToken[]
+  sentInvitations       Invitation[]         @relation("SentInvitations")
+  receivedInvitations   Invitation[]         @relation("ReceivedInvitations")
 
   @@index([deletedAt])
   @@index([organizationId])
@@ -136,4 +145,28 @@ model PasswordResetToken {
 
   @@index([userId])
   @@map("password_reset_tokens")
+}
+
+model Invitation {
+  id             String           @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  email          String           @db.VarChar(255)
+  role           UserRole
+  tokenHash      String           @unique @map("token_hash") @db.VarChar(128)
+  status         InvitationStatus @default(PENDING)
+  expiresAt      DateTime         @map("expires_at")
+  acceptedAt     DateTime?        @map("accepted_at")
+  invitedById    String           @map("invited_by_id") @db.Uuid
+  invitedBy      User             @relation("SentInvitations", fields: [invitedById], references: [id], onDelete: Cascade)
+  userId         String           @map("user_id") @db.Uuid
+  user           User             @relation("ReceivedInvitations", fields: [userId], references: [id], onDelete: Cascade)
+  organizationId String           @map("organization_id") @db.Uuid
+  organization   Organization     @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  createdAt      DateTime         @default(now()) @map("created_at")
+  updatedAt      DateTime         @updatedAt @map("updated_at")
+
+  @@index([userId])
+  @@index([organizationId])
+  @@index([invitedById])
+  @@index([email])
+  @@map("invitations")
 }

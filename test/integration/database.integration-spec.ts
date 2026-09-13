@@ -110,6 +110,52 @@ describe('Database schema (integration, real Postgres)', () => {
     expect(stillThere?.deletedAt).not.toBeNull();
   });
 
+  it('links an invitation to the invited user and the organization', async () => {
+    const organization = await prisma.organization.create({
+      data: {
+        name: 'Invite School',
+        slug: 'invite-school',
+        email: 'invite-school@example.com',
+      },
+    });
+    const owner = await prisma.user.create({
+      data: {
+        organizationId: organization.id,
+        email: 'owner@invite.example.com',
+        firstName: 'Ivan',
+        lastName: 'Petrenko',
+        role: 'OWNER',
+      },
+    });
+    const admin = await prisma.user.create({
+      data: {
+        organizationId: organization.id,
+        email: 'admin@invite.example.com',
+        firstName: 'Olena',
+        lastName: 'Koval',
+        role: 'ADMIN',
+        status: 'INVITED',
+      },
+    });
+
+    const invitation = await prisma.invitation.create({
+      data: {
+        email: admin.email,
+        role: 'ADMIN',
+        tokenHash: 'a'.repeat(64),
+        expiresAt: new Date(Date.now() + 60_000),
+        invitedById: owner.id,
+        userId: admin.id,
+        organizationId: organization.id,
+      },
+    });
+
+    expect(invitation.userId).toBe(admin.id);
+    expect(invitation.organizationId).toBe(organization.id);
+    expect(invitation.invitedById).toBe(owner.id);
+    expect(invitation.status).toBe('PENDING');
+  });
+
   it('enforces the VarChar bound on organization.name at the database level', async () => {
     const tooLong = 'x'.repeat(300);
 
