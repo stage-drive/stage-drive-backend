@@ -7,8 +7,11 @@ import { GoogleOAuthConfig } from './google-oauth.config';
 import { GoogleOidcClient } from './google-oidc.client';
 import { RefreshTokenService } from './refresh-token.service';
 import { RolesGuard } from './roles.guard';
+import { MailModule } from '../mail/mail.module';
+import { PasswordResetService } from './password-reset.service';
 
 @Module({
+  imports: [MailModule],
   controllers: [AuthController],
   providers: [
     AuthService,
@@ -18,6 +21,7 @@ import { RolesGuard } from './roles.guard';
     GoogleOidcClient,
     GoogleAuthService,
     RefreshTokenService,
+    PasswordResetService,
   ],
   exports: [AuthService, AuthGuard, RolesGuard, RefreshTokenService],
 })
