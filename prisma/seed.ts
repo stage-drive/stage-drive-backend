@@ -1,6 +1,6 @@
 import 'dotenv/config';
 import { PrismaPg } from '@prisma/adapter-pg';
-import { PrismaClient, UserRole } from '@prisma/client';
+import { PrismaClient, UserRole, UserStatus } from '@prisma/client';
 import * as bcrypt from 'bcrypt';
 import { requireEnv } from '../src/common/config/env';
 
@@ -8,7 +8,9 @@ const DATABASE_URL = requireEnv('DATABASE_URL');
 
 const DEMO_ORG_ID = '11111111-1111-1111-1111-111111111111';
 const DEMO_USER_ID = '22222222-2222-2222-2222-222222222222';
+const DEMO_ADMIN_ID = '66666666-6666-6666-6666-666666666666';
 const DEMO_EMAIL = 'owner@example.com';
+const DEMO_ADMIN_EMAIL = 'admin@example.com';
 const DEMO_PASSWORD = 'Password1';
 
 const prisma = new PrismaClient({
@@ -37,7 +39,9 @@ async function main() {
       firstName: 'Ivan',
       lastName: 'Petrenko',
       role: UserRole.OWNER,
+      status: UserStatus.ACTIVE,
       organizationId: DEMO_ORG_ID,
+      deletedAt: null,
     },
     create: {
       id: DEMO_USER_ID,
@@ -46,11 +50,36 @@ async function main() {
       firstName: 'Ivan',
       lastName: 'Petrenko',
       role: UserRole.OWNER,
+      status: UserStatus.ACTIVE,
       organizationId: DEMO_ORG_ID,
     },
   });
 
-  console.log(`Demo user ready: ${DEMO_EMAIL} / ${DEMO_PASSWORD}`);
+  await prisma.user.upsert({
+    where: { email: DEMO_ADMIN_EMAIL },
+    update: {
+      passwordHash,
+      firstName: 'Maria',
+      lastName: 'Ivanenko',
+      role: UserRole.ADMIN,
+      status: UserStatus.ACTIVE,
+      organizationId: DEMO_ORG_ID,
+      deletedAt: null,
+    },
+    create: {
+      id: DEMO_ADMIN_ID,
+      email: DEMO_ADMIN_EMAIL,
+      passwordHash,
+      firstName: 'Maria',
+      lastName: 'Ivanenko',
+      role: UserRole.ADMIN,
+      status: UserStatus.ACTIVE,
+      organizationId: DEMO_ORG_ID,
+    },
+  });
+
+  console.log(`Demo owner ready: ${DEMO_EMAIL} / ${DEMO_PASSWORD}`);
+  console.log(`Demo admin ready: ${DEMO_ADMIN_EMAIL} / ${DEMO_PASSWORD}`);
 }
 
 void main()
