@@ -75,7 +75,7 @@ describe('AuthService', () => {
       prisma.user.findUnique.mockResolvedValue(null);
 
       await expect(
-        service.login('missing@example.com', 'Password1'),
+        service.login('missing@example.com', 'SecurePassword123'),
       ).rejects.toMatchObject({
         message: INVALID_CREDENTIALS_MESSAGE,
         status: 401,
@@ -89,7 +89,7 @@ describe('AuthService', () => {
       });
 
       await expect(
-        service.login('owner@example.com', 'Password1'),
+        service.login('owner@example.com', 'SecurePassword123'),
       ).rejects.toMatchObject({
         message: INVALID_CREDENTIALS_MESSAGE,
         status: 401,
@@ -117,7 +117,7 @@ describe('AuthService', () => {
       (bcrypt.compare as jest.Mock).mockResolvedValue(true);
 
       await expect(
-        service.login('owner@example.com', 'Password1'),
+        service.login('owner@example.com', 'SecurePassword123'),
       ).rejects.toMatchObject({
         message: ACCESS_DENIED_MESSAGE,
         status: 403,
@@ -133,7 +133,7 @@ describe('AuthService', () => {
       (bcrypt.compare as jest.Mock).mockResolvedValue(true);
 
       await expect(
-        service.login('owner@example.com', 'Password1'),
+        service.login('owner@example.com', 'SecurePassword123'),
       ).rejects.toBeInstanceOf(ForbiddenException);
     });
 
@@ -145,7 +145,7 @@ describe('AuthService', () => {
       (bcrypt.compare as jest.Mock).mockResolvedValue(true);
 
       await expect(
-        service.login('owner@example.com', 'Password1'),
+        service.login('owner@example.com', 'SecurePassword123'),
       ).rejects.toMatchObject({
         message: ACCESS_DENIED_MESSAGE,
         status: 403,
@@ -175,7 +175,7 @@ describe('AuthService', () => {
       (bcrypt.compare as jest.Mock).mockResolvedValue(true);
 
       await expect(
-        service.login('owner@example.com', 'Password1'),
+        service.login('owner@example.com', 'SecurePassword123'),
       ).rejects.toMatchObject({
         message: ACCESS_DENIED_MESSAGE,
         status: 403,
@@ -186,7 +186,7 @@ describe('AuthService', () => {
       prisma.user.findUnique.mockResolvedValue(activeUser);
       (bcrypt.compare as jest.Mock).mockResolvedValue(true);
 
-      await service.login('  Owner@Example.com ', 'Password1');
+      await service.login('  Owner@Example.com ', 'SecurePassword123');
 
       expect(prisma.user.findUnique).toHaveBeenCalledWith({
         where: { email: 'owner@example.com' },
@@ -205,7 +205,7 @@ describe('AuthService', () => {
       });
       (bcrypt.compare as jest.Mock).mockResolvedValue(true);
 
-      const result = await service.login('owner@example.com', 'Password1');
+      const result = await service.login('owner@example.com', 'SecurePassword123');
 
       expect(prisma.user.update).toHaveBeenCalledWith({
         where: { id: 'user-1' },
@@ -218,7 +218,7 @@ describe('AuthService', () => {
       prisma.user.findUnique.mockResolvedValue(activeUser);
       (bcrypt.compare as jest.Mock).mockResolvedValue(true);
 
-      const result = await service.login('owner@example.com', 'Password1');
+      const result = await service.login('owner@example.com', 'SecurePassword123');
 
       expect(prisma.user.update).toHaveBeenCalledWith({
         where: { id: 'user-1' },
@@ -238,8 +238,8 @@ describe('AuthService', () => {
       lastName: 'Петренко',
       email: 'Owner@Example.com ',
       phone: undefined,
-      password: 'Password1',
-      passwordConfirmation: 'Password1',
+      password: 'SecurePassword123',
+      passwordConfirmation: 'SecurePassword123',
       termsAccepted: true,
     };
 

@@ -127,6 +127,7 @@ describe('API (e2e)', () => {
       create: jest.fn(),
     },
     refreshToken: {
+      create: jest.fn(),
       updateMany: jest.fn(),
     },
     $transaction: jest.fn(),
@@ -147,7 +148,7 @@ describe('API (e2e)', () => {
   };
 
   beforeAll(async () => {
-    passwordHash = await bcrypt.hash('Password1', 10);
+    passwordHash = await bcrypt.hash('SecurePassword123', 10);
     owner.passwordHash = passwordHash;
   });
 
@@ -159,6 +160,8 @@ describe('API (e2e)', () => {
     prismaMock.user.create.mockReset();
     prismaMock.user.delete.mockReset();
     prismaMock.invitation.create.mockReset();
+    prismaMock.refreshToken.create.mockReset();
+    prismaMock.refreshToken.create.mockResolvedValue({});
     prismaMock.refreshToken.updateMany.mockReset();
     prismaMock.$transaction.mockReset();
     prismaMock.organization.findUnique.mockReset();
@@ -248,16 +251,64 @@ describe('API (e2e)', () => {
     return request(app.getHttpServer()).get('/api/docs').expect(200);
   });
 
-  it('OpenAPI documents GET /api/auth/google', async () => {
+  it('OpenAPI documents GET and POST /api/auth/google', async () => {
     const response = await request(app.getHttpServer())
       .get('/api/docs-json')
       .expect(200);
 
-    const paths = (response.body as { paths: Record<string, unknown> }).paths;
-    expect(paths['/api/auth/google'] ?? paths['/auth/google']).toBeDefined();
+    const paths = (
+      response.body as {
+        paths: Record<string, { get?: unknown; post?: unknown }>;
+      }
+    ).paths;
+    const google = paths['/api/auth/google'] ?? paths['/auth/google'];
+    expect(google).toBeDefined();
+    expect(google?.get).toBeDefined();
+    expect(google?.post).toBeDefined();
     expect(
       paths['/api/auth/google/callback'] ?? paths['/auth/google/callback'],
     ).toBeDefined();
+
+    const loginExample = (
+      response.body as {
+        components: {
+          schemas: { LoginDto: { properties: { email: { example: string } } } };
+        };
+      }
+    ).components.schemas.LoginDto.properties.email.example;
+    expect(loginExample).toBe('owner@example.com');
+  });
+
+  it('POST /api/auth/login returns 200 and tokens for the demo owner', async () => {
+    const response = await request(app.getHttpServer())
+      .post('/api/auth/login')
+      .send({ email: owner.email, password: 'SecurePassword123' })
+      .expect(200);
+
+    expect(response.body).toMatchObject({
+      tokenType: 'Bearer',
+    });
+    expect(response.body.accessToken).toEqual(expect.any(String));
+    expect(response.body.refreshToken).toEqual(expect.any(String));
+  });
+
+  it('POST /api/auth/google without idToken returns 400', async () => {
+    await request(app.getHttpServer())
+      .post('/api/auth/google')
+      .send({})
+      .expect(400);
+  });
+
+  it('POST /api/auth/google with an invalid idToken returns 401', async () => {
+    const response = await request(app.getHttpServer())
+      .post('/api/auth/google')
+      .send({ idToken: 'not-a-google-jwt' })
+      .expect(401);
+
+    expect(response.body).toMatchObject({
+      statusCode: 401,
+      message: 'Не вдалося увійти через Google.',
+    });
   });
 
   it('POST /api/auth/login with a wrong password returns 401', async () => {
@@ -275,7 +326,7 @@ describe('API (e2e)', () => {
   it('POST /api/auth/login with an unknown email returns 401', async () => {
     const response = await request(app.getHttpServer())
       .post('/api/auth/login')
-      .send({ email: 'missing@example.com', password: 'Password1' })
+      .send({ email: 'missing@example.com', password: 'SecurePassword123' })
       .expect(401);
 
     expect(response.body).toMatchObject({
@@ -296,7 +347,7 @@ describe('API (e2e)', () => {
 
     const response = await request(app.getHttpServer())
       .post('/api/auth/login')
-      .send({ email: owner.email, password: 'Password1' })
+      .send({ email: owner.email, password: 'SecurePassword123' })
       .expect(403);
 
     expect(response.body).toMatchObject({
@@ -348,7 +399,7 @@ describe('API (e2e)', () => {
     await request(app.getHttpServer())
       .patch('/api/users/me/password')
       .set('Authorization', `Bearer ${token}`)
-      .send({ currentPassword: 'Password1', newPassword: 'Password2' })
+      .send({ currentPassword: 'SecurePassword123', newPassword: 'Password2' })
       .expect(200);
 
     expect(prismaMock.user.update).toHaveBeenCalled();

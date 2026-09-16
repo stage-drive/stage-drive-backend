@@ -21,7 +21,7 @@ async function signedIdToken(
     kid?: string;
   },
 ) {
-  return new SignJWT({
+  const payload: Record<string, unknown> = {
     email: 'ada@gmail.com',
     email_verified: true,
     nonce: NONCE,
@@ -30,7 +30,12 @@ async function signedIdToken(
     name: 'Ada Lovelace',
     azp: CLIENT_ID,
     ...claims,
-  })
+  };
+  if (payload.nonce === undefined) {
+    delete payload.nonce;
+  }
+
+  return new SignJWT(payload)
     .setProtectedHeader({ alg: 'RS256', kid: options?.kid ?? 'test-kid' })
     .setIssuer(options?.issuer ?? 'https://accounts.google.com')
     .setAudience(options?.audience ?? CLIENT_ID)
@@ -76,6 +81,16 @@ describe('verifyGoogleIdToken', () => {
     await expect(verify(token, 'other-nonce')).rejects.toThrow(
       'Invalid Google ID token',
     );
+  });
+
+  it('accepts a GIS token without nonce when nonce is not required', async () => {
+    const token = await signedIdToken(privateKey, { nonce: undefined });
+    await expect(
+      verifyGoogleIdToken(token, { clientId: CLIENT_ID, jwks }),
+    ).resolves.toMatchObject({
+      sub: 'google-sub-1',
+      email: 'ada@gmail.com',
+    });
   });
 
   it('rejects a wrong audience', async () => {

@@ -128,6 +128,29 @@ export class GoogleAuthService {
       fail();
     }
 
+    return this.sessionFromProfile(profile, pending.userId);
+  }
+
+  async completeWithIdToken(idToken: string, linkingUserId?: string) {
+    this.ensureConfigured();
+    if (!idToken?.trim()) {
+      fail();
+    }
+
+    let profile: GoogleProfile;
+    try {
+      profile = await this.oidc.verifyIdToken(idToken.trim());
+    } catch {
+      fail();
+    }
+
+    return this.sessionFromProfile(profile, linkingUserId ?? null);
+  }
+
+  private async sessionFromProfile(
+    profile: GoogleProfile,
+    linkingUserId: string | null,
+  ) {
     const existingLink = await this.prisma.oAuthAccount.findUnique({
       where: {
         provider_providerAccountId: {
@@ -139,7 +162,7 @@ export class GoogleAuthService {
     });
 
     if (existingLink) {
-      if (pending.userId && pending.userId !== existingLink.userId) {
+      if (linkingUserId && linkingUserId !== existingLink.userId) {
         fail();
       }
       this.assertAllowed(existingLink.user);
@@ -148,9 +171,9 @@ export class GoogleAuthService {
       return session;
     }
 
-    if (pending.userId) {
+    if (linkingUserId) {
       const user = await this.prisma.user.findUnique({
-        where: { id: pending.userId },
+        where: { id: linkingUserId },
       });
       if (!user) {
         fail();

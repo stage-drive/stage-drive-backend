@@ -224,9 +224,11 @@ describe('GoogleAuthService', () => {
     };
     let refreshTokenCounter = 0;
     const refreshTokenService = {
-      issue: jest.fn().mockImplementation(() =>
-        Promise.resolve(`mock-refresh-token-${++refreshTokenCounter}`),
-      ),
+      issue: jest
+        .fn()
+        .mockImplementation(() =>
+          Promise.resolve(`mock-refresh-token-${++refreshTokenCounter}`),
+        ),
     };
 
     const config: Pick<
@@ -246,7 +248,7 @@ describe('GoogleAuthService', () => {
 
     service = new GoogleAuthService(
       prisma as unknown as PrismaService,
-      config as GoogleOAuthConfig,
+      config,
       oidc as unknown as GoogleOidcClient,
       authService as unknown as AuthService,
       refreshTokenService as unknown as RefreshTokenService,
@@ -415,6 +417,44 @@ describe('GoogleAuthService', () => {
       status: 403,
     });
 
+    expect(accounts).toHaveLength(0);
+  });
+
+  it('rejects an archived existing user with 403', async () => {
+    users = [{ ...owner, email: 'ada@gmail.com', status: UserStatus.ARCHIVED }];
+    seedPending();
+
+    await expect(
+      service.complete({ code: 'code-1', state: 'state-1' }),
+    ).rejects.toMatchObject({
+      message: ACCESS_DENIED_MESSAGE,
+      status: 403,
+    });
+
+    expect(accounts).toHaveLength(0);
+  });
+
+  it('completeWithIdToken links a verified Google email to an existing user', async () => {
+    users = [{ ...owner, email: 'ada@gmail.com' }];
+
+    const session = await service.completeWithIdToken('id-token');
+
+    expect(oidc.verifyIdToken).toHaveBeenCalledWith('id-token');
+    expect(oidc.exchangeCode).not.toHaveBeenCalled();
+    expect(accounts[0]).toMatchObject({
+      userId: owner.id,
+      providerAccountId: 'google-sub-1',
+    });
+    expect(verifyAccessToken(session.accessToken).sub).toBe(owner.id);
+  });
+
+  it('completeWithIdToken rejects an unknown Google email with 403', async () => {
+    await expect(service.completeWithIdToken('id-token')).rejects.toMatchObject(
+      {
+        message: GOOGLE_AUTH_FORBIDDEN,
+        status: 403,
+      },
+    );
     expect(accounts).toHaveLength(0);
   });
 });

@@ -24,6 +24,7 @@ import {
 import { Request, Response } from 'express';
 import { AuthService } from './auth.service';
 import {
+  GoogleIdTokenDto,
   LoginDto,
   LoginResponseDto,
   RefreshTokenDto,
@@ -46,6 +47,7 @@ export class AuthController {
   ) {}
 
   @Post('login')
+  @HttpCode(HttpStatus.OK)
   @ApiOkResponse({ type: LoginResponseDto })
   @ApiUnauthorizedResponse({
     description: 'Невірний email або пароль (Invalid credentials).',
@@ -75,14 +77,46 @@ export class AuthController {
     return this.refreshTokenService.rotate(body.refreshToken);
   }
 
+  @Post('google')
+  @HttpCode(HttpStatus.OK)
+  @ApiBearerAuth()
+  @ApiOperation({
+    summary: 'Увійти через Google ID token',
+    description:
+      'Для Postman і Google Identity Services: передайте валідний Google idToken. ' +
+      'Користувач не створюється автоматично — email з токена має вже існувати ' +
+      '(ACTIVE або INVITED). BLOCKED/ARCHIVED → 403. ' +
+      'GET /api/auth/google — окремий браузерний Authorization Code + PKCE flow; ' +
+      'його не можна пройти через Postman через redirect_uri.',
+  })
+  @ApiOkResponse({ type: LoginResponseDto })
+  @ApiUnauthorizedResponse({
+    description: 'idToken відсутній, прострочений або не підписаний Google.',
+  })
+  @ApiForbiddenResponse({
+    description:
+      'Немає користувача з цим email, або акаунт заблоковано/архівовано.',
+  })
+  @ApiServiceUnavailableResponse({
+    description:
+      'Вхід через Google не налаштовано (немає GOOGLE_* у середовищі).',
+  })
+  async googleIdToken(@Body() body: GoogleIdTokenDto, @Req() request: Request) {
+    const userId = tryGetAccessTokenUserId(request.headers.authorization);
+    return this.googleAuthService.completeWithIdToken(body.idToken, userId);
+  }
+
   @Get('google')
   @Redirect()
   @ApiOperation({
     summary: 'Почати вхід через Google (OAuth 2.0 Authorization Code + PKCE)',
     description:
-      '302 на сторінку згоди Google. У браузері відкривайте цей URL напряму ' +
-      '(window.location), а не через fetch/axios — інакше редірект на Google ' +
-      'блокується CORS. Для прив’язки Google до поточного акаунта передайте Bearer access token.',
+      'Це браузерний flow, не Postman. Відкрийте URL у браузері (window.location). ' +
+      'redirect_uri_mismatch означає, що GOOGLE_REDIRECT_URI на сервері не збігається ' +
+      'з Authorized redirect URI в Google Cloud Console ' +
+      '(має бути {BACKEND_URL}/api/auth/google/callback). ' +
+      'Для Postman використовуйте POST /api/auth/google з idToken. ' +
+      'Для прив’язки Google до поточного акаунта передайте Bearer access token.',
   })
   @ApiBearerAuth()
   @ApiFoundResponse({
