@@ -1,7 +1,12 @@
-import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
+import {
+  ApiProperty,
+  ApiPropertyOptional,
+  IntersectionType,
+} from '@nestjs/swagger';
 import { InvitationStatus, UserRole, UserStatus } from '@prisma/client';
 import {
   IsEmail,
+  IsIn,
   IsNotEmpty,
   IsOptional,
   IsString,
@@ -13,6 +18,15 @@ const PHONE_REGEX = /^\+?[0-9\s-]{7,20}$/;
 
 const REQUIRED_FIELD_MESSAGE = "Заповніть обов'язкове поле.";
 const INVALID_EMAIL_MESSAGE = 'Введіть коректний email.';
+
+export const ADMIN_INVITABLE_ROLES: UserRole[] = [
+  UserRole.TEACHER,
+  UserRole.INSTRUCTOR,
+  UserRole.STUDENT,
+];
+
+export const INVALID_INVITE_ROLE_MESSAGE =
+  'Можна запрошувати лише TEACHER, INSTRUCTOR або STUDENT.';
 
 export class InviteAdminDto {
   @ApiProperty({ example: 'Олена' })
@@ -39,7 +53,22 @@ export class InviteAdminDto {
   phone?: string;
 }
 
-export class InvitedAdminUserDto {
+class InviteMemberRoleDto {
+  @ApiProperty({
+    enum: ADMIN_INVITABLE_ROLES,
+    example: UserRole.TEACHER,
+  })
+  @IsIn(ADMIN_INVITABLE_ROLES, { message: INVALID_INVITE_ROLE_MESSAGE })
+  @IsNotEmpty({ message: REQUIRED_FIELD_MESSAGE })
+  role: UserRole;
+}
+
+export class InviteMemberDto extends IntersectionType(
+  InviteAdminDto,
+  InviteMemberRoleDto,
+) {}
+
+export class InvitedUserDto {
   @ApiProperty()
   id: string;
 
@@ -49,13 +78,13 @@ export class InvitedAdminUserDto {
   @ApiProperty({ example: 'Коваль' })
   lastName: string;
 
-  @ApiProperty({ example: 'admin@example.com' })
+  @ApiProperty({ example: 'teacher@example.com' })
   email: string;
 
   @ApiPropertyOptional({ nullable: true, type: String })
   phone: string | null;
 
-  @ApiProperty({ enum: UserRole, example: UserRole.ADMIN })
+  @ApiProperty({ enum: UserRole, example: UserRole.TEACHER })
   role: UserRole;
 
   @ApiProperty({ enum: UserStatus, example: UserStatus.INVITED })
@@ -69,10 +98,10 @@ export class CreatedInvitationDto {
   @ApiProperty()
   id: string;
 
-  @ApiProperty({ example: 'admin@example.com' })
+  @ApiProperty({ example: 'teacher@example.com' })
   email: string;
 
-  @ApiProperty({ enum: UserRole, example: UserRole.ADMIN })
+  @ApiProperty({ enum: UserRole, example: UserRole.TEACHER })
   role: UserRole;
 
   @ApiProperty({ enum: InvitationStatus, example: InvitationStatus.PENDING })
@@ -88,9 +117,9 @@ export class CreatedInvitationDto {
   organizationId: string;
 }
 
-export class InviteAdminResponseDto {
-  @ApiProperty({ type: InvitedAdminUserDto })
-  user: InvitedAdminUserDto;
+export class InviteResponseDto {
+  @ApiProperty({ type: InvitedUserDto })
+  user: InvitedUserDto;
 
   @ApiProperty({ type: CreatedInvitationDto })
   invitation: CreatedInvitationDto;

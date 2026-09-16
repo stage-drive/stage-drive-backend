@@ -1,5 +1,6 @@
 import {
   ConflictException,
+  ForbiddenException,
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
@@ -14,13 +15,27 @@ import { createHash, randomBytes } from 'crypto';
 import { isUniqueConstraintOn } from '../../common/prisma/unique-constraint';
 import { PrismaService } from '../../prisma/prisma.service';
 import { MailService } from '../mail/mail.service';
-import { InviteAdminDto } from './invitations.dto';
+import {
+  ADMIN_INVITABLE_ROLES,
+  InviteAdminDto,
+  InviteMemberDto,
+} from './invitations.dto';
 
 export const INVITATION_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 export const EMAIL_ALREADY_EXISTS_MESSAGE =
   'Користувач з таким email уже існує.';
+export const ADMIN_CANNOT_INVITE_PRIVILEGED_ROLE_MESSAGE =
+  'ADMIN не може запрошувати користувачів з роллю OWNER або ADMIN.';
 
 const DEFAULT_FRONTEND_URL = 'http://localhost:5173';
+
+const ROLE_TITLE_UK: Record<UserRole, string> = {
+  [UserRole.OWNER]: 'власником',
+  [UserRole.ADMIN]: 'адміністратором',
+  [UserRole.TEACHER]: 'викладачем',
+  [UserRole.INSTRUCTOR]: 'інструктором',
+  [UserRole.STUDENT]: 'учнем',
+};
 
 function hashToken(token: string): string {
   return createHash('sha256').update(token).digest('hex');
@@ -47,6 +62,18 @@ export function invitationAcceptUrl(token: string): string {
   return `${frontendBaseUrl()}/invite?token=${encodeURIComponent(token)}`;
 }
 
+function isAdminInvitableRole(role: UserRole): boolean {
+  return ADMIN_INVITABLE_ROLES.includes(role);
+}
+
+type InviteUserPayload = {
+  firstName: string;
+  lastName: string;
+  email: string;
+  phone?: string;
+  role: UserRole;
+};
+
 @Injectable()
 export class InvitationsService {
   constructor(
@@ -55,13 +82,35 @@ export class InvitationsService {
   ) {}
 
   async inviteAdmin(owner: User, payload: InviteAdminDto) {
+    return this.createAndSendInvitation(owner, {
+      ...payload,
+      role: UserRole.ADMIN,
+    });
+  }
+
+  async inviteMember(admin: User, payload: InviteMemberDto) {
+    if (admin.role !== UserRole.ADMIN) {
+      throw new ForbiddenException('Insufficient permissions');
+    }
+    if (!isAdminInvitableRole(payload.role)) {
+      throw new ForbiddenException(ADMIN_CANNOT_INVITE_PRIVILEGED_ROLE_MESSAGE);
+    }
+
+    return this.createAndSendInvitation(admin, payload);
+  }
+
+  private async createAndSendInvitation(
+    inviter: User,
+    payload: InviteUserPayload,
+  ) {
     const firstName = payload.firstName.trim();
     const lastName = payload.lastName.trim();
     const email = payload.email.trim().toLowerCase();
     const phone = payload.phone?.trim() || null;
+    const role = payload.role;
 
     const organization = await this.prisma.organization.findUnique({
-      where: { id: owner.organizationId },
+      where: { id: inviter.organizationId },
     });
     if (!organization || organization.deletedAt) {
       throw new NotFoundException('Organization not found');
@@ -81,22 +130,22 @@ export class InvitationsService {
             lastName,
             phone,
             passwordHash: null,
-            role: UserRole.ADMIN,
+            role,
             status: UserStatus.INVITED,
-            organizationId: owner.organizationId,
+            organizationId: inviter.organizationId,
           },
         });
 
         const invitation = await tx.invitation.create({
           data: {
             email,
-            role: UserRole.ADMIN,
+            role,
             tokenHash,
             status: InvitationStatus.PENDING,
             expiresAt,
-            invitedById: owner.id,
+            invitedById: inviter.id,
             userId: user.id,
-            organizationId: owner.organizationId,
+            organizationId: inviter.organizationId,
           },
         });
 
@@ -112,14 +161,17 @@ export class InvitationsService {
       throw error;
     }
 
+    const roleTitle = ROLE_TITLE_UK[role];
+
     try {
       await this.mailService.sendEmail({
         to: email,
-        subject: `Запрошення стати адміністратором — ${organization.name}`,
+        subject: `Запрошення стати ${roleTitle} — ${organization.name}`,
         html: this.buildInvitationHtml({
           firstName,
           organizationName: organization.name,
-          ownerName: `${owner.firstName} ${owner.lastName}`.trim(),
+          inviterName: `${inviter.firstName} ${inviter.lastName}`.trim(),
+          roleTitle,
           acceptUrl: invitationAcceptUrl(token),
           expiresAt,
         }),
@@ -157,13 +209,15 @@ export class InvitationsService {
   private buildInvitationHtml(input: {
     firstName: string;
     organizationName: string;
-    ownerName: string;
+    inviterName: string;
+    roleTitle: string;
     acceptUrl: string;
     expiresAt: Date;
   }): string {
     const firstName = escapeHtml(input.firstName);
     const organizationName = escapeHtml(input.organizationName);
-    const ownerName = escapeHtml(input.ownerName);
+    const inviterName = escapeHtml(input.inviterName);
+    const roleTitle = escapeHtml(input.roleTitle);
     const acceptUrl = escapeHtml(input.acceptUrl);
     const expiresAt = escapeHtml(
       input.expiresAt.toLocaleString('uk-UA', { timeZone: 'Europe/Kyiv' }),
@@ -171,7 +225,7 @@ export class InvitationsService {
 
     return `
 <p>Вітаємо, ${firstName}!</p>
-<p>${ownerName} запрошує вас стати адміністратором автошколи «${organizationName}».</p>
+<p>${inviterName} запрошує вас стати ${roleTitle} автошколи «${organizationName}».</p>
 <p>Щоб прийняти запрошення, перейдіть за посиланням:<br />
 <a href="${acceptUrl}">${acceptUrl}</a></p>
 <p>Посилання дійсне до ${expiresAt}.</p>
