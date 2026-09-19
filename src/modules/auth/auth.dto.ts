@@ -29,10 +29,23 @@ export class LoginDto {
   @IsEmail({}, { message: INVALID_EMAIL_MESSAGE })
   email: string;
 
-  @ApiProperty({ example: 'Password1' })
+  @ApiProperty({ example: 'SecurePassword123' })
   @IsString()
   @IsNotEmpty({ message: REQUIRED_FIELD_MESSAGE })
   password: string;
+}
+
+export class GoogleIdTokenDto {
+  @ApiProperty({
+    example: 'eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9...',
+    description:
+      'Google OpenID Connect ID token (JWT). Це не authorization code. ' +
+      'У Postman вставте id_token з Google Sign-In / OAuth Playground. ' +
+      'Email у токені має збігатися з існуючим користувачем системи.',
+  })
+  @IsString()
+  @IsNotEmpty({ message: REQUIRED_FIELD_MESSAGE })
+  idToken: string;
 }
 
 export class RegisterDto {
@@ -54,7 +67,7 @@ export class RegisterDto {
   @IsNotEmpty({ message: REQUIRED_FIELD_MESSAGE })
   lastName: string;
 
-  @ApiProperty({ example: 'owner@example.com' })
+  @ApiProperty({ example: 'new-owner@example.com' })
   @IsEmail({}, { message: INVALID_EMAIL_MESSAGE })
   @IsNotEmpty({ message: REQUIRED_FIELD_MESSAGE })
   email: string;
@@ -130,7 +143,10 @@ export class RegisterResponseDto {
 }
 
 export class RefreshTokenDto {
-  @ApiProperty()
+  @ApiProperty({
+    example: 'rt_family.secret',
+    description: 'Refresh token з відповіді login / register / Google.',
+  })
   @IsString()
   @IsNotEmpty()
   refreshToken!: string;

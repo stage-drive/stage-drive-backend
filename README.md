@@ -27,17 +27,17 @@ Swagger UI доступний за адресою http://localhost:3000/api/docs
 cp .env.example .env
 ```
 
-| Змінна | Призначення |
-| --- | --- |
-| `PORT` | Порт HTTP-сервера (за замовчуванням `3000`) |
-| `NODE_ENV` | `development` або `production` |
-| `AUTH_SECRET` | Секрет підпису access/refresh токенів |
-| `DATABASE_URL` | Підключення до PostgreSQL для команд на хості (`npm run start:dev`, Prisma CLI) |
+| Змінна                | Призначення                                                                        |
+| --------------------- | ---------------------------------------------------------------------------------- |
+| `PORT`                | Порт HTTP-сервера (за замовчуванням `3000`)                                        |
+| `NODE_ENV`            | `development` або `production`                                                     |
+| `AUTH_SECRET`         | Секрет підпису access/refresh токенів                                              |
+| `DATABASE_URL`        | Підключення до PostgreSQL для команд на хості (`npm run start:dev`, Prisma CLI)    |
 | `DOCKER_DATABASE_URL` | Підключення для контейнерів `backend` і `migrate` (хост — ім'я сервісу `postgres`) |
-| `POSTGRES_USER` | Користувач локального контейнера PostgreSQL |
-| `POSTGRES_PASSWORD` | Пароль локального контейнера PostgreSQL |
-| `POSTGRES_DB` | Назва локальної бази |
-| `POSTGRES_PORT` | Порт локального PostgreSQL на хості |
+| `POSTGRES_USER`       | Користувач локального контейнера PostgreSQL                                        |
+| `POSTGRES_PASSWORD`   | Пароль локального контейнера PostgreSQL                                            |
+| `POSTGRES_DB`         | Назва локальної бази                                                               |
+| `POSTGRES_PORT`       | Порт локального PostgreSQL на хості                                                |
 
 Для віддаленої БД на VM замість localhost вкажіть хост віртуальної машини, наприклад:
 
@@ -130,9 +130,64 @@ npm run db:generate         # згенерувати Prisma Client
 npm run db:migrate          # нова міграція під час розробки
 npm run db:migrate:deploy   # застосувати наявні міграції
 npm run db:migrate:status   # статус міграцій
-npm run db:seed             # демо-дані
+npm run db:seed             # демо-акаунти для Postman (усі UserStatus)
 npx prisma studio
 ```
+
+### Тестові акаунти для Postman
+
+Позитивні сценарії **паролем** — після `npm run db:seed`:
+
+| Статус     | Email                  | Пароль      | Що перевіряти                                                       |
+| ---------- | ---------------------- | ----------- | ------------------------------------------------------------------- |
+| `ACTIVE`   | `owner@example.com`    | `Password1` | `POST /api/auth/login` → access token для OWNER                     |
+| `ACTIVE`   | `admin@example.com`    | `Password1` | логін ADMIN                                                         |
+| `INVITED`  | `invited@example.com`  | немає       | `POST /api/invitations/verify` з токеном нижче; логін паролем — 401 |
+| `BLOCKED`  | `blocked@example.com`  | `Password1` | логін → **403**                                                     |
+| `ARCHIVED` | `archived@example.com` | `Password1` | логін → **403**                                                     |
+
+Токен запрошення (відомий лише в локальному seed):
+
+```text
+SEED_INVITE_TOKEN_FOR_LOCAL_POSTMAN_ONLY___________00000000001
+```
+
+`POST /api/invitations/verify`, Authorization: **No Auth**, Body → raw JSON:
+
+```json
+{
+  "token": "SEED_INVITE_TOKEN_FOR_LOCAL_POSTMAN_ONLY___________00000000001"
+}
+```
+
+### POST /api/auth/google (Postman)
+
+Це не `GET /api/auth/google` і не логін паролем. У Body потрібен Google **id_token**, а email з нього вже має бути в таблиці `users`.
+
+1. У `.env` вкажіть Gmail тестувальника (`SEED_GOOGLE_EMAIL=qa@gmail.com`) і виконайте `npm run db:seed`. Seed створить TEACHER зі статусом `ACTIVE` або скине існуючого юзера цього email на `ACTIVE`.
+2. Візьміть `id_token` (не `accessToken` бекенда і не authorization code):
+   - [OAuth Playground](https://developers.google.com/oauthplayground/) → шестерня → свої `GOOGLE_CLIENT_ID` / `SECRET` → скоупи `openid email profile` → Authorize (тим самим Google-акаунтом) → Exchange → скопіюйте `id_token`. У Google Console як Authorized redirect URI має бути `https://developers.google.com/oauthplayground`.
+3. **POST** `http://localhost:3000/api/auth/google`  
+   Authorization: **No Auth** (не OAuth 2.0)  
+   Body → raw JSON:
+
+```json
+{
+  "idToken": "СЮДИ_GOOGLE_ID_TOKEN"
+}
+```
+
+`GET /api/auth/google` — браузерний Code + PKCE. У Postman через Authorization → OAuth 2.0 буде `redirect_uri_mismatch`; цей GET для API-перевірки BE-01 не використовуйте.
+
+Сценарії статусів — той самий Gmail, у Prisma Studio змінюєте `users.status`:
+
+| Статус у БД                        | POST /api/auth/google     |
+| ---------------------------------- | ------------------------- |
+| `ACTIVE`                           | 200, `accessToken`        |
+| `INVITED`                          | 200, статус стає `ACTIVE` |
+| `BLOCKED`                          | 403                       |
+| `ARCHIVED`                         | 403                       |
+| немає користувача з email з токена | 403                       |
 
 ### Міграції до PostgreSQL на віддаленій VM
 

@@ -41,7 +41,7 @@ export async function verifyGoogleIdToken(
   idToken: string,
   options: {
     clientId: string;
-    nonce: string;
+    nonce?: string;
     jwks: JWTVerifyGetKey;
   },
 ): Promise<GoogleProfile> {
@@ -57,7 +57,7 @@ export async function verifyGoogleIdToken(
     throw new GoogleIdTokenError();
   }
 
-  if (payload.nonce !== options.nonce) {
+  if (options.nonce !== undefined && payload.nonce !== options.nonce) {
     throw new GoogleIdTokenError();
   }
 
