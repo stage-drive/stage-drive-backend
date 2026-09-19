@@ -7,11 +7,15 @@ import { InvitationStatus, Prisma, UserRole, UserStatus } from '@prisma/client';
 import { createHash } from 'crypto';
 import { PrismaService } from '../../prisma/prisma.service';
 import { MailService } from '../mail/mail.service';
+import { InvitationTokenErrorCode } from './invitations.dto';
 import {
   ADMIN_CANNOT_INVITE_PRIVILEGED_ROLE_MESSAGE,
   EMAIL_ALREADY_EXISTS_MESSAGE,
+  EXPIRED_INVITATION_TOKEN_MESSAGE,
+  INVALID_INVITATION_TOKEN_MESSAGE,
   invitationAcceptUrl,
   InvitationsService,
+  USED_INVITATION_TOKEN_MESSAGE,
 } from './invitations.service';
 
 function uniqueConstraintError(field: string) {
@@ -100,6 +104,7 @@ describe('InvitationsService', () => {
   const prisma = {
     organization: { findUnique: jest.fn() },
     user: { delete: jest.fn() },
+    invitation: { findUnique: jest.fn() },
     $transaction: jest.fn(),
   };
   const mailService = {
@@ -373,6 +378,122 @@ describe('InvitationsService', () => {
       expect(prisma.user.delete).toHaveBeenCalledWith({
         where: { id: 'teacher-1' },
       });
+    });
+  });
+
+  describe('verifyToken', () => {
+    const rawToken = 'valid-invitation-token';
+    const pendingInvitation = {
+      id: 'invite-1',
+      email: 'admin@example.com',
+      role: UserRole.ADMIN,
+      status: InvitationStatus.PENDING,
+      acceptedAt: null,
+      expiresAt: new Date(Date.now() + 60 * 60 * 1000),
+      userId: 'admin-1',
+      organizationId: 'org-1',
+      tokenHash: createHash('sha256').update(rawToken).digest('hex'),
+      user: {
+        firstName: 'Олена',
+        lastName: 'Коваль',
+        status: UserStatus.INVITED,
+      },
+      organization: {
+        name: 'Автошкола Drive',
+      },
+    };
+
+    it('accepts a valid pending invitation token', async () => {
+      prisma.invitation.findUnique.mockResolvedValue(pendingInvitation);
+
+      await expect(service.verifyToken(` ${rawToken} `)).resolves.toEqual({
+        valid: true,
+        email: 'admin@example.com',
+        firstName: 'Олена',
+        lastName: 'Коваль',
+        role: UserRole.ADMIN,
+        status: InvitationStatus.PENDING,
+        expiresAt: pendingInvitation.expiresAt,
+        organizationName: 'Автошкола Drive',
+        organizationId: 'org-1',
+      });
+      expect(prisma.invitation.findUnique).toHaveBeenCalledWith({
+        where: {
+          tokenHash: createHash('sha256').update(rawToken).digest('hex'),
+        },
+        include: { user: true, organization: true },
+      });
+    });
+
+    it('rejects an unknown token', async () => {
+      prisma.invitation.findUnique.mockResolvedValue(null);
+
+      await expect(service.verifyToken('unknown-token')).rejects.toMatchObject({
+        response: {
+          statusCode: 400,
+          code: InvitationTokenErrorCode.INVALID,
+          message: INVALID_INVITATION_TOKEN_MESSAGE,
+        },
+      });
+    });
+
+    it('rejects an expired pending token', async () => {
+      prisma.invitation.findUnique.mockResolvedValue({
+        ...pendingInvitation,
+        expiresAt: new Date(Date.now() - 1000),
+      });
+
+      await expect(service.verifyToken(rawToken)).rejects.toMatchObject({
+        response: {
+          statusCode: 400,
+          code: InvitationTokenErrorCode.EXPIRED,
+          message: EXPIRED_INVITATION_TOKEN_MESSAGE,
+        },
+      });
+    });
+
+    it('rejects an already accepted invitation token', async () => {
+      prisma.invitation.findUnique.mockResolvedValue({
+        ...pendingInvitation,
+        status: InvitationStatus.ACCEPTED,
+        acceptedAt: new Date(),
+      });
+
+      await expect(service.verifyToken(rawToken)).rejects.toMatchObject({
+        response: {
+          statusCode: 400,
+          code: InvitationTokenErrorCode.USED,
+          message: USED_INVITATION_TOKEN_MESSAGE,
+        },
+      });
+    });
+
+    it('rejects a token after the invited user was already activated', async () => {
+      prisma.invitation.findUnique.mockResolvedValue({
+        ...pendingInvitation,
+        user: {
+          ...pendingInvitation.user,
+          status: UserStatus.ACTIVE,
+        },
+      });
+
+      await expect(service.verifyToken(rawToken)).rejects.toMatchObject({
+        response: {
+          statusCode: 400,
+          code: InvitationTokenErrorCode.USED,
+          message: USED_INVITATION_TOKEN_MESSAGE,
+        },
+      });
+    });
+
+    it('does not consume the token while verifying it', async () => {
+      prisma.invitation.findUnique.mockResolvedValue(pendingInvitation);
+
+      await service.verifyToken(rawToken);
+      await service.verifyToken(rawToken);
+
+      expect(prisma.invitation.findUnique).toHaveBeenCalledTimes(2);
+      expect(prisma.$transaction).not.toHaveBeenCalled();
     });
   });
 });
