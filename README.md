@@ -136,9 +136,7 @@ npx prisma studio
 
 ### Тестові акаунти для Postman
 
-`GET /api/auth/google` **не** тестується через Postman OAuth 2.0 (Authorization → Get New Access Token). Бекенд завжди надсилає в Google `GOOGLE_REDIRECT_URI` (`http://localhost:3000/api/auth/google/callback`). Якщо Postman підставить свій callback (`https://oauth.pstmn.io/v1/callback`), Google відповість `redirect_uri_mismatch`. Додавати URI Postman у Google Console для цього API немає сенсу: код усе одно має повернутися на бекенд, інакше не спрацює PKCE/`state`.
-
-Позитивні сценарії API — через пароль після `npm run db:seed`:
+Позитивні сценарії **паролем** — після `npm run db:seed`:
 
 | Статус     | Email                  | Пароль      | Що перевіряти                                                       |
 | ---------- | ---------------------- | ----------- | ------------------------------------------------------------------- |
@@ -162,7 +160,34 @@ SEED_INVITE_TOKEN_FOR_LOCAL_POSTMAN_ONLY___________00000000001
 }
 ```
 
-Google-вхід перевіряйте в браузері: відкрийте `http://localhost:3000/api/auth/google` (не через fetch/Postman OAuth helper). У Google Cloud Console має бути **той самий** Authorized redirect URI, що в `GOOGLE_REDIRECT_URI`.
+### POST /api/auth/google (Postman)
+
+Це не `GET /api/auth/google` і не логін паролем. У Body потрібен Google **id_token**, а email з нього вже має бути в таблиці `users`.
+
+1. У `.env` вкажіть Gmail тестувальника (`SEED_GOOGLE_EMAIL=qa@gmail.com`) і виконайте `npm run db:seed`. Seed створить TEACHER зі статусом `ACTIVE` або скине існуючого юзера цього email на `ACTIVE`.
+2. Візьміть `id_token` (не `accessToken` бекенда і не authorization code):
+   - [OAuth Playground](https://developers.google.com/oauthplayground/) → шестерня → свої `GOOGLE_CLIENT_ID` / `SECRET` → скоупи `openid email profile` → Authorize (тим самим Google-акаунтом) → Exchange → скопіюйте `id_token`. У Google Console як Authorized redirect URI має бути `https://developers.google.com/oauthplayground`.
+3. **POST** `http://localhost:3000/api/auth/google`  
+   Authorization: **No Auth** (не OAuth 2.0)  
+   Body → raw JSON:
+
+```json
+{
+  "idToken": "СЮДИ_GOOGLE_ID_TOKEN"
+}
+```
+
+`GET /api/auth/google` — браузерний Code + PKCE. У Postman через Authorization → OAuth 2.0 буде `redirect_uri_mismatch`; цей GET для API-перевірки BE-01 не використовуйте.
+
+Сценарії статусів — той самий Gmail, у Prisma Studio змінюєте `users.status`:
+
+| Статус у БД                        | POST /api/auth/google     |
+| ---------------------------------- | ------------------------- |
+| `ACTIVE`                           | 200, `accessToken`        |
+| `INVITED`                          | 200, статус стає `ACTIVE` |
+| `BLOCKED`                          | 403                       |
+| `ARCHIVED`                         | 403                       |
+| немає користувача з email з токена | 403                       |
 
 ### Міграції до PostgreSQL на віддаленій VM
 

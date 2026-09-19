@@ -28,6 +28,11 @@ const DEMO_BLOCKED_EMAIL = 'blocked@example.com';
 const DEMO_ARCHIVED_EMAIL = 'archived@example.com';
 const DEMO_PASSWORD = 'Password1';
 
+/** Real Gmail of the person who tests POST /api/auth/google. Must match the Google idToken email. */
+const SEED_GOOGLE_EMAIL = (process.env.SEED_GOOGLE_EMAIL ?? '')
+  .trim()
+  .toLowerCase();
+
 /** Known invitation token for Postman (`POST /api/invitations/verify`). 64 chars. */
 const DEMO_INVITE_TOKEN =
   'SEED_INVITE_TOKEN_FOR_LOCAL_POSTMAN_ONLY___________00000000001';
@@ -199,6 +204,51 @@ async function main() {
   console.log(`  ARCHIVED student: ${DEMO_ARCHIVED_EMAIL} / ${DEMO_PASSWORD}`);
   console.log(
     `Invitation token (POST /api/invitations/verify): ${DEMO_INVITE_TOKEN}`,
+  );
+
+  if (!SEED_GOOGLE_EMAIL) {
+    console.log(
+      'SEED_GOOGLE_EMAIL is empty — Google QA user skipped. Set it to the tester Gmail and re-run seed.',
+    );
+    return;
+  }
+
+  const googleQa = await prisma.user.findUnique({
+    where: { email: SEED_GOOGLE_EMAIL },
+  });
+
+  if (googleQa) {
+    await prisma.user.update({
+      where: { id: googleQa.id },
+      data: {
+        status: UserStatus.ACTIVE,
+        deletedAt: null,
+      },
+    });
+    console.log(
+      `Google QA user ready (existing ${googleQa.role}): ${SEED_GOOGLE_EMAIL} status=ACTIVE`,
+    );
+  } else {
+    await prisma.user.create({
+      data: {
+        email: SEED_GOOGLE_EMAIL,
+        firstName: 'QA',
+        lastName: 'Google',
+        role: UserRole.TEACHER,
+        status: UserStatus.ACTIVE,
+        passwordHash,
+        organizationId: organization.id,
+      },
+    });
+    console.log(
+      `Google QA user created: ${SEED_GOOGLE_EMAIL} / ${DEMO_PASSWORD} (ACTIVE TEACHER)`,
+    );
+  }
+  console.log(
+    'POST /api/auth/google — Body { "idToken": "<Google id_token>" }, Authorization: No Auth.',
+  );
+  console.log(
+    'Flip users.status in Prisma Studio for INVITED / BLOCKED / ARCHIVED on this same email.',
   );
 }
 
