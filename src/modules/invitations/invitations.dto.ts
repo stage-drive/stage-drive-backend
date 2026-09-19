@@ -124,3 +124,65 @@ export class InviteResponseDto {
   @ApiProperty({ type: CreatedInvitationDto })
   invitation: CreatedInvitationDto;
 }
+
+export class VerifyInvitationDto {
+  @ApiProperty({
+    description: 'Сирий invitation token з листа (query `token`).',
+    example: 'AbCdEfGhIjKlMnOpQrStUvWxYz0123456789',
+  })
+  @IsString()
+  @IsNotEmpty({ message: REQUIRED_FIELD_MESSAGE })
+  token: string;
+}
+
+export class VerifyInvitationResponseDto {
+  @ApiProperty({ example: true })
+  valid: true;
+
+  @ApiProperty({ example: 'admin@example.com' })
+  email: string;
+
+  @ApiProperty({ example: 'Олена' })
+  firstName: string;
+
+  @ApiProperty({ example: 'Коваль' })
+  lastName: string;
+
+  @ApiProperty({ enum: UserRole, example: UserRole.ADMIN })
+  role: UserRole;
+
+  @ApiProperty({ enum: InvitationStatus, example: InvitationStatus.PENDING })
+  status: InvitationStatus;
+
+  @ApiProperty()
+  expiresAt: Date;
+
+  @ApiProperty({ example: 'Автошкола Drive' })
+  organizationName: string;
+
+  @ApiProperty()
+  organizationId: string;
+}
+
+export const InvitationTokenErrorCode = {
+  INVALID: 'INVALID_INVITATION_TOKEN',
+  EXPIRED: 'EXPIRED_INVITATION_TOKEN',
+  USED: 'USED_INVITATION_TOKEN',
+} as const;
+
+export type InvitationTokenErrorCode =
+  (typeof InvitationTokenErrorCode)[keyof typeof InvitationTokenErrorCode];
+
+export class InvitationTokenErrorDto {
+  @ApiProperty({ example: 400 })
+  statusCode: number;
+
+  @ApiProperty({
+    enum: Object.values(InvitationTokenErrorCode),
+    example: InvitationTokenErrorCode.INVALID,
+  })
+  code: InvitationTokenErrorCode;
+
+  @ApiProperty({ example: 'Посилання-запрошення недійсне.' })
+  message: string;
+}

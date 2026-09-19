@@ -1,4 +1,5 @@
 import {
+  BadRequestException,
   ConflictException,
   ForbiddenException,
   Injectable,
@@ -17,8 +18,10 @@ import { PrismaService } from '../../prisma/prisma.service';
 import { MailService } from '../mail/mail.service';
 import {
   ADMIN_INVITABLE_ROLES,
+  InvitationTokenErrorCode,
   InviteAdminDto,
   InviteMemberDto,
+  VerifyInvitationResponseDto,
 } from './invitations.dto';
 
 export const INVITATION_TTL_MS = 7 * 24 * 60 * 60 * 1000;
@@ -26,6 +29,12 @@ export const EMAIL_ALREADY_EXISTS_MESSAGE =
   'Користувач з таким email уже існує.';
 export const ADMIN_CANNOT_INVITE_PRIVILEGED_ROLE_MESSAGE =
   'ADMIN не може запрошувати користувачів з роллю OWNER або ADMIN.';
+export const INVALID_INVITATION_TOKEN_MESSAGE =
+  'Посилання-запрошення недійсне.';
+export const EXPIRED_INVITATION_TOKEN_MESSAGE =
+  'Посилання-запрошення прострочене.';
+export const USED_INVITATION_TOKEN_MESSAGE =
+  'Це запрошення вже використано.';
 
 const DEFAULT_FRONTEND_URL = 'http://localhost:5173';
 
@@ -97,6 +106,74 @@ export class InvitationsService {
     }
 
     return this.createAndSendInvitation(admin, payload);
+  }
+
+  async verifyToken(rawToken: string): Promise<VerifyInvitationResponseDto> {
+    const token = rawToken.trim();
+    const invitation = await this.prisma.invitation.findUnique({
+      where: { tokenHash: hashToken(token) },
+      include: { user: true, organization: true },
+    });
+
+    if (!invitation) {
+      throw this.tokenError(
+        InvitationTokenErrorCode.INVALID,
+        INVALID_INVITATION_TOKEN_MESSAGE,
+      );
+    }
+
+    if (this.isInvitationUsed(invitation)) {
+      throw this.tokenError(
+        InvitationTokenErrorCode.USED,
+        USED_INVITATION_TOKEN_MESSAGE,
+      );
+    }
+
+    if (invitation.status !== InvitationStatus.PENDING) {
+      throw this.tokenError(
+        InvitationTokenErrorCode.INVALID,
+        INVALID_INVITATION_TOKEN_MESSAGE,
+      );
+    }
+
+    if (invitation.expiresAt.getTime() < Date.now()) {
+      throw this.tokenError(
+        InvitationTokenErrorCode.EXPIRED,
+        EXPIRED_INVITATION_TOKEN_MESSAGE,
+      );
+    }
+
+    return {
+      valid: true,
+      email: invitation.email,
+      firstName: invitation.user.firstName,
+      lastName: invitation.user.lastName,
+      role: invitation.role,
+      status: invitation.status,
+      expiresAt: invitation.expiresAt,
+      organizationName: invitation.organization.name,
+      organizationId: invitation.organizationId,
+    };
+  }
+
+  private isInvitationUsed(invitation: {
+    status: InvitationStatus;
+    acceptedAt: Date | null;
+    user: { status: UserStatus };
+  }): boolean {
+    return (
+      invitation.status === InvitationStatus.ACCEPTED ||
+      invitation.acceptedAt != null ||
+      invitation.user.status !== UserStatus.INVITED
+    );
+  }
+
+  private tokenError(code: InvitationTokenErrorCode, message: string) {
+    return new BadRequestException({
+      statusCode: 400,
+      code,
+      message,
+    });
   }
 
   private async createAndSendInvitation(
