@@ -1,6 +1,13 @@
+import { createHash } from 'crypto';
 import 'dotenv/config';
 import { PrismaPg } from '@prisma/adapter-pg';
-import { PrismaClient, UserRole, UserStatus } from '@prisma/client';
+import {
+  InvitationStatus,
+  OrganizationStatus,
+  PrismaClient,
+  UserRole,
+  UserStatus,
+} from '@prisma/client';
 import * as bcrypt from 'bcrypt';
 import { requireEnv } from '../src/common/config/env';
 
@@ -8,23 +15,76 @@ const DATABASE_URL = requireEnv('DATABASE_URL');
 
 const DEMO_ORG_ID = '11111111-1111-1111-1111-111111111111';
 const DEMO_USER_ID = '22222222-2222-2222-2222-222222222222';
+const DEMO_INVITED_ID = '33333333-3333-3333-3333-333333333333';
+const DEMO_BLOCKED_ID = '44444444-4444-4444-4444-444444444444';
+const DEMO_ARCHIVED_ID = '55555555-5555-5555-5555-555555555555';
+const DEMO_ADMIN_ID = '66666666-6666-6666-6666-666666666666';
+const DEMO_INVITATION_ID = '77777777-7777-7777-7777-777777777777';
+
 const DEMO_EMAIL = 'owner@example.com';
-const DEMO_PASSWORD = 'SecurePassword123';
+const DEMO_ADMIN_EMAIL = 'admin@example.com';
+const DEMO_INVITED_EMAIL = 'invited@example.com';
+const DEMO_BLOCKED_EMAIL = 'blocked@example.com';
+const DEMO_ARCHIVED_EMAIL = 'archived@example.com';
+const DEMO_PASSWORD = 'Password1';
+
+/** Known invitation token for Postman (`POST /api/invitations/verify`). 64 chars. */
+const DEMO_INVITE_TOKEN =
+  'SEED_INVITE_TOKEN_FOR_LOCAL_POSTMAN_ONLY___________00000000001';
+const INVITATION_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 
 const prisma = new PrismaClient({
   adapter: new PrismaPg({ connectionString: DATABASE_URL }),
 });
 
-async function upsertUser(input: {
-  id: string;
-  email: string;
-  firstName: string;
-  lastName: string;
-  role: UserRole;
-  status: UserStatus;
-  passwordHash: string | null;
-}) {
-  await prisma.user.upsert({
+function hashToken(token: string): string {
+  return createHash('sha256').update(token).digest('hex');
+}
+
+async function upsertOrganization() {
+  const existing =
+    (await prisma.organization.findUnique({
+      where: { email: DEMO_EMAIL },
+    })) ??
+    (await prisma.organization.findUnique({
+      where: { id: DEMO_ORG_ID },
+    }));
+
+  if (existing) {
+    return prisma.organization.update({
+      where: { id: existing.id },
+      data: {
+        name: 'Stage Drive School',
+        status: OrganizationStatus.ACTIVE,
+        deletedAt: null,
+      },
+    });
+  }
+
+  return prisma.organization.create({
+    data: {
+      id: DEMO_ORG_ID,
+      name: 'Stage Drive School',
+      slug: 'stage-drive-school',
+      email: DEMO_EMAIL,
+      timezone: 'Europe/Kyiv',
+    },
+  });
+}
+
+async function upsertUser(
+  organizationId: string,
+  input: {
+    id: string;
+    email: string;
+    firstName: string;
+    lastName: string;
+    role: UserRole;
+    status: UserStatus;
+    passwordHash: string | null;
+  },
+) {
+  return prisma.user.upsert({
     where: { email: input.email },
     update: {
       passwordHash: input.passwordHash,
@@ -32,7 +92,7 @@ async function upsertUser(input: {
       lastName: input.lastName,
       role: input.role,
       status: input.status,
-      organizationId: DEMO_ORG_ID,
+      organizationId,
       deletedAt: null,
     },
     create: {
@@ -43,27 +103,16 @@ async function upsertUser(input: {
       lastName: input.lastName,
       role: input.role,
       status: input.status,
-      organizationId: DEMO_ORG_ID,
+      organizationId,
     },
   });
 }
 
 async function main() {
   const passwordHash = await bcrypt.hash(DEMO_PASSWORD, 10);
+  const organization = await upsertOrganization();
 
-  await prisma.organization.upsert({
-    where: { id: DEMO_ORG_ID },
-    update: { name: 'Stage Drive School' },
-    create: {
-      id: DEMO_ORG_ID,
-      name: 'Stage Drive School',
-      slug: 'stage-drive-school',
-      email: DEMO_EMAIL,
-      timezone: 'Europe/Kyiv',
-    },
-  });
-
-  await upsertUser({
+  const owner = await upsertUser(organization.id, {
     id: DEMO_USER_ID,
     email: DEMO_EMAIL,
     firstName: 'Ivan',
@@ -73,42 +122,83 @@ async function main() {
     passwordHash,
   });
 
-  await upsertUser({
-    id: '33333333-3333-3333-3333-333333333333',
-    email: 'invited@example.com',
+  await upsertUser(organization.id, {
+    id: DEMO_ADMIN_ID,
+    email: DEMO_ADMIN_EMAIL,
+    firstName: 'Maria',
+    lastName: 'Ivanenko',
+    role: UserRole.ADMIN,
+    status: UserStatus.ACTIVE,
+    passwordHash,
+  });
+
+  const invited = await upsertUser(organization.id, {
+    id: DEMO_INVITED_ID,
+    email: DEMO_INVITED_EMAIL,
     firstName: 'Olena',
     lastName: 'Koval',
-    role: UserRole.ADMIN,
+    role: UserRole.TEACHER,
     status: UserStatus.INVITED,
     passwordHash: null,
   });
 
-  await upsertUser({
-    id: '44444444-4444-4444-4444-444444444444',
-    email: 'blocked@example.com',
-    firstName: 'Blocked',
-    lastName: 'User',
-    role: UserRole.ADMIN,
+  await upsertUser(organization.id, {
+    id: DEMO_BLOCKED_ID,
+    email: DEMO_BLOCKED_EMAIL,
+    firstName: 'Petro',
+    lastName: 'Blocked',
+    role: UserRole.STUDENT,
     status: UserStatus.BLOCKED,
     passwordHash,
   });
 
-  await upsertUser({
-    id: '55555555-5555-5555-5555-555555555555',
-    email: 'archived@example.com',
-    firstName: 'Archived',
-    lastName: 'User',
-    role: UserRole.ADMIN,
+  await upsertUser(organization.id, {
+    id: DEMO_ARCHIVED_ID,
+    email: DEMO_ARCHIVED_EMAIL,
+    firstName: 'Anna',
+    lastName: 'Archived',
+    role: UserRole.STUDENT,
     status: UserStatus.ARCHIVED,
     passwordHash,
   });
 
-  console.log(`Demo owner: ${DEMO_EMAIL} / ${DEMO_PASSWORD}`);
+  const tokenHash = hashToken(DEMO_INVITE_TOKEN);
+  const expiresAt = new Date(Date.now() + INVITATION_TTL_MS);
+
+  await prisma.invitation.deleteMany({
+    where: {
+      OR: [
+        { id: DEMO_INVITATION_ID },
+        { tokenHash },
+        { email: DEMO_INVITED_EMAIL },
+      ],
+    },
+  });
+
+  await prisma.invitation.create({
+    data: {
+      id: DEMO_INVITATION_ID,
+      email: DEMO_INVITED_EMAIL,
+      role: UserRole.TEACHER,
+      tokenHash,
+      status: InvitationStatus.PENDING,
+      expiresAt,
+      invitedById: owner.id,
+      userId: invited.id,
+      organizationId: organization.id,
+    },
+  });
+
+  console.log('Seed users for Postman (password login, not Google OAuth):');
+  console.log(`  ACTIVE owner:    ${DEMO_EMAIL} / ${DEMO_PASSWORD}`);
+  console.log(`  ACTIVE admin:    ${DEMO_ADMIN_EMAIL} / ${DEMO_PASSWORD}`);
   console.log(
-    'Status fixtures: invited@example.com (no password), blocked@example.com / SecurePassword123, archived@example.com / SecurePassword123',
+    `  INVITED teacher: ${DEMO_INVITED_EMAIL} (no password; verify token below)`,
   );
+  console.log(`  BLOCKED student: ${DEMO_BLOCKED_EMAIL} / ${DEMO_PASSWORD}`);
+  console.log(`  ARCHIVED student: ${DEMO_ARCHIVED_EMAIL} / ${DEMO_PASSWORD}`);
   console.log(
-    'For Google login, the Google account email must match one of these users (or invite your Google email as ADMIN).',
+    `Invitation token (POST /api/invitations/verify): ${DEMO_INVITE_TOKEN}`,
   );
 }
 

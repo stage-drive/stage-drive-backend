@@ -27,17 +27,17 @@ Swagger UI доступний за адресою http://localhost:3000/api/docs
 cp .env.example .env
 ```
 
-| Змінна | Призначення |
-| --- | --- |
-| `PORT` | Порт HTTP-сервера (за замовчуванням `3000`) |
-| `NODE_ENV` | `development` або `production` |
-| `AUTH_SECRET` | Секрет підпису access/refresh токенів |
-| `DATABASE_URL` | Підключення до PostgreSQL для команд на хості (`npm run start:dev`, Prisma CLI) |
+| Змінна                | Призначення                                                                        |
+| --------------------- | ---------------------------------------------------------------------------------- |
+| `PORT`                | Порт HTTP-сервера (за замовчуванням `3000`)                                        |
+| `NODE_ENV`            | `development` або `production`                                                     |
+| `AUTH_SECRET`         | Секрет підпису access/refresh токенів                                              |
+| `DATABASE_URL`        | Підключення до PostgreSQL для команд на хості (`npm run start:dev`, Prisma CLI)    |
 | `DOCKER_DATABASE_URL` | Підключення для контейнерів `backend` і `migrate` (хост — ім'я сервісу `postgres`) |
-| `POSTGRES_USER` | Користувач локального контейнера PostgreSQL |
-| `POSTGRES_PASSWORD` | Пароль локального контейнера PostgreSQL |
-| `POSTGRES_DB` | Назва локальної бази |
-| `POSTGRES_PORT` | Порт локального PostgreSQL на хості |
+| `POSTGRES_USER`       | Користувач локального контейнера PostgreSQL                                        |
+| `POSTGRES_PASSWORD`   | Пароль локального контейнера PostgreSQL                                            |
+| `POSTGRES_DB`         | Назва локальної бази                                                               |
+| `POSTGRES_PORT`       | Порт локального PostgreSQL на хості                                                |
 
 Для віддаленої БД на VM замість localhost вкажіть хост віртуальної машини, наприклад:
 
@@ -130,9 +130,39 @@ npm run db:generate         # згенерувати Prisma Client
 npm run db:migrate          # нова міграція під час розробки
 npm run db:migrate:deploy   # застосувати наявні міграції
 npm run db:migrate:status   # статус міграцій
-npm run db:seed             # демо-дані
+npm run db:seed             # демо-акаунти для Postman (усі UserStatus)
 npx prisma studio
 ```
+
+### Тестові акаунти для Postman
+
+`GET /api/auth/google` **не** тестується через Postman OAuth 2.0 (Authorization → Get New Access Token). Бекенд завжди надсилає в Google `GOOGLE_REDIRECT_URI` (`http://localhost:3000/api/auth/google/callback`). Якщо Postman підставить свій callback (`https://oauth.pstmn.io/v1/callback`), Google відповість `redirect_uri_mismatch`. Додавати URI Postman у Google Console для цього API немає сенсу: код усе одно має повернутися на бекенд, інакше не спрацює PKCE/`state`.
+
+Позитивні сценарії API — через пароль після `npm run db:seed`:
+
+| Статус     | Email                  | Пароль      | Що перевіряти                                                       |
+| ---------- | ---------------------- | ----------- | ------------------------------------------------------------------- |
+| `ACTIVE`   | `owner@example.com`    | `Password1` | `POST /api/auth/login` → access token для OWNER                     |
+| `ACTIVE`   | `admin@example.com`    | `Password1` | логін ADMIN                                                         |
+| `INVITED`  | `invited@example.com`  | немає       | `POST /api/invitations/verify` з токеном нижче; логін паролем — 401 |
+| `BLOCKED`  | `blocked@example.com`  | `Password1` | логін → **403**                                                     |
+| `ARCHIVED` | `archived@example.com` | `Password1` | логін → **403**                                                     |
+
+Токен запрошення (відомий лише в локальному seed):
+
+```text
+SEED_INVITE_TOKEN_FOR_LOCAL_POSTMAN_ONLY___________00000000001
+```
+
+`POST /api/invitations/verify`, Authorization: **No Auth**, Body → raw JSON:
+
+```json
+{
+  "token": "SEED_INVITE_TOKEN_FOR_LOCAL_POSTMAN_ONLY___________00000000001"
+}
+```
+
+Google-вхід перевіряйте в браузері: відкрийте `http://localhost:3000/api/auth/google` (не через fetch/Postman OAuth helper). У Google Cloud Console має бути **той самий** Authorized redirect URI, що в `GOOGLE_REDIRECT_URI`.
 
 ### Міграції до PostgreSQL на віддаленій VM
 
