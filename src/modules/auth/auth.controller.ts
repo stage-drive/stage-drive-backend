@@ -33,8 +33,14 @@ import {
 } from './auth.dto';
 import { GoogleAuthService } from './google-auth.service';
 import { GoogleOAuthConfig } from './google-oauth.config';
+import { PasswordResetService } from './password-reset.service';
+import {
+  RequestPasswordResetDto,
+  ResetPasswordDto,
+} from './password-reset.dto';
 import { RefreshTokenService } from './refresh-token.service';
 import { tryGetAccessTokenUserId } from './token';
+import { MessageResponseDto } from '../users/users.dto';
 
 @ApiTags('auth')
 @Controller('auth')
@@ -44,6 +50,7 @@ export class AuthController {
     private readonly googleAuthService: GoogleAuthService,
     private readonly googleOAuthConfig: GoogleOAuthConfig,
     private readonly refreshTokenService: RefreshTokenService,
+    private readonly passwordResetService: PasswordResetService,
   ) {}
 
   @Post('login')
@@ -75,6 +82,24 @@ export class AuthController {
   })
   async refresh(@Body() body: RefreshTokenDto) {
     return this.refreshTokenService.rotate(body.refreshToken);
+  }
+
+  @Post('forgot-password')
+  @HttpCode(HttpStatus.OK)
+  @ApiOkResponse({ type: MessageResponseDto })
+  async forgotPassword(@Body() body: RequestPasswordResetDto) {
+    return this.passwordResetService.requestPasswordReset(body.email);
+  }
+
+  @Post('reset-password')
+  @HttpCode(HttpStatus.OK)
+  @ApiOkResponse({ type: MessageResponseDto })
+  @ApiUnauthorizedResponse({
+    description:
+      'Посилання для скидання пароля недійсне, прострочене або вже використане.',
+  })
+  async resetPassword(@Body() body: ResetPasswordDto) {
+    return this.passwordResetService.resetPassword(body.token, body.password);
   }
 
   @Post('google')
