@@ -1,6 +1,6 @@
 import {
-  ForbiddenException,
   Injectable,
+  Logger,
   ServiceUnavailableException,
   UnauthorizedException,
 } from '@nestjs/common';
@@ -17,8 +17,7 @@ import { createPkcePair, randomOAuthValue } from './google-pkce';
 import { RefreshTokenService } from './refresh-token.service';
 
 const GOOGLE_AUTH_FAILED_MESSAGE = 'Не вдалося увійти через Google.';
-const GOOGLE_AUTH_FORBIDDEN_MESSAGE =
-  'Вхід через Google доступний лише власнику або запрошеним користувачам.';
+const GOOGLE_ACCOUNT_NOT_FOUND_MESSAGE = 'Акаунт не знайдено';
 const AUTHORIZATION_TTL_MS = 10 * 60 * 1000;
 const GOOGLE_AUTH_URL = 'https://accounts.google.com/o/oauth2/v2/auth';
 
@@ -26,12 +25,10 @@ function fail(): never {
   throw new UnauthorizedException(GOOGLE_AUTH_FAILED_MESSAGE);
 }
 
-function deny(): never {
-  throw new ForbiddenException(GOOGLE_AUTH_FORBIDDEN_MESSAGE);
-}
-
 @Injectable()
 export class GoogleAuthService {
+  private readonly logger = new Logger(GoogleAuthService.name);
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly config: GoogleOAuthConfig,
@@ -94,8 +91,19 @@ export class GoogleAuthService {
 
   async complete(input: { code?: string; state?: string; error?: string }) {
     this.ensureConfigured();
-    if (input.error || !input.code?.trim() || !input.state?.trim()) {
+    if (input.error) {
+      this.logger.warn(`Google callback error=${input.error}`);
       fail();
+    }
+    if (!input.code?.trim()) {
+      throw new UnauthorizedException(
+        'Немає authorization code від Google. Відкрийте /api/auth/google знову і не оновлюйте сторінку callback.',
+      );
+    }
+    if (!input.state?.trim()) {
+      throw new UnauthorizedException(
+        'Немає state. Відкрийте /api/auth/google знову.',
+      );
     }
 
     const pending = await this.prisma.oAuthAuthorization.findUnique({
@@ -107,6 +115,7 @@ export class GoogleAuthService {
           .delete({ where: { id: pending.id } })
           .catch(() => undefined);
       }
+      this.logger.warn('Google callback rejected: unknown or expired state');
       fail();
     }
 
@@ -124,7 +133,10 @@ export class GoogleAuthService {
         pending.codeVerifier,
       );
       profile = await this.oidc.verifyIdToken(idToken, pending.nonce);
-    } catch {
+    } catch (error) {
+      this.logger.warn(
+        `Google callback token failed: ${error instanceof Error ? error.message : 'unknown'}`,
+      );
       fail();
     }
 
@@ -151,55 +163,64 @@ export class GoogleAuthService {
     profile: GoogleProfile,
     linkingUserId: string | null,
   ) {
-    const existingLink = await this.prisma.oAuthAccount.findUnique({
+    const googleId = profile.sub;
+
+    const oauthAccount = await this.prisma.oAuthAccount.findUnique({
       where: {
         provider_providerAccountId: {
           provider: AuthProvider.GOOGLE,
-          providerAccountId: profile.sub,
+          providerAccountId: googleId,
         },
       },
       include: { user: true },
     });
 
-    if (existingLink) {
-      if (linkingUserId && linkingUserId !== existingLink.userId) {
-        fail();
+    if (!oauthAccount) {
+      if (linkingUserId) {
+        const currentUser = await this.prisma.user.findUnique({
+          where: { id: linkingUserId },
+        });
+        if (!currentUser) {
+          fail();
+        }
+        this.assertAllowed(currentUser);
+        await this.linkAccount(currentUser.id, profile);
+        return this.authorizeUser(currentUser);
       }
-      this.assertAllowed(existingLink.user);
-      const session = await this.sessionFor(existingLink.user);
-      await this.authService.recordLogin(existingLink.user.id);
-      return session;
+
+      const existingUser = await this.findUserByGoogleEmail(profile.email);
+      if (!existingUser) {
+        throw new UnauthorizedException(GOOGLE_ACCOUNT_NOT_FOUND_MESSAGE);
+      }
+      this.assertAllowed(existingUser);
+      await this.linkAccount(existingUser.id, profile);
+      return this.authorizeUser(existingUser);
     }
 
-    if (linkingUserId) {
-      const user = await this.prisma.user.findUnique({
-        where: { id: linkingUserId },
-      });
-      if (!user) {
-        fail();
-      }
-      this.assertAllowed(user);
-      await this.linkAccount(user.id, profile);
-      const session = await this.sessionFor(user);
-      await this.authService.recordLogin(user.id);
-      return session;
+    if (linkingUserId && linkingUserId !== oauthAccount.userId) {
+      fail();
     }
+    return this.authorizeUser(oauthAccount.user);
+  }
 
-    const byEmail = await this.prisma.user.findUnique({
-      where: { email: profile.email },
+  private async findUserByGoogleEmail(email: string) {
+    return this.prisma.user.findFirst({
+      where: {
+        deletedAt: null,
+        email: { equals: email, mode: 'insensitive' },
+      },
     });
-    if (!byEmail) {
-      deny();
-    }
-    this.assertAllowed(byEmail);
-    await this.linkAccount(byEmail.id, profile);
-    const session = await this.sessionFor(byEmail);
-    await this.authService.recordLogin(byEmail.id);
-    return session;
   }
 
   private assertAllowed(user: User) {
     assertSignInAllowed(user);
+  }
+
+  private async authorizeUser(user: User) {
+    this.assertAllowed(user);
+    const session = await this.sessionFor(user);
+    await this.authService.recordLogin(user.id);
+    return session;
   }
 
   private async sessionFor(user: User) {

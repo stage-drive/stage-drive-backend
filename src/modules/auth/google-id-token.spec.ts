@@ -93,6 +93,21 @@ describe('verifyGoogleIdToken', () => {
     });
   });
 
+  it('accepts an authorization-code token that omits nonce', async () => {
+    const token = await signedIdToken(privateKey, { nonce: undefined });
+    await expect(verify(token)).resolves.toMatchObject({
+      sub: 'google-sub-1',
+      email: 'ada@gmail.com',
+    });
+  });
+
+  it('accepts email_verified as the string true', async () => {
+    const token = await signedIdToken(privateKey, { email_verified: 'true' });
+    await expect(verify(token)).resolves.toMatchObject({
+      email: 'ada@gmail.com',
+    });
+  });
+
   it('rejects a wrong audience', async () => {
     const token = await signedIdToken(
       privateKey,

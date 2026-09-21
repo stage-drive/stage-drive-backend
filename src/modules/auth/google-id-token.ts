@@ -8,8 +8,8 @@ export const GOOGLE_ISSUERS = [
 export const GOOGLE_JWKS_URL = 'https://www.googleapis.com/oauth2/v3/certs';
 
 export class GoogleIdTokenError extends Error {
-  constructor() {
-    super('Invalid Google ID token');
+  constructor(reason = 'Invalid Google ID token') {
+    super(reason);
     this.name = 'GoogleIdTokenError';
   }
 }
@@ -54,27 +54,31 @@ export async function verifyGoogleIdToken(
     });
     payload = verified.payload;
   } catch {
-    throw new GoogleIdTokenError();
+    throw new GoogleIdTokenError('Invalid Google ID token (jwt)');
   }
 
-  if (options.nonce !== undefined && payload.nonce !== options.nonce) {
-    throw new GoogleIdTokenError();
+  if (
+    options.nonce !== undefined &&
+    payload.nonce !== undefined &&
+    payload.nonce !== options.nonce
+  ) {
+    throw new GoogleIdTokenError('Invalid Google ID token (nonce)');
   }
 
   if (typeof payload.azp === 'string' && payload.azp !== options.clientId) {
-    throw new GoogleIdTokenError();
+    throw new GoogleIdTokenError('Invalid Google ID token (azp)');
   }
 
-  if (payload.email_verified !== true) {
-    throw new GoogleIdTokenError();
+  if (payload.email_verified !== true && payload.email_verified !== 'true') {
+    throw new GoogleIdTokenError('Invalid Google ID token (email_verified)');
   }
 
   if (typeof payload.sub !== 'string' || !payload.sub) {
-    throw new GoogleIdTokenError();
+    throw new GoogleIdTokenError('Invalid Google ID token (sub)');
   }
 
   if (typeof payload.email !== 'string' || !payload.email.trim()) {
-    throw new GoogleIdTokenError();
+    throw new GoogleIdTokenError('Invalid Google ID token (email)');
   }
 
   const givenName = readNamePart(payload.given_name, 'User', 60);
