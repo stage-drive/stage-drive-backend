@@ -170,6 +170,7 @@ export class VerifyInvitationResponseDto {
 export const InvitationTokenErrorCode = {
   INVALID: 'INVALID_INVITATION_TOKEN',
   EXPIRED: 'EXPIRED_INVITATION_TOKEN',
+  CANCELLED: 'CANCELLED_INVITATION_TOKEN',
   USED: 'USED_INVITATION_TOKEN',
 } as const;
 

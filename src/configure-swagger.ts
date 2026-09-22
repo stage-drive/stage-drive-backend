@@ -7,6 +7,7 @@ export function configureSwagger(app: INestApplication) {
     .setDescription('Бекенд платформи управління автошколами')
     .setVersion('0.0.1')
     .addTag('auth')
+    .addTag('invitations', 'Запрошення та активація акаунта')
     .addBearerAuth()
     .build();
 

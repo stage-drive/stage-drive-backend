@@ -49,7 +49,8 @@ export class InvitationsController {
   @ApiOkResponse({ type: VerifyInvitationResponseDto })
   @ApiBadRequestResponse({
     description:
-      'Токен недійсний, прострочений або вже використаний. У тілі відповіді є `code`.',
+      'Токен недійсний (`INVALID_INVITATION_TOKEN`), прострочений (`EXPIRED_INVITATION_TOKEN`), ' +
+      'скасований (`CANCELLED_INVITATION_TOKEN`) або вже використаний (`USED_INVITATION_TOKEN`).',
     type: InvitationTokenErrorDto,
   })
   verify(@Body() body: VerifyInvitationDto) {
@@ -67,8 +68,9 @@ export class InvitationsController {
   @ApiOkResponse({ type: ActivateInvitationResponseDto })
   @ApiBadRequestResponse({
     description:
-      'Токен недійсний, прострочений або вже використаний, або пароль не пройшов валідацію. ' +
-      'Помилка токена містить `code`, помилка полів форми — `errors`.',
+      'Токен недійсний (`INVALID_INVITATION_TOKEN`), прострочений (`EXPIRED_INVITATION_TOKEN`), ' +
+      'скасований (`CANCELLED_INVITATION_TOKEN`) або вже використаний (`USED_INVITATION_TOKEN`). ' +
+      'Помилка пароля повертає `errors` по полях форми.',
     type: InvitationTokenErrorDto,
   })
   activate(@Body() body: ActivateInvitationDto) {

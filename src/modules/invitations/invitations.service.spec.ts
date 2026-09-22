@@ -11,6 +11,7 @@ import { MailService } from '../mail/mail.service';
 import { InvitationTokenErrorCode } from './invitations.dto';
 import {
   ADMIN_CANNOT_INVITE_PRIVILEGED_ROLE_MESSAGE,
+  CANCELLED_INVITATION_TOKEN_MESSAGE,
   EMAIL_ALREADY_EXISTS_MESSAGE,
   EXPIRED_INVITATION_TOKEN_MESSAGE,
   INVALID_INVITATION_TOKEN_MESSAGE,
@@ -30,8 +31,12 @@ function uniqueConstraintError(field: string) {
 describe('InvitationsService', () => {
   let service: InvitationsService;
   let tx: {
-    user: { create: jest.Mock };
-    invitation: { create: jest.Mock };
+    user: {
+      create: jest.Mock;
+      findUnique: jest.Mock;
+      update: jest.Mock;
+    };
+    invitation: { create: jest.Mock; findFirst: jest.Mock };
   };
 
   const owner = {
@@ -104,8 +109,8 @@ describe('InvitationsService', () => {
 
   const prisma = {
     organization: { findUnique: jest.fn() },
-    user: { delete: jest.fn() },
-    invitation: { findUnique: jest.fn() },
+    user: { delete: jest.fn(), update: jest.fn() },
+    invitation: { findUnique: jest.fn(), delete: jest.fn() },
     $transaction: jest.fn(),
   };
   const mailService = {
@@ -121,10 +126,19 @@ describe('InvitationsService', () => {
     });
     mailService.sendEmail.mockResolvedValue(undefined);
     prisma.user.delete.mockResolvedValue(createdUser);
+    prisma.user.update.mockResolvedValue(createdUser);
+    prisma.invitation.delete.mockResolvedValue(createdInvitation);
 
     tx = {
-      user: { create: jest.fn().mockResolvedValue(createdUser) },
-      invitation: { create: jest.fn().mockResolvedValue(createdInvitation) },
+      user: {
+        create: jest.fn().mockResolvedValue(createdUser),
+        findUnique: jest.fn().mockResolvedValue(null),
+        update: jest.fn(),
+      },
+      invitation: {
+        create: jest.fn().mockResolvedValue(createdInvitation),
+        findFirst: jest.fn().mockResolvedValue(null),
+      },
     };
     prisma.$transaction.mockImplementation((cb: (client: unknown) => unknown) =>
       cb(tx),
@@ -220,6 +234,139 @@ describe('InvitationsService', () => {
       },
     });
     expect(mailService.sendEmail).not.toHaveBeenCalled();
+  });
+
+  it('issues a new invitation when the previous one expired or was cancelled', async () => {
+    const invitedUser = {
+      id: 'admin-1',
+      firstName: 'Стара',
+      lastName: 'Версія',
+      email: 'admin@example.com',
+      phone: null,
+      passwordHash: null,
+      role: UserRole.ADMIN,
+      status: UserStatus.INVITED,
+      organizationId: 'org-1',
+      deletedAt: null,
+    };
+    tx.user.findUnique.mockResolvedValue(invitedUser);
+    tx.user.update.mockResolvedValue(createdUser);
+
+    const result = await service.inviteAdmin(owner as never, payload);
+
+    expect(tx.user.create).not.toHaveBeenCalled();
+    expect(tx.invitation.findFirst).toHaveBeenCalledWith({
+      where: {
+        userId: 'admin-1',
+        status: InvitationStatus.PENDING,
+        acceptedAt: null,
+        expiresAt: { gt: expect.any(Date) },
+      },
+    });
+    expect(tx.user.update).toHaveBeenCalledWith({
+      where: { id: 'admin-1' },
+      data: {
+        firstName: 'Олена',
+        lastName: 'Коваль',
+        phone: '+380991234567',
+        role: UserRole.ADMIN,
+        status: UserStatus.INVITED,
+        passwordHash: null,
+      },
+    });
+    expect(tx.invitation.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        email: 'admin@example.com',
+        role: UserRole.ADMIN,
+        status: InvitationStatus.PENDING,
+        userId: 'admin-1',
+        invitedById: 'owner-1',
+      }),
+    });
+    expect(result.invitation.status).toBe(InvitationStatus.PENDING);
+    expect(mailService.sendEmail).toHaveBeenCalled();
+  });
+
+  it('rejects a repeat invite while a live invitation is still pending', async () => {
+    tx.user.findUnique.mockResolvedValue({
+      id: 'admin-1',
+      status: UserStatus.INVITED,
+      organizationId: 'org-1',
+      deletedAt: null,
+    });
+    tx.invitation.findFirst.mockResolvedValue({ id: 'live-invite' });
+
+    await expect(
+      service.inviteAdmin(owner as never, payload),
+    ).rejects.toMatchObject({
+      response: {
+        statusCode: 409,
+        errors: [{ field: 'email', message: EMAIL_ALREADY_EXISTS_MESSAGE }],
+      },
+    });
+    expect(tx.user.create).not.toHaveBeenCalled();
+    expect(tx.invitation.create).not.toHaveBeenCalled();
+    expect(mailService.sendEmail).not.toHaveBeenCalled();
+  });
+
+  it('rejects a repeat invite when the account is already active', async () => {
+    tx.user.findUnique.mockResolvedValue({
+      id: 'admin-1',
+      status: UserStatus.ACTIVE,
+      organizationId: 'org-1',
+      deletedAt: null,
+    });
+
+    await expect(
+      service.inviteAdmin(owner as never, payload),
+    ).rejects.toMatchObject({
+      response: {
+        statusCode: 409,
+        errors: [{ field: 'email', message: EMAIL_ALREADY_EXISTS_MESSAGE }],
+      },
+    });
+    expect(tx.invitation.create).not.toHaveBeenCalled();
+    expect(mailService.sendEmail).not.toHaveBeenCalled();
+  });
+
+  it('removes only the new invitation if resending the email fails', async () => {
+    const invitedUser = {
+      id: 'admin-1',
+      firstName: 'Стара',
+      lastName: 'Версія',
+      email: 'admin@example.com',
+      phone: null,
+      passwordHash: null,
+      role: UserRole.ADMIN,
+      status: UserStatus.INVITED,
+      organizationId: 'org-1',
+      deletedAt: null,
+    };
+    tx.user.findUnique.mockResolvedValue(invitedUser);
+    tx.user.update.mockResolvedValue(createdUser);
+    mailService.sendEmail.mockRejectedValue(
+      new InternalServerErrorException('Failed to send email'),
+    );
+
+    await expect(
+      service.inviteAdmin(owner as never, payload),
+    ).rejects.toBeInstanceOf(InternalServerErrorException);
+
+    expect(prisma.user.delete).not.toHaveBeenCalled();
+    expect(prisma.invitation.delete).toHaveBeenCalledWith({
+      where: { id: 'invite-1' },
+    });
+    expect(prisma.user.update).toHaveBeenCalledWith({
+      where: { id: 'admin-1' },
+      data: {
+        firstName: 'Стара',
+        lastName: 'Версія',
+        phone: null,
+        role: UserRole.ADMIN,
+        status: UserStatus.INVITED,
+        passwordHash: null,
+      },
+    });
   });
 
   it('rejects when the owner organization is missing', async () => {
@@ -453,6 +600,21 @@ describe('InvitationsService', () => {
       });
     });
 
+    it('rejects a cancelled invitation token', async () => {
+      prisma.invitation.findUnique.mockResolvedValue({
+        ...pendingInvitation,
+        status: InvitationStatus.CANCELLED,
+      });
+
+      await expect(service.verifyToken(rawToken)).rejects.toMatchObject({
+        response: {
+          statusCode: 400,
+          code: InvitationTokenErrorCode.CANCELLED,
+          message: CANCELLED_INVITATION_TOKEN_MESSAGE,
+        },
+      });
+    });
+
     it('rejects an already accepted invitation token', async () => {
       prisma.invitation.findUnique.mockResolvedValue({
         ...pendingInvitation,
@@ -669,8 +831,8 @@ describe('InvitationsService', () => {
       await expect(service.activate(rawToken, password)).rejects.toMatchObject({
         response: {
           statusCode: 400,
-          code: InvitationTokenErrorCode.INVALID,
-          message: INVALID_INVITATION_TOKEN_MESSAGE,
+          code: InvitationTokenErrorCode.CANCELLED,
+          message: CANCELLED_INVITATION_TOKEN_MESSAGE,
         },
       });
       expect(prisma.$transaction).not.toHaveBeenCalled();

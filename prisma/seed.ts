@@ -203,7 +203,7 @@ async function main() {
   console.log(`  BLOCKED student: ${DEMO_BLOCKED_EMAIL} / ${DEMO_PASSWORD}`);
   console.log(`  ARCHIVED student: ${DEMO_ARCHIVED_EMAIL} / ${DEMO_PASSWORD}`);
   console.log(
-    `Invitation token (POST /api/invitations/verify): ${DEMO_INVITE_TOKEN}`,
+    `Invitation token (POST /api/invitations/verify and /activate): ${DEMO_INVITE_TOKEN}`,
   );
 
   if (!SEED_GOOGLE_EMAIL) {

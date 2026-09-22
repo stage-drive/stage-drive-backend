@@ -138,13 +138,18 @@ describe('API (e2e)', () => {
     user: {
       findUnique: jest.fn(),
       findFirst: jest.fn(),
+      findUniqueOrThrow: jest.fn(),
       update: jest.fn(),
+      updateMany: jest.fn(),
       create: jest.fn(),
       delete: jest.fn(),
     },
     invitation: {
       create: jest.fn(),
       findUnique: jest.fn(),
+      findFirst: jest.fn(),
+      updateMany: jest.fn(),
+      delete: jest.fn(),
     },
     refreshToken: {
       create: jest.fn(),
@@ -180,7 +185,15 @@ describe('API (e2e)', () => {
     prismaMock.user.update.mockReset();
     prismaMock.user.create.mockReset();
     prismaMock.user.delete.mockReset();
+    prismaMock.user.updateMany.mockReset();
+    prismaMock.user.findUniqueOrThrow.mockReset();
     prismaMock.invitation.create.mockReset();
+    prismaMock.invitation.findUnique.mockReset();
+    prismaMock.invitation.findUnique.mockResolvedValue(null);
+    prismaMock.invitation.findFirst.mockReset();
+    prismaMock.invitation.findFirst.mockResolvedValue(null);
+    prismaMock.invitation.updateMany.mockReset();
+    prismaMock.invitation.delete.mockReset();
     prismaMock.refreshToken.create.mockReset();
     prismaMock.refreshToken.create.mockResolvedValue({});
     prismaMock.refreshToken.updateMany.mockReset();
@@ -388,6 +401,17 @@ describe('API (e2e)', () => {
       statusCode: 401,
       message: 'Не вдалося увійти через Google.',
     });
+  });
+
+  it('OpenAPI documents POST /api/invitations/activate', async () => {
+    const response = await request(app.getHttpServer())
+      .get('/api/docs-json')
+      .expect(200);
+
+    const paths = (response.body as { paths: Record<string, unknown> }).paths;
+    expect(
+      paths['/api/invitations/activate'] ?? paths['/invitations/activate'],
+    ).toBeDefined();
   });
 
   it('OpenAPI documents POST /api/invitations/verify', async () => {
@@ -810,14 +834,14 @@ describe('API (e2e)', () => {
         .send({
           firstName: 'Olena',
           lastName: 'Koval',
-          email: `${role.toLowerCase()}@example.com`,
+          email: `new-${role.toLowerCase()}@example.com`,
           role,
         })
         .expect(201);
 
       expect(response.body).toMatchObject({
         user: {
-          email: `${role.toLowerCase()}@example.com`,
+          email: `new-${role.toLowerCase()}@example.com`,
           firstName: 'Olena',
           lastName: 'Koval',
           role,
@@ -825,7 +849,7 @@ describe('API (e2e)', () => {
           organizationId: organization.id,
         },
         invitation: {
-          email: `${role.toLowerCase()}@example.com`,
+          email: `new-${role.toLowerCase()}@example.com`,
           role,
           status: 'PENDING',
           organizationId: organization.id,
@@ -834,7 +858,7 @@ describe('API (e2e)', () => {
       expect(response.body).not.toHaveProperty('token');
       expect(mailServiceMock.sendEmail).toHaveBeenCalledWith(
         expect.objectContaining({
-          to: `${role.toLowerCase()}@example.com`,
+          to: `new-${role.toLowerCase()}@example.com`,
           subject: expect.stringContaining(organization.name),
         }),
       );
@@ -991,6 +1015,224 @@ describe('API (e2e)', () => {
     expect(response.body).toMatchObject({
       statusCode: 400,
       errors: [{ field: 'token', message: "Заповніть обов'язкове поле." }],
+    });
+  });
+
+  it('POST /api/invitations/verify rejects a cancelled token', async () => {
+    prismaMock.invitation.findUnique.mockResolvedValue({
+      id: createdInvitation.id,
+      email: createdAdmin.email,
+      role: createdAdmin.role,
+      status: 'CANCELLED',
+      acceptedAt: null,
+      expiresAt: new Date(Date.now() + 60 * 60 * 1000),
+      userId: createdAdmin.id,
+      organizationId: organization.id,
+      user: {
+        firstName: createdAdmin.firstName,
+        lastName: createdAdmin.lastName,
+        status: 'INVITED',
+      },
+      organization: { name: organization.name, deletedAt: null },
+    });
+
+    const response = await request(app.getHttpServer())
+      .post('/api/invitations/verify')
+      .send({ token: 'cancelled-token' })
+      .expect(400);
+
+    expect(response.body).toMatchObject({
+      statusCode: 400,
+      code: 'CANCELLED_INVITATION_TOKEN',
+      message: 'Це запрошення скасовано.',
+    });
+  });
+
+  function activatableInvitation(overrides: Record<string, unknown> = {}) {
+    return {
+      id: createdInvitation.id,
+      email: createdAdmin.email,
+      role: createdAdmin.role,
+      status: 'PENDING',
+      acceptedAt: null,
+      expiresAt: new Date(Date.now() + 60 * 60 * 1000),
+      userId: createdAdmin.id,
+      organizationId: organization.id,
+      user: {
+        id: createdAdmin.id,
+        firstName: createdAdmin.firstName,
+        lastName: createdAdmin.lastName,
+        email: createdAdmin.email,
+        phone: null,
+        status: 'INVITED',
+        deletedAt: null,
+      },
+      organization: { name: organization.name, deletedAt: null },
+      ...overrides,
+    };
+  }
+
+  it('POST /api/invitations/activate sets the password and accepts the invitation', async () => {
+    prismaMock.invitation.findUnique.mockResolvedValue(activatableInvitation());
+    prismaMock.invitation.updateMany.mockResolvedValue({ count: 1 });
+    prismaMock.user.updateMany.mockResolvedValue({ count: 1 });
+    prismaMock.user.findUniqueOrThrow.mockResolvedValue({
+      ...createdAdmin,
+      phone: null,
+      status: 'ACTIVE',
+    });
+
+    const response = await request(app.getHttpServer())
+      .post('/api/invitations/activate')
+      .send({
+        token: 'valid-invitation-token',
+        password: 'SecurePassword123!',
+        passwordConfirmation: 'SecurePassword123!',
+      })
+      .expect(200);
+
+    expect(response.body).toMatchObject({
+      user: {
+        id: createdAdmin.id,
+        email: createdAdmin.email,
+        status: 'ACTIVE',
+      },
+      invitation: {
+        id: createdInvitation.id,
+        status: 'ACCEPTED',
+      },
+    });
+  });
+
+  it('POST /api/invitations/activate rejects an expired invitation', async () => {
+    prismaMock.invitation.findUnique.mockResolvedValue(
+      activatableInvitation({
+        expiresAt: new Date(Date.now() - 1000),
+      }),
+    );
+
+    const response = await request(app.getHttpServer())
+      .post('/api/invitations/activate')
+      .send({
+        token: 'expired-token',
+        password: 'SecurePassword123!',
+        passwordConfirmation: 'SecurePassword123!',
+      })
+      .expect(400);
+
+    expect(response.body).toMatchObject({
+      statusCode: 400,
+      code: 'EXPIRED_INVITATION_TOKEN',
+      message: 'Посилання-запрошення прострочене.',
+    });
+  });
+
+  it('POST /api/invitations/activate rejects a cancelled invitation', async () => {
+    prismaMock.invitation.findUnique.mockResolvedValue(
+      activatableInvitation({ status: 'CANCELLED' }),
+    );
+
+    const response = await request(app.getHttpServer())
+      .post('/api/invitations/activate')
+      .send({
+        token: 'cancelled-token',
+        password: 'SecurePassword123!',
+        passwordConfirmation: 'SecurePassword123!',
+      })
+      .expect(400);
+
+    expect(response.body).toMatchObject({
+      statusCode: 400,
+      code: 'CANCELLED_INVITATION_TOKEN',
+      message: 'Це запрошення скасовано.',
+    });
+  });
+
+  it('POST /api/invitations/activate rejects a reused invitation', async () => {
+    prismaMock.invitation.findUnique.mockResolvedValue(
+      activatableInvitation({
+        status: 'ACCEPTED',
+        acceptedAt: new Date(),
+        user: {
+          id: createdAdmin.id,
+          firstName: createdAdmin.firstName,
+          lastName: createdAdmin.lastName,
+          email: createdAdmin.email,
+          phone: null,
+          status: 'ACTIVE',
+          deletedAt: null,
+        },
+      }),
+    );
+
+    const response = await request(app.getHttpServer())
+      .post('/api/invitations/activate')
+      .send({
+        token: 'used-token',
+        password: 'SecurePassword123!',
+        passwordConfirmation: 'SecurePassword123!',
+      })
+      .expect(400);
+
+    expect(response.body).toMatchObject({
+      statusCode: 400,
+      code: 'USED_INVITATION_TOKEN',
+      message: 'Це запрошення вже використано.',
+    });
+  });
+
+  it('POST /api/invitations creates a new invitation for an expired invite', async () => {
+    const invited = {
+      id: createdAdmin.id,
+      email: 'admin@example.com',
+      firstName: 'Old',
+      lastName: 'Name',
+      phone: null,
+      role: 'ADMIN' as const,
+      status: 'INVITED' as const,
+      organizationId: organization.id,
+      deletedAt: null,
+      passwordHash: null,
+    };
+    prismaMock.user.findUnique.mockImplementation(
+      (args: { where: { id?: string; email?: string } }) => {
+        if (args.where.id === owner.id || args.where.email === owner.email) {
+          return Promise.resolve({ ...owner });
+        }
+        if (args.where.email === invited.email) {
+          return Promise.resolve(invited);
+        }
+        return Promise.resolve(null);
+      },
+    );
+    prismaMock.user.update.mockResolvedValue({
+      ...invited,
+      firstName: 'Olena',
+      lastName: 'Koval',
+    });
+
+    const token = signAccessToken(owner.id);
+    const response = await request(app.getHttpServer())
+      .post('/api/invitations')
+      .set('Authorization', `Bearer ${token}`)
+      .send({
+        firstName: 'Olena',
+        lastName: 'Koval',
+        email: 'admin@example.com',
+      })
+      .expect(201);
+
+    expect(prismaMock.user.create).not.toHaveBeenCalled();
+    expect(prismaMock.invitation.create).toHaveBeenCalled();
+    expect(response.body).toMatchObject({
+      user: {
+        id: createdAdmin.id,
+        email: 'admin@example.com',
+        status: 'INVITED',
+      },
+      invitation: {
+        status: 'PENDING',
+      },
     });
   });
 });
