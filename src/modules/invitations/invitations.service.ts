@@ -12,6 +12,7 @@ import {
   UserRole,
   UserStatus,
 } from '@prisma/client';
+import * as bcrypt from 'bcrypt';
 import { createHash, randomBytes } from 'crypto';
 import { isUniqueConstraintOn } from '../../common/prisma/unique-constraint';
 import { PrismaService } from '../../prisma/prisma.service';
@@ -35,6 +36,8 @@ export const EXPIRED_INVITATION_TOKEN_MESSAGE =
   'Посилання-запрошення прострочене.';
 export const USED_INVITATION_TOKEN_MESSAGE =
   'Це запрошення вже використано.';
+
+const BCRYPT_ROUNDS = 10;
 
 const DEFAULT_FRONTEND_URL = 'http://localhost:5173';
 
@@ -109,6 +112,102 @@ export class InvitationsService {
   }
 
   async verifyToken(rawToken: string): Promise<VerifyInvitationResponseDto> {
+    const invitation = await this.findActivatableInvitation(rawToken);
+
+    return {
+      valid: true,
+      email: invitation.email,
+      firstName: invitation.user.firstName,
+      lastName: invitation.user.lastName,
+      role: invitation.role,
+      status: invitation.status,
+      expiresAt: invitation.expiresAt,
+      organizationName: invitation.organization.name,
+      organizationId: invitation.organizationId,
+    };
+  }
+
+  async activate(rawToken: string, password: string) {
+    const invitation = await this.findActivatableInvitation(rawToken);
+    const passwordHash = await bcrypt.hash(password, BCRYPT_ROUNDS);
+    const acceptedAt = new Date();
+
+    const user = await this.prisma.$transaction(async (tx) => {
+      const fresh = await tx.invitation.findUnique({
+        where: { id: invitation.id },
+        include: { user: true, organization: true },
+      });
+      if (!fresh) {
+        throw this.tokenError(
+          InvitationTokenErrorCode.INVALID,
+          INVALID_INVITATION_TOKEN_MESSAGE,
+        );
+      }
+      this.assertInvitationActivatable(fresh);
+
+      const invitationUpdate = await tx.invitation.updateMany({
+        where: {
+          id: fresh.id,
+          status: InvitationStatus.PENDING,
+          acceptedAt: null,
+        },
+        data: {
+          status: InvitationStatus.ACCEPTED,
+          acceptedAt,
+        },
+      });
+      if (invitationUpdate.count !== 1) {
+        throw this.tokenError(
+          InvitationTokenErrorCode.USED,
+          USED_INVITATION_TOKEN_MESSAGE,
+        );
+      }
+
+      const userUpdate = await tx.user.updateMany({
+        where: {
+          id: fresh.userId,
+          status: UserStatus.INVITED,
+          deletedAt: null,
+        },
+        data: {
+          passwordHash,
+          status: UserStatus.ACTIVE,
+        },
+      });
+      if (userUpdate.count !== 1) {
+        throw this.tokenError(
+          InvitationTokenErrorCode.USED,
+          USED_INVITATION_TOKEN_MESSAGE,
+        );
+      }
+
+      return tx.user.findUniqueOrThrow({ where: { id: fresh.userId } });
+    });
+
+    return {
+      user: {
+        id: user.id,
+        firstName: user.firstName,
+        lastName: user.lastName,
+        email: user.email,
+        phone: user.phone,
+        role: user.role,
+        status: user.status,
+        organizationId: user.organizationId,
+      },
+      invitation: {
+        id: invitation.id,
+        email: invitation.email,
+        role: invitation.role,
+        status: InvitationStatus.ACCEPTED,
+        acceptedAt,
+        userId: invitation.userId,
+        organizationId: invitation.organizationId,
+      },
+    };
+  }
+
+  private async findActivatableInvitation(rawToken: string) {
     const token = rawToken.trim();
     const invitation = await this.prisma.invitation.findUnique({
       where: { tokenHash: hashToken(token) },
@@ -116,6 +215,24 @@ export class InvitationsService {
     });
 
     if (!invitation) {
+      throw this.tokenError(
+        InvitationTokenErrorCode.INVALID,
+        INVALID_INVITATION_TOKEN_MESSAGE,
+      );
+    }
+
+    this.assertInvitationActivatable(invitation);
+    return invitation;
+  }
+
+  private assertInvitationActivatable(invitation: {
+    status: InvitationStatus;
+    acceptedAt: Date | null;
+    expiresAt: Date;
+    user: { status: UserStatus; deletedAt?: Date | null };
+    organization: { deletedAt?: Date | null };
+  }): void {
+    if (invitation.user.deletedAt || invitation.organization.deletedAt) {
       throw this.tokenError(
         InvitationTokenErrorCode.INVALID,
         INVALID_INVITATION_TOKEN_MESSAGE,
@@ -142,18 +259,6 @@ export class InvitationsService {
         EXPIRED_INVITATION_TOKEN_MESSAGE,
       );
     }
-
-    return {
-      valid: true,
-      email: invitation.email,
-      firstName: invitation.user.firstName,
-      lastName: invitation.user.lastName,
-      role: invitation.role,
-      status: invitation.status,
-      expiresAt: invitation.expiresAt,
-      organizationName: invitation.organization.name,
-      organizationId: invitation.organizationId,
-    };
   }
 
   private isInvitationUsed(invitation: {

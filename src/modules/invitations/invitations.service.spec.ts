@@ -4,6 +4,7 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { InvitationStatus, Prisma, UserRole, UserStatus } from '@prisma/client';
+import * as bcrypt from 'bcrypt';
 import { createHash } from 'crypto';
 import { PrismaService } from '../../prisma/prisma.service';
 import { MailService } from '../mail/mail.service';
@@ -494,6 +495,236 @@ describe('InvitationsService', () => {
 
       expect(prisma.invitation.findUnique).toHaveBeenCalledTimes(2);
       expect(prisma.$transaction).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('activate', () => {
+    const rawToken = 'valid-invitation-token';
+    const password = 'SecurePassword123!';
+    const pendingInvitation = {
+      id: 'invite-1',
+      email: 'admin@example.com',
+      role: UserRole.ADMIN,
+      status: InvitationStatus.PENDING,
+      acceptedAt: null,
+      expiresAt: new Date(Date.now() + 60 * 60 * 1000),
+      userId: 'admin-1',
+      organizationId: 'org-1',
+      tokenHash: createHash('sha256').update(rawToken).digest('hex'),
+      user: {
+        id: 'admin-1',
+        firstName: 'Олена',
+        lastName: 'Коваль',
+        email: 'admin@example.com',
+        phone: '+380991234567',
+        status: UserStatus.INVITED,
+        deletedAt: null,
+      },
+      organization: {
+        name: 'Автошкола Drive',
+        deletedAt: null,
+      },
+    };
+    const activatedUser = {
+      id: 'admin-1',
+      firstName: 'Олена',
+      lastName: 'Коваль',
+      email: 'admin@example.com',
+      phone: '+380991234567',
+      role: UserRole.ADMIN,
+      status: UserStatus.ACTIVE,
+      organizationId: 'org-1',
+    };
+
+    let activateTx: {
+      invitation: {
+        findUnique: jest.Mock;
+        updateMany: jest.Mock;
+      };
+      user: {
+        updateMany: jest.Mock;
+        findUniqueOrThrow: jest.Mock;
+      };
+    };
+
+    beforeEach(() => {
+      activateTx = {
+        invitation: {
+          findUnique: jest.fn().mockResolvedValue(pendingInvitation),
+          updateMany: jest.fn().mockResolvedValue({ count: 1 }),
+        },
+        user: {
+          updateMany: jest.fn().mockResolvedValue({ count: 1 }),
+          findUniqueOrThrow: jest.fn().mockResolvedValue(activatedUser),
+        },
+      };
+      prisma.invitation.findUnique.mockResolvedValue(pendingInvitation);
+      prisma.$transaction.mockImplementation(
+        (cb: (client: typeof activateTx) => unknown) => cb(activateTx),
+      );
+    });
+
+    it('sets the password, activates the user and accepts the invitation', async () => {
+      const result = await service.activate(` ${rawToken} `, password);
+
+      expect(prisma.invitation.findUnique).toHaveBeenCalledWith({
+        where: {
+          tokenHash: createHash('sha256').update(rawToken).digest('hex'),
+        },
+        include: { user: true, organization: true },
+      });
+      expect(activateTx.invitation.updateMany).toHaveBeenCalledWith({
+        where: {
+          id: 'invite-1',
+          status: InvitationStatus.PENDING,
+          acceptedAt: null,
+        },
+        data: {
+          status: InvitationStatus.ACCEPTED,
+          acceptedAt: expect.any(Date),
+        },
+      });
+
+      const userWrite = activateTx.user.updateMany.mock.calls[0][0] as {
+        where: { id: string; status: UserStatus; deletedAt: null };
+        data: { passwordHash: string; status: UserStatus };
+      };
+      expect(userWrite.where).toEqual({
+        id: 'admin-1',
+        status: UserStatus.INVITED,
+        deletedAt: null,
+      });
+      expect(userWrite.data.status).toBe(UserStatus.ACTIVE);
+      expect(userWrite.data.passwordHash).not.toBe(password);
+      await expect(
+        bcrypt.compare(password, userWrite.data.passwordHash),
+      ).resolves.toBe(true);
+
+      expect(result.user).toEqual(activatedUser);
+      expect(result.invitation).toEqual({
+        id: 'invite-1',
+        email: 'admin@example.com',
+        role: UserRole.ADMIN,
+        status: InvitationStatus.ACCEPTED,
+        acceptedAt: expect.any(Date),
+        userId: 'admin-1',
+        organizationId: 'org-1',
+      });
+      expect(JSON.stringify(result)).not.toContain(password);
+      expect(JSON.stringify(result)).not.toContain('tokenHash');
+    });
+
+    it('rejects an unknown token without changing the account', async () => {
+      prisma.invitation.findUnique.mockResolvedValue(null);
+
+      await expect(service.activate(rawToken, password)).rejects.toMatchObject({
+        response: {
+          statusCode: 400,
+          code: InvitationTokenErrorCode.INVALID,
+          message: INVALID_INVITATION_TOKEN_MESSAGE,
+        },
+      });
+      expect(prisma.$transaction).not.toHaveBeenCalled();
+    });
+
+    it('rejects an expired invitation', async () => {
+      prisma.invitation.findUnique.mockResolvedValue({
+        ...pendingInvitation,
+        expiresAt: new Date(Date.now() - 1000),
+      });
+
+      await expect(service.activate(rawToken, password)).rejects.toMatchObject({
+        response: {
+          statusCode: 400,
+          code: InvitationTokenErrorCode.EXPIRED,
+          message: EXPIRED_INVITATION_TOKEN_MESSAGE,
+        },
+      });
+      expect(prisma.$transaction).not.toHaveBeenCalled();
+    });
+
+    it('rejects an already accepted invitation', async () => {
+      prisma.invitation.findUnique.mockResolvedValue({
+        ...pendingInvitation,
+        status: InvitationStatus.ACCEPTED,
+        acceptedAt: new Date(),
+      });
+
+      await expect(service.activate(rawToken, password)).rejects.toMatchObject({
+        response: {
+          statusCode: 400,
+          code: InvitationTokenErrorCode.USED,
+          message: USED_INVITATION_TOKEN_MESSAGE,
+        },
+      });
+      expect(prisma.$transaction).not.toHaveBeenCalled();
+    });
+
+    it('rejects a cancelled invitation', async () => {
+      prisma.invitation.findUnique.mockResolvedValue({
+        ...pendingInvitation,
+        status: InvitationStatus.CANCELLED,
+      });
+
+      await expect(service.activate(rawToken, password)).rejects.toMatchObject({
+        response: {
+          statusCode: 400,
+          code: InvitationTokenErrorCode.INVALID,
+          message: INVALID_INVITATION_TOKEN_MESSAGE,
+        },
+      });
+      expect(prisma.$transaction).not.toHaveBeenCalled();
+    });
+
+    it('rejects activation when the invited user is no longer INVITED', async () => {
+      prisma.invitation.findUnique.mockResolvedValue({
+        ...pendingInvitation,
+        user: {
+          ...pendingInvitation.user,
+          status: UserStatus.ACTIVE,
+        },
+      });
+
+      await expect(service.activate(rawToken, password)).rejects.toMatchObject({
+        response: {
+          statusCode: 400,
+          code: InvitationTokenErrorCode.USED,
+          message: USED_INVITATION_TOKEN_MESSAGE,
+        },
+      });
+      expect(prisma.$transaction).not.toHaveBeenCalled();
+    });
+
+    it('rejects a deleted invited user', async () => {
+      prisma.invitation.findUnique.mockResolvedValue({
+        ...pendingInvitation,
+        user: {
+          ...pendingInvitation.user,
+          deletedAt: new Date(),
+        },
+      });
+
+      await expect(service.activate(rawToken, password)).rejects.toMatchObject({
+        response: {
+          statusCode: 400,
+          code: InvitationTokenErrorCode.INVALID,
+          message: INVALID_INVITATION_TOKEN_MESSAGE,
+        },
+      });
+      expect(prisma.$transaction).not.toHaveBeenCalled();
+    });
+
+    it('does not set a password when the invitation was consumed concurrently', async () => {
+      activateTx.invitation.updateMany.mockResolvedValue({ count: 0 });
+
+      await expect(service.activate(rawToken, password)).rejects.toMatchObject({
+        response: {
+          statusCode: 400,
+          code: InvitationTokenErrorCode.USED,
+          message: USED_INVITATION_TOKEN_MESSAGE,
+        },
+      });
+      expect(activateTx.user.updateMany).not.toHaveBeenCalled();
     });
   });
 });
