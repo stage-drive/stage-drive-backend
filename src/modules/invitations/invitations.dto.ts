@@ -12,12 +12,15 @@ import {
   IsString,
   Matches,
   MaxLength,
+  MinLength,
 } from 'class-validator';
+import { Match } from '../../common/validators/match.decorator';
 
 const PHONE_REGEX = /^\+?[0-9\s-]{7,20}$/;
 
 const REQUIRED_FIELD_MESSAGE = "Заповніть обов'язкове поле.";
 const INVALID_EMAIL_MESSAGE = 'Введіть коректний email.';
+const PASSWORDS_DO_NOT_MATCH_MESSAGE = 'Паролі не співпадають.';
 
 export const ADMIN_INVITABLE_ROLES: UserRole[] = [
   UserRole.TEACHER,
@@ -172,6 +175,60 @@ export const InvitationTokenErrorCode = {
 
 export type InvitationTokenErrorCode =
   (typeof InvitationTokenErrorCode)[keyof typeof InvitationTokenErrorCode];
+
+export class ActivateInvitationDto {
+  @ApiProperty({
+    description: 'Сирий invitation token з листа (query `token`).',
+    example: 'AbCdEfGhIjKlMnOpQrStUvWxYz0123456789',
+  })
+  @IsString()
+  @IsNotEmpty({ message: REQUIRED_FIELD_MESSAGE })
+  token: string;
+
+  @ApiProperty({ example: 'SecurePassword123!' })
+  @MaxLength(72, { message: 'Пароль занадто довгий.' })
+  @MinLength(8, { message: 'Пароль має містити щонайменше 8 символів.' })
+  @IsString()
+  @IsNotEmpty({ message: REQUIRED_FIELD_MESSAGE })
+  password: string;
+
+  @ApiProperty({ example: 'SecurePassword123!' })
+  @Match('password', { message: PASSWORDS_DO_NOT_MATCH_MESSAGE })
+  @IsString()
+  @IsNotEmpty({ message: REQUIRED_FIELD_MESSAGE })
+  passwordConfirmation: string;
+}
+
+export class ActivatedInvitationDto {
+  @ApiProperty()
+  id: string;
+
+  @ApiProperty({ example: 'admin@example.com' })
+  email: string;
+
+  @ApiProperty({ enum: UserRole, example: UserRole.ADMIN })
+  role: UserRole;
+
+  @ApiProperty({ enum: InvitationStatus, example: InvitationStatus.ACCEPTED })
+  status: InvitationStatus;
+
+  @ApiProperty()
+  acceptedAt: Date;
+
+  @ApiProperty()
+  userId: string;
+
+  @ApiProperty()
+  organizationId: string;
+}
+
+export class ActivateInvitationResponseDto {
+  @ApiProperty({ type: InvitedUserDto })
+  user: InvitedUserDto;
+
+  @ApiProperty({ type: ActivatedInvitationDto })
+  invitation: ActivatedInvitationDto;
+}
 
 export class InvitationTokenErrorDto {
   @ApiProperty({ example: 400 })

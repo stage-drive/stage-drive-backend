@@ -116,11 +116,12 @@ export class AuthController {
   })
   @ApiOkResponse({ type: LoginResponseDto })
   @ApiUnauthorizedResponse({
-    description: 'idToken відсутній, прострочений або не підписаний Google.',
+    description:
+      'idToken відсутній, прострочений або не підписаний Google, ' +
+      'або немає користувача з цим email.',
   })
   @ApiForbiddenResponse({
-    description:
-      'Немає користувача з цим email, або акаунт заблоковано/архівовано.',
+    description: 'Акаунт заблоковано або архівовано.',
   })
   @ApiServiceUnavailableResponse({
     description:
@@ -163,8 +164,9 @@ export class AuthController {
     description:
       'Це не API для фронта і не для Postman/Swagger Try it out. Google сам ' +
       'відкриває цей URL після згоди (code + state). Без валідного одноразового ' +
-      'state з GET /api/auth/google відповідь буде 401. Новий Google-акаунт ' +
-      'без існуючого користувача (Owner або запрошений email) — 403. Якщо задано ' +
+      'state з GET /api/auth/google відповідь буде 401. Якщо Google-акаунт ' +
+      'підтверджено, але в users немає цього email — 401 «Акаунт не знайдено». ' +
+      'Якщо задано ' +
       'GOOGLE_OAUTH_SUCCESS_REDIRECT — замість JSON буде 302 на фронт ' +
       '(токени в URL hash, не в query).',
   })
@@ -198,12 +200,11 @@ export class AuthController {
   })
   @ApiUnauthorizedResponse({
     description:
-      'Немає code/state, прострочений/чужий state, або Google відхилив обмін коду.',
+      'Немає code/state, прострочений/чужий state, Google відхилив обмін коду, ' +
+      'або немає користувача з email з Google (Акаунт не знайдено).',
   })
   @ApiForbiddenResponse({
-    description:
-      'Google підтвердив особу, але доступу немає: немає користувача з цим email ' +
-      '(не Owner і не запрошений), акаунт заблоковано/архівовано.',
+    description: 'Акаунт заблоковано або архівовано.',
   })
   @ApiServiceUnavailableResponse({
     description: 'Немає GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET у середовищі.',

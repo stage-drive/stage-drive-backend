@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, Logger } from '@nestjs/common';
 import { createRemoteJWKSet } from 'jose';
 import {
   GOOGLE_JWKS_URL,
@@ -12,6 +12,7 @@ const GOOGLE_TOKEN_URL = 'https://oauth2.googleapis.com/token';
 
 @Injectable()
 export class GoogleOidcClient {
+  private readonly logger = new Logger(GoogleOidcClient.name);
   private readonly jwks = createRemoteJWKSet(new URL(GOOGLE_JWKS_URL));
 
   constructor(private readonly config: GoogleOAuthConfig) {}
@@ -33,19 +34,32 @@ export class GoogleOidcClient {
         headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
         body,
       });
-    } catch {
-      throw new GoogleIdTokenError();
+    } catch (error) {
+      this.logger.warn(
+        `Google token request failed: ${error instanceof Error ? error.message : 'network error'}`,
+      );
+      throw new GoogleIdTokenError('Invalid Google ID token (token network)');
     }
 
-    let data: { id_token?: string } = {};
+    let data: {
+      id_token?: string;
+      error?: string;
+      error_description?: string;
+    } = {};
     try {
-      data = (await response.json()) as { id_token?: string };
+      data = (await response.json()) as typeof data;
     } catch {
-      throw new GoogleIdTokenError();
+      this.logger.warn(
+        `Google token response was not JSON (HTTP ${response.status})`,
+      );
+      throw new GoogleIdTokenError('Invalid Google ID token (token json)');
     }
 
     if (!response.ok || typeof data.id_token !== 'string' || !data.id_token) {
-      throw new GoogleIdTokenError();
+      this.logger.warn(
+        `Google token exchange failed: HTTP ${response.status} error=${data.error ?? 'none'} desc=${data.error_description ?? 'none'}`,
+      );
+      throw new GoogleIdTokenError('Invalid Google ID token (token exchange)');
     }
 
     return data.id_token;

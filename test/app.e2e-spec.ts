@@ -137,6 +137,7 @@ describe('API (e2e)', () => {
     $queryRaw: jest.fn(),
     user: {
       findUnique: jest.fn(),
+      findFirst: jest.fn(),
       update: jest.fn(),
       create: jest.fn(),
       delete: jest.fn(),
@@ -175,6 +176,7 @@ describe('API (e2e)', () => {
     prismaMock.$queryRaw.mockReset();
     prismaMock.$queryRaw.mockResolvedValue([{ '?column?': 1 }]);
     prismaMock.user.findUnique.mockReset();
+    prismaMock.user.findFirst.mockReset();
     prismaMock.user.update.mockReset();
     prismaMock.user.create.mockReset();
     prismaMock.user.delete.mockReset();
@@ -207,6 +209,19 @@ describe('API (e2e)', () => {
           return Promise.resolve({ ...admin });
         }
         return Promise.resolve(null);
+      },
+    );
+    prismaMock.user.findFirst.mockImplementation(
+      (args: {
+        where: { email?: string | { equals?: string }; id?: string };
+      }) => {
+        const email =
+          typeof args.where.email === 'string'
+            ? args.where.email
+            : args.where.email?.equals;
+        return prismaMock.user.findUnique({
+          where: { id: args.where.id, email },
+        });
       },
     );
     prismaMock.user.update.mockImplementation(

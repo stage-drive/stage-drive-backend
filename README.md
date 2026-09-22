@@ -187,7 +187,7 @@ SEED_INVITE_TOKEN_FOR_LOCAL_POSTMAN_ONLY___________00000000001
 | `INVITED`                          | 200, статус стає `ACTIVE` |
 | `BLOCKED`                          | 403                       |
 | `ARCHIVED`                         | 403                       |
-| немає користувача з email з токена | 403                       |
+| немає користувача з email з токена | 401 «Акаунт не знайдено» |
 
 ### Міграції до PostgreSQL на віддаленій VM
 

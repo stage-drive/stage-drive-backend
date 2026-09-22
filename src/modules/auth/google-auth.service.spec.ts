@@ -11,8 +11,7 @@ import { RefreshTokenService } from './refresh-token.service';
 import { verifyAccessToken } from './token';
 
 const GOOGLE_AUTH_FAILED = 'Не вдалося увійти через Google.';
-const GOOGLE_AUTH_FORBIDDEN =
-  'Вхід через Google доступний лише власнику або запрошеним користувачам.';
+const GOOGLE_ACCOUNT_NOT_FOUND = 'Акаунт не знайдено';
 
 const owner = {
   id: 'user-existing',
@@ -91,7 +90,7 @@ describe('GoogleAuthService', () => {
       findUnique: jest.Mock;
       create: jest.Mock;
     };
-    user: { findUnique: jest.Mock; update: jest.Mock };
+    user: { findUnique: jest.Mock; findFirst: jest.Mock; update: jest.Mock };
   };
   let oidc: { exchangeCode: jest.Mock; verifyIdToken: jest.Mock };
   let authService: {
@@ -196,6 +195,36 @@ describe('GoogleAuthService', () => {
             return Promise.resolve(null);
           },
         ),
+        findFirst: jest.fn(
+          ({
+            where,
+          }: {
+            where: {
+              deletedAt?: null;
+              email?: string | { equals: string; mode?: string };
+            };
+          }) => {
+            const email =
+              typeof where.email === 'string'
+                ? where.email
+                : where.email?.equals;
+            if (!email) {
+              return Promise.resolve(null);
+            }
+            const needle = email.toLowerCase();
+            return Promise.resolve(
+              users.find((item) => {
+                if (item.email.toLowerCase() !== needle) {
+                  return false;
+                }
+                if (where.deletedAt === null && item.deletedAt) {
+                  return false;
+                }
+                return true;
+              }) ?? null,
+            );
+          },
+        ),
         update: jest.fn(
           ({
             where,
@@ -294,21 +323,39 @@ describe('GoogleAuthService', () => {
     );
   });
 
-  it('rejects an unknown Google email with 403', async () => {
+  it('rejects an unknown Google email with 401', async () => {
     seedPending();
 
     await expect(
       service.complete({ code: 'code-1', state: 'state-1' }),
     ).rejects.toMatchObject({
-      message: GOOGLE_AUTH_FORBIDDEN,
-      status: 403,
+      message: GOOGLE_ACCOUNT_NOT_FOUND,
+      status: 401,
     });
 
     expect(accounts).toHaveLength(0);
   });
 
-  it('links a verified Google email to an existing user', async () => {
+  it('auto-links Google by email when oauth_accounts is empty', async () => {
     users = [{ ...owner, email: 'ada@gmail.com' }];
+    seedPending();
+
+    const session = await service.complete({
+      code: 'code-1',
+      state: 'state-1',
+    });
+
+    expect(accounts[0]).toMatchObject({
+      userId: owner.id,
+      provider: 'GOOGLE',
+      providerAccountId: 'google-sub-1',
+      email: 'ada@gmail.com',
+    });
+    expect(verifyAccessToken(session.accessToken).sub).toBe(owner.id);
+  });
+
+  it('auto-links Google when the stored user email differs only by case', async () => {
+    users = [{ ...owner, email: 'Ada@Gmail.com' }];
     seedPending();
 
     const session = await service.complete({
@@ -352,6 +399,19 @@ describe('GoogleAuthService', () => {
 
     expect(accounts).toHaveLength(1);
     expect(accounts[0].userId).toBe(owner.id);
+  });
+
+  it('rejects a callback without an authorization code', async () => {
+    seedPending();
+
+    await expect(
+      service.complete({ state: 'state-1' }),
+    ).rejects.toMatchObject({
+      status: 401,
+      message: expect.stringContaining('authorization code'),
+    });
+
+    expect(oidc.exchangeCode).not.toHaveBeenCalled();
   });
 
   it('rejects an invalid callback state without exchanging the code', async () => {
@@ -448,11 +508,11 @@ describe('GoogleAuthService', () => {
     expect(verifyAccessToken(session.accessToken).sub).toBe(owner.id);
   });
 
-  it('completeWithIdToken rejects an unknown Google email with 403', async () => {
+  it('completeWithIdToken rejects an unknown Google email with 401', async () => {
     await expect(service.completeWithIdToken('id-token')).rejects.toMatchObject(
       {
-        message: GOOGLE_AUTH_FORBIDDEN,
-        status: 403,
+        message: GOOGLE_ACCOUNT_NOT_FOUND,
+        status: 401,
       },
     );
     expect(accounts).toHaveLength(0);
