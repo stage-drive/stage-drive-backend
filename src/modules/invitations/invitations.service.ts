@@ -34,8 +34,8 @@ export const INVALID_INVITATION_TOKEN_MESSAGE =
   'Посилання-запрошення недійсне.';
 export const EXPIRED_INVITATION_TOKEN_MESSAGE =
   'Посилання-запрошення прострочене.';
-export const USED_INVITATION_TOKEN_MESSAGE =
-  'Це запрошення вже використано.';
+export const CANCELLED_INVITATION_TOKEN_MESSAGE = 'Це запрошення скасовано.';
+export const USED_INVITATION_TOKEN_MESSAGE = 'Це запрошення вже використано.';
 
 const BCRYPT_ROUNDS = 10;
 
@@ -246,6 +246,13 @@ export class InvitationsService {
       );
     }
 
+    if (invitation.status === InvitationStatus.CANCELLED) {
+      throw this.tokenError(
+        InvitationTokenErrorCode.CANCELLED,
+        CANCELLED_INVITATION_TOKEN_MESSAGE,
+      );
+    }
+
     if (invitation.status !== InvitationStatus.PENDING) {
       throw this.tokenError(
         InvitationTokenErrorCode.INVALID,
@@ -281,6 +288,13 @@ export class InvitationsService {
     });
   }
 
+  private emailAlreadyExists() {
+    return new ConflictException({
+      statusCode: 409,
+      errors: [{ field: 'email', message: EMAIL_ALREADY_EXISTS_MESSAGE }],
+    });
+  }
+
   private async createAndSendInvitation(
     inviter: User,
     payload: InviteUserPayload,
@@ -303,8 +317,58 @@ export class InvitationsService {
     const expiresAt = new Date(Date.now() + INVITATION_TTL_MS);
 
     let created: { user: User; invitation: Invitation };
+    let replacedUser: User | null = null;
     try {
       created = await this.prisma.$transaction(async (tx) => {
+        const existing = await tx.user.findUnique({ where: { email } });
+        if (existing) {
+          if (
+            existing.deletedAt ||
+            existing.status !== UserStatus.INVITED ||
+            existing.organizationId !== inviter.organizationId
+          ) {
+            throw this.emailAlreadyExists();
+          }
+
+          const liveInvitation = await tx.invitation.findFirst({
+            where: {
+              userId: existing.id,
+              status: InvitationStatus.PENDING,
+              acceptedAt: null,
+              expiresAt: { gt: new Date() },
+            },
+          });
+          if (liveInvitation) {
+            throw this.emailAlreadyExists();
+          }
+
+          replacedUser = existing;
+          const user = await tx.user.update({
+            where: { id: existing.id },
+            data: {
+              firstName,
+              lastName,
+              phone,
+              role,
+              status: UserStatus.INVITED,
+              passwordHash: null,
+            },
+          });
+          const invitation = await tx.invitation.create({
+            data: {
+              email,
+              role,
+              tokenHash,
+              status: InvitationStatus.PENDING,
+              expiresAt,
+              invitedById: inviter.id,
+              userId: user.id,
+              organizationId: inviter.organizationId,
+            },
+          });
+          return { user, invitation };
+        }
+
         const user = await tx.user.create({
           data: {
             email,
@@ -334,11 +398,11 @@ export class InvitationsService {
         return { user, invitation };
       });
     } catch (error) {
+      if (error instanceof ConflictException) {
+        throw error;
+      }
       if (isUniqueConstraintOn(error, 'email')) {
-        throw new ConflictException({
-          statusCode: 409,
-          errors: [{ field: 'email', message: EMAIL_ALREADY_EXISTS_MESSAGE }],
-        });
+        throw this.emailAlreadyExists();
       }
       throw error;
     }
@@ -359,9 +423,28 @@ export class InvitationsService {
         }),
       });
     } catch (error) {
-      await this.prisma.user
-        .delete({ where: { id: created.user.id } })
-        .catch(() => undefined);
+      if (replacedUser) {
+        await this.prisma.invitation
+          .delete({ where: { id: created.invitation.id } })
+          .catch(() => undefined);
+        await this.prisma.user
+          .update({
+            where: { id: replacedUser.id },
+            data: {
+              firstName: replacedUser.firstName,
+              lastName: replacedUser.lastName,
+              phone: replacedUser.phone,
+              role: replacedUser.role,
+              status: replacedUser.status,
+              passwordHash: replacedUser.passwordHash,
+            },
+          })
+          .catch(() => undefined);
+      } else {
+        await this.prisma.user
+          .delete({ where: { id: created.user.id } })
+          .catch(() => undefined);
+      }
       throw error;
     }
 
