@@ -73,6 +73,14 @@ export class AuthController {
     return this.authService.register(body);
   }
 
+  @Post('logout')
+  @HttpCode(HttpStatus.OK)
+  @ApiOkResponse({ type: MessageResponseDto })
+  async logout(@Body() body: RefreshTokenDto) {
+    await this.refreshTokenService.logout(body.refreshToken);
+    return { message: 'Ви вийшли з системи.' };
+  }
+
   @Post('refresh')
   @HttpCode(HttpStatus.OK)
   @ApiOkResponse({ type: LoginResponseDto })
