@@ -80,4 +80,16 @@ export class RefreshTokenService {
       data: { revokedAt: new Date() },
     });
   }
+
+  async logout(plainToken: string): Promise<void> {
+    const record = await this.prisma.refreshToken.findUnique({
+      where: { tokenHash: this.hash(plainToken) },
+    });
+
+    if (!record) {
+      return;
+    }
+
+    await this.revokeFamily(record.familyId);
+  }
 }
