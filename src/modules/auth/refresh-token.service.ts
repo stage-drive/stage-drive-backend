@@ -49,6 +49,7 @@ export class RefreshTokenService {
 
     const user = await this.prisma.user.findUnique({
       where: { id: record.userId },
+      include: { organization: true },
     });
     if (!user) {
       throw new UnauthorizedException(INVALID_REFRESH_TOKEN_MESSAGE);
