@@ -8,6 +8,10 @@ import {
   MaxLength,
   MinLength,
 } from 'class-validator';
+import {
+  PASSWORD_STRENGTH_MESSAGE,
+  PASSWORD_STRENGTH_REGEX,
+} from '../../common/validators/password-strength';
 
 const PHONE_REGEX = /^\+?[0-9\s-]{7,20}$/;
 
@@ -73,6 +77,7 @@ export class ChangePasswordDto {
   currentPassword: string;
 
   @ApiProperty({ minLength: 8, example: 'SecurePassword123!' })
+  @Matches(PASSWORD_STRENGTH_REGEX, { message: PASSWORD_STRENGTH_MESSAGE })
   @IsString()
   @MinLength(8)
   @MaxLength(72)

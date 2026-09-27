@@ -530,7 +530,7 @@ describe('API (e2e)', () => {
     await request(app.getHttpServer())
       .patch('/api/users/me/password')
       .set('Authorization', `Bearer ${token}`)
-      .send({ currentPassword: 'SecurePassword123', newPassword: 'Password2' })
+      .send({ currentPassword: 'SecurePassword123', newPassword: 'Password2!' })
       .expect(200);
 
     expect(prismaMock.user.update).toHaveBeenCalled();
