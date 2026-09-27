@@ -25,8 +25,12 @@ export function assertSignInAllowed(user: {
 export function assertActiveUser(user: {
   status: UserStatus;
   deletedAt?: Date | null;
+  organization?: { status: OrganizationStatus } | null;
 }): void {
-  if (user.deletedAt || user.status !== UserStatus.ACTIVE) {
+  if (user.deletedAt || 
+    user.status !== UserStatus.ACTIVE ||
+    user.organization?.status === OrganizationStatus.BLOCKED
+  ) {
     throw new UnauthorizedException(ACCOUNT_NOT_ACTIVE_MESSAGE);
   }
 }

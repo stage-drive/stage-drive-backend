@@ -49,6 +49,7 @@ export class RefreshTokenService {
 
     const user = await this.prisma.user.findUnique({
       where: { id: record.userId },
+      include: { organization: true },
     });
     if (!user) {
       throw new UnauthorizedException(INVALID_REFRESH_TOKEN_MESSAGE);
@@ -79,5 +80,17 @@ export class RefreshTokenService {
       where: { userId, revokedAt: null },
       data: { revokedAt: new Date() },
     });
+  }
+
+  async logout(plainToken: string): Promise<void> {
+    const record = await this.prisma.refreshToken.findUnique({
+      where: { tokenHash: this.hash(plainToken) },
+    });
+
+    if (!record) {
+      return;
+    }
+
+    await this.revokeFamily(record.familyId);
   }
 }

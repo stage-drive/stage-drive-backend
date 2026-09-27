@@ -186,4 +186,38 @@ describe('RefreshTokenService', () => {
       tokenType: 'Bearer',
     });
   });
+
+  it('logout revokes the token family and is idempotent', async () => {
+    const token = await service.issue(activeUser.id);
+
+    await service.logout(token);
+
+    expect(tokens.every((row) => row.revokedAt)).toBe(true);
+    await expect(service.rotate(token)).rejects.toBeInstanceOf(
+      UnauthorizedException,
+    );
+
+    await expect(service.logout(token)).resolves.toBeUndefined();
+  });
+
+  it('logout on an unknown token resolves without throwing or changing state', async () => {
+    await service.issue(activeUser.id);
+
+    await expect(service.logout('not-a-real-token')).resolves.toBeUndefined();
+    expect(tokens.every((row) => !row.revokedAt)).toBe(true);
+  });
+
+  it('logout only revokes the matching session, leaving other sessions of the same user active', async () => {
+    const sessionA = await service.issue(activeUser.id);
+    const sessionB = await service.issue(activeUser.id);
+
+    await service.logout(sessionA);
+
+    await expect(service.rotate(sessionA)).rejects.toBeInstanceOf(
+      UnauthorizedException,
+    );
+    await expect(service.rotate(sessionB)).resolves.toMatchObject({
+      tokenType: 'Bearer',
+    });
+  });
 });
