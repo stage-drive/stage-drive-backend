@@ -3,10 +3,15 @@ import {
   IsEmail,
   IsNotEmpty,
   IsString,
+  Matches,
   MaxLength,
   MinLength,
 } from 'class-validator';
 import { Match } from '../../common/validators/match.decorator';
+import {
+  PASSWORD_STRENGTH_MESSAGE,
+  PASSWORD_STRENGTH_REGEX,
+} from '../../common/validators/password-strength';
 
 const REQUIRED_FIELD_MESSAGE = "Заповніть обов'язкове поле.";
 const INVALID_EMAIL_MESSAGE = 'Введіть коректний email.';
@@ -26,6 +31,7 @@ export class ResetPasswordDto {
   token: string;
 
   @ApiProperty({ example: 'SecurePassword123!' })
+  @Matches(PASSWORD_STRENGTH_REGEX, { message: PASSWORD_STRENGTH_MESSAGE })
   @MaxLength(72, { message: 'Пароль занадто довгий.' })
   @MinLength(8, { message: 'Пароль має містити щонайменше 8 символів.' })
   @IsString()
