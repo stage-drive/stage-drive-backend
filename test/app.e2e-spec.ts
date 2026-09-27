@@ -143,6 +143,7 @@ describe('API (e2e)', () => {
       updateMany: jest.fn(),
       create: jest.fn(),
       delete: jest.fn(),
+      groupBy: jest.fn(),
     },
     invitation: {
       create: jest.fn(),
@@ -150,6 +151,7 @@ describe('API (e2e)', () => {
       findFirst: jest.fn(),
       updateMany: jest.fn(),
       delete: jest.fn(),
+      count: jest.fn(),
     },
     refreshToken: {
       create: jest.fn(),
@@ -187,6 +189,10 @@ describe('API (e2e)', () => {
     prismaMock.user.delete.mockReset();
     prismaMock.user.updateMany.mockReset();
     prismaMock.user.findUniqueOrThrow.mockReset();
+    prismaMock.user.groupBy.mockReset();
+    prismaMock.user.groupBy.mockResolvedValue([]);
+    prismaMock.invitation.count.mockReset();
+    prismaMock.invitation.count.mockResolvedValue(0);
     prismaMock.invitation.create.mockReset();
     prismaMock.invitation.findUnique.mockReset();
     prismaMock.invitation.findUnique.mockResolvedValue(null);
@@ -579,6 +585,138 @@ describe('API (e2e)', () => {
       name: organization.name,
       timezone: organization.timezone,
     });
+  });
+
+  it('GET /api/dashboard without token returns 401', () => {
+    return request(app.getHttpServer()).get('/api/dashboard').expect(401);
+  });
+
+  it.each(['ADMIN', 'INSTRUCTOR'] as const)(
+    'GET /api/dashboard is forbidden for %s',
+    async (role) => {
+      const actor = role === 'ADMIN' ? admin : instructor;
+      const token = signAccessToken(actor.id);
+      const response = await request(app.getHttpServer())
+        .get('/api/dashboard')
+        .set('Authorization', `Bearer ${token}`)
+        .expect(403);
+
+      expect(response.body).toMatchObject({
+        statusCode: 403,
+        message: 'Insufficient permissions',
+      });
+      expect(prismaMock.user.groupBy).not.toHaveBeenCalled();
+    },
+  );
+
+  it('GET /api/dashboard returns zeros when the school has no extra data', async () => {
+    prismaMock.organization.findUnique.mockResolvedValue({
+      ...organization,
+      status: 'ACTIVE',
+      deletedAt: null,
+    });
+
+    const token = signAccessToken(owner.id);
+    const response = await request(app.getHttpServer())
+      .get('/api/dashboard')
+      .set('Authorization', `Bearer ${token}`)
+      .expect(200);
+
+    expect(response.body).toEqual({
+      organization: {
+        id: organization.id,
+        name: organization.name,
+        status: 'ACTIVE',
+        logoUrl: null,
+        timezone: organization.timezone,
+      },
+      users: {
+        total: 0,
+        byRole: {
+          OWNER: 0,
+          ADMIN: 0,
+          TEACHER: 0,
+          INSTRUCTOR: 0,
+          STUDENT: 0,
+        },
+        byStatus: {
+          INVITED: 0,
+          ACTIVE: 0,
+          BLOCKED: 0,
+          ARCHIVED: 0,
+        },
+      },
+      invitations: { pending: 0, expired: 0 },
+    });
+    expect(prismaMock.user.groupBy).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { organizationId: organization.id, deletedAt: null },
+      }),
+    );
+  });
+
+  it('GET /api/dashboard returns owner-scoped counts', async () => {
+    prismaMock.organization.findUnique.mockResolvedValue({
+      ...organization,
+      status: 'ACTIVE',
+      deletedAt: null,
+    });
+    prismaMock.user.groupBy.mockResolvedValue([
+      { role: 'OWNER', status: 'ACTIVE', _count: { _all: 1 } },
+      { role: 'ADMIN', status: 'INVITED', _count: { _all: 1 } },
+    ]);
+    prismaMock.invitation.count.mockImplementation(
+      (args: { where: { expiresAt?: { gt?: Date; lte?: Date } } }) =>
+        Promise.resolve(args.where.expiresAt?.gt ? 2 : 1),
+    );
+
+    const token = signAccessToken(owner.id);
+    const response = await request(app.getHttpServer())
+      .get('/api/dashboard')
+      .set('Authorization', `Bearer ${token}`)
+      .expect(200);
+
+    expect(response.body.users).toEqual({
+      total: 2,
+      byRole: {
+        OWNER: 1,
+        ADMIN: 1,
+        TEACHER: 0,
+        INSTRUCTOR: 0,
+        STUDENT: 0,
+      },
+      byStatus: {
+        INVITED: 1,
+        ACTIVE: 1,
+        BLOCKED: 0,
+        ARCHIVED: 0,
+      },
+    });
+    expect(response.body.invitations).toEqual({ pending: 2, expired: 1 });
+  });
+
+  it('GET /api/dashboard returns 404 when the organization is missing', async () => {
+    prismaMock.organization.findUnique.mockResolvedValue(null);
+
+    const token = signAccessToken(owner.id);
+    const response = await request(app.getHttpServer())
+      .get('/api/dashboard')
+      .set('Authorization', `Bearer ${token}`)
+      .expect(404);
+
+    expect(response.body).toMatchObject({
+      statusCode: 404,
+      message: 'Organization not found',
+    });
+  });
+
+  it('OpenAPI documents GET /api/dashboard', async () => {
+    const response = await request(app.getHttpServer())
+      .get('/api/docs-json')
+      .expect(200);
+
+    const paths = (response.body as { paths: Record<string, unknown> }).paths;
+    expect(paths['/api/dashboard'] ?? paths['/dashboard']).toBeDefined();
   });
 
   it('PATCH /api/organization updates name for OWNER', async () => {
