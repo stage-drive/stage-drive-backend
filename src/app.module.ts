@@ -7,6 +7,7 @@ import { UsersModule } from './modules/users/users.module';
 import { PrismaModule } from './prisma/prisma.module';
 import { MailModule } from './modules/mail/mail.module';
 import { InvitationsModule } from './modules/invitations/invitations.module';
+import { DashboardModule } from './modules/dashboard/dashboard.module';
 
 @Module({
   imports: [
@@ -16,6 +17,7 @@ import { InvitationsModule } from './modules/invitations/invitations.module';
     OrganizationModule,
     MailModule,
     InvitationsModule,
+    DashboardModule,
   ],
   controllers: [AppController],
   providers: [AppService],
