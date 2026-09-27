@@ -8,7 +8,7 @@ export function configureSwagger(app: INestApplication) {
     .setVersion('0.0.1')
     .addTag('auth')
     .addTag('invitations', 'Запрошення та активація акаунта')
-    .addTag('dashboard', 'Owner Dashboard')
+    .addTag('dashboard', 'Дані Owner і Admin Dashboard')
     .addBearerAuth()
     .build();
 

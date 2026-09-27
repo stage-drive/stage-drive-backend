@@ -13,22 +13,19 @@ import { AuthGuard } from '../auth/auth.guard';
 import { CurrentUser } from '../auth/current-user.decorator';
 import { Roles } from '../auth/roles.decorator';
 import { RolesGuard } from '../auth/roles.guard';
-import { OwnerDashboardDto } from './dashboard.dto';
+import { AdminDashboardDto, OwnerDashboardDto } from './dashboard.dto';
 import { DashboardService } from './dashboard.service';
 
 @ApiTags('dashboard')
 @ApiBearerAuth()
 @ApiUnauthorizedResponse({ description: 'Потрібен access token' })
-@ApiForbiddenResponse({
-  description: 'Дані Owner Dashboard доступні лише OWNER.',
-})
 @Controller('dashboard')
 @UseGuards(AuthGuard, RolesGuard)
-@Roles(UserRole.OWNER)
 export class DashboardController {
   constructor(private readonly dashboardService: DashboardService) {}
 
   @Get()
+  @Roles(UserRole.OWNER)
   @ApiOperation({
     summary: 'Дані Owner Dashboard',
     description:
@@ -37,10 +34,34 @@ export class DashboardController {
       'Якщо користувачів або запрошень немає, лічильники дорівнюють 0.',
   })
   @ApiOkResponse({ type: OwnerDashboardDto })
+  @ApiForbiddenResponse({
+    description: 'Дані Owner Dashboard доступні лише OWNER.',
+  })
   @ApiNotFoundResponse({
     description: 'Автошколу не знайдено або її видалено.',
   })
   getOwnerDashboard(@CurrentUser() user: User) {
     return this.dashboardService.getOwnerDashboard(user);
+  }
+
+  @Get('admin')
+  @Roles(UserRole.ADMIN)
+  @ApiOperation({
+    summary: 'Дані Admin Dashboard',
+    description:
+      'Зведення автошколи поточного ADMIN: публічні дані школи, кількість TEACHER, INSTRUCTOR і STUDENT ' +
+      'за роллю та статусом, активні та прострочені запрошення цих ролей. ' +
+      'Лічильники OWNER і ADMIN, запрошення адміністраторів і статус організації не повертаються. ' +
+      'Інші організації в відповідь не потрапляють. Якщо учасників або запрошень немає, лічильники дорівнюють 0.',
+  })
+  @ApiOkResponse({ type: AdminDashboardDto })
+  @ApiForbiddenResponse({
+    description: 'Дані Admin Dashboard доступні лише ADMIN.',
+  })
+  @ApiNotFoundResponse({
+    description: 'Автошколу не знайдено або її видалено.',
+  })
+  getAdminDashboard(@CurrentUser() user: User) {
+    return this.dashboardService.getAdminDashboard(user);
   }
 }

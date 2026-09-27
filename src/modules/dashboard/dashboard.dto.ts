@@ -87,3 +87,70 @@ export class OwnerDashboardDto {
   @ApiProperty({ type: DashboardInvitationsDto })
   invitations: DashboardInvitationsDto;
 }
+
+export class AdminDashboardOrganizationDto {
+  @ApiProperty()
+  id: string;
+
+  @ApiProperty({ example: 'Stage Drive School' })
+  name: string;
+
+  @ApiPropertyOptional({ nullable: true, type: String })
+  logoUrl: string | null;
+
+  @ApiProperty({ example: 'Europe/Kyiv' })
+  timezone: string;
+}
+
+export class AdminDashboardUsersByRoleDto {
+  @ApiProperty({ example: 1 })
+  TEACHER: number;
+
+  @ApiProperty({ example: 2 })
+  INSTRUCTOR: number;
+
+  @ApiProperty({ example: 10 })
+  STUDENT: number;
+}
+
+export class AdminDashboardUsersDto {
+  @ApiProperty({
+    description:
+      'Користувачі автошколи з ролями TEACHER, INSTRUCTOR і STUDENT, без soft-delete. OWNER і ADMIN сюди не входять.',
+    example: 13,
+  })
+  total: number;
+
+  @ApiProperty({ type: AdminDashboardUsersByRoleDto })
+  byRole: AdminDashboardUsersByRoleDto;
+
+  @ApiProperty({ type: DashboardUsersByStatusDto })
+  byStatus: DashboardUsersByStatusDto;
+}
+
+export class AdminDashboardInvitationsDto {
+  @ApiProperty({
+    description:
+      'PENDING запрошення TEACHER, INSTRUCTOR або STUDENT, термін яких ще не минув.',
+    example: 0,
+  })
+  pending: number;
+
+  @ApiProperty({
+    description:
+      'PENDING запрошення TEACHER, INSTRUCTOR або STUDENT з expiresAt у минулому.',
+    example: 0,
+  })
+  expired: number;
+}
+
+export class AdminDashboardDto {
+  @ApiProperty({ type: AdminDashboardOrganizationDto })
+  organization: AdminDashboardOrganizationDto;
+
+  @ApiProperty({ type: AdminDashboardUsersDto })
+  users: AdminDashboardUsersDto;
+
+  @ApiProperty({ type: AdminDashboardInvitationsDto })
+  invitations: AdminDashboardInvitationsDto;
+}
