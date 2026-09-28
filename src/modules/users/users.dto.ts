@@ -6,8 +6,12 @@ import {
   IsString,
   Matches,
   MaxLength,
+  MinLength,
 } from 'class-validator';
-import { IsStrongEnoughPassword } from '../../common/validators/password.decorator';
+import {
+  PASSWORD_STRENGTH_MESSAGE,
+  PASSWORD_STRENGTH_REGEX,
+} from '../../common/validators/password-strength';
 import { IsPlainText } from '../../common/validators/plain-text.decorator';
 
 const PHONE_REGEX = /^\+?[0-9\s-]{7,20}$/;
@@ -76,7 +80,9 @@ export class ChangePasswordDto {
   currentPassword: string;
 
   @ApiProperty({ minLength: 8, example: 'SecurePassword123!' })
-  @IsStrongEnoughPassword()
+  @Matches(PASSWORD_STRENGTH_REGEX, { message: PASSWORD_STRENGTH_MESSAGE })
+  @MaxLength(72, { message: 'Пароль занадто довгий.' })
+  @MinLength(8, { message: 'Пароль має містити щонайменше 8 символів.' })
   @IsString()
   newPassword: string;
 }

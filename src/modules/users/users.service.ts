@@ -8,13 +8,15 @@ import * as bcrypt from 'bcrypt';
 import { existsSync, unlinkSync } from 'fs';
 import { join } from 'path';
 import {
-  PASSWORD_COMPLEXITY_MESSAGE,
-  PASSWORD_COMPLEXITY_PATTERN,
   PASSWORD_MAX_LENGTH,
   PASSWORD_MIN_LENGTH,
   PASSWORD_TOO_LONG_MESSAGE,
   PASSWORD_TOO_SHORT_MESSAGE,
 } from '../../common/validators/password.decorator';
+import {
+  PASSWORD_STRENGTH_MESSAGE,
+  PASSWORD_STRENGTH_REGEX,
+} from '../../common/validators/password-strength';
 import { PrismaService } from '../../prisma/prisma.service';
 import { RefreshTokenService } from '../auth/refresh-token.service';
 import { toPublicUser } from './user-public';
@@ -88,8 +90,8 @@ export class UsersService {
     if (newPassword.length > PASSWORD_MAX_LENGTH) {
       throw new BadRequestException(PASSWORD_TOO_LONG_MESSAGE);
     }
-    if (!PASSWORD_COMPLEXITY_PATTERN.test(newPassword)) {
-      throw new BadRequestException(PASSWORD_COMPLEXITY_MESSAGE);
+    if (!PASSWORD_STRENGTH_REGEX.test(newPassword)) {
+      throw new BadRequestException(PASSWORD_STRENGTH_MESSAGE);
     }
 
     const fresh = await this.prisma.user.findUnique({ where: { id: user.id } });
