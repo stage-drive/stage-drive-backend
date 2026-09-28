@@ -19,9 +19,11 @@ import { PrismaService } from '../../prisma/prisma.service';
 import { MailService } from '../mail/mail.service';
 import {
   ADMIN_INVITABLE_ROLES,
+  INVALID_OWNER_INVITE_ROLE_MESSAGE,
   InvitationTokenErrorCode,
-  InviteAdminDto,
+  InviteByOwnerDto,
   InviteMemberDto,
+  OWNER_INVITABLE_ROLES,
   VerifyInvitationResponseDto,
 } from './invitations.dto';
 
@@ -36,6 +38,10 @@ export const EXPIRED_INVITATION_TOKEN_MESSAGE =
   'Посилання-запрошення прострочене.';
 export const CANCELLED_INVITATION_TOKEN_MESSAGE = 'Це запрошення скасовано.';
 export const USED_INVITATION_TOKEN_MESSAGE = 'Це запрошення вже використано.';
+export const INVITATION_NOT_FOUND_MESSAGE = 'Запрошення не знайдено.';
+export const INVITATION_ALREADY_CANCELLED_MESSAGE =
+  'Це запрошення вже скасовано.';
+export const INVITATION_ALREADY_USED_MESSAGE = 'Це запрошення вже використано.';
 
 const BCRYPT_ROUNDS = 10;
 
@@ -78,6 +84,42 @@ function isAdminInvitableRole(role: UserRole): boolean {
   return ADMIN_INVITABLE_ROLES.includes(role);
 }
 
+const OWNER_VISIBLE_ROLES: UserRole[] = [
+  UserRole.ADMIN,
+  UserRole.TEACHER,
+  UserRole.INSTRUCTOR,
+  UserRole.STUDENT,
+];
+
+function visibleRoles(actor: User): UserRole[] {
+  if (actor.role === UserRole.OWNER) {
+    return OWNER_VISIBLE_ROLES;
+  }
+  if (actor.role === UserRole.ADMIN) {
+    return ADMIN_INVITABLE_ROLES;
+  }
+  return [];
+}
+
+function canCancelRole(actor: User, role: UserRole): boolean {
+  if (actor.role === UserRole.OWNER) {
+    return role === UserRole.ADMIN;
+  }
+  return actor.role === UserRole.ADMIN && isAdminInvitableRole(role);
+}
+
+function toInvitationView(invitation: Invitation) {
+  return {
+    id: invitation.id,
+    email: invitation.email,
+    role: invitation.role,
+    status: invitation.status,
+    expiresAt: invitation.expiresAt,
+    userId: invitation.userId,
+    organizationId: invitation.organizationId,
+  };
+}
+
 type InviteUserPayload = {
   firstName: string;
   lastName: string;
@@ -93,10 +135,18 @@ export class InvitationsService {
     private readonly mailService: MailService,
   ) {}
 
-  async inviteAdmin(owner: User, payload: InviteAdminDto) {
+  async inviteAdmin(owner: User, payload: InviteByOwnerDto) {
+    const role = payload.role ?? UserRole.ADMIN;
+    if (!OWNER_INVITABLE_ROLES.includes(role)) {
+      throw new BadRequestException({
+        statusCode: 400,
+        errors: [{ field: 'role', message: INVALID_OWNER_INVITE_ROLE_MESSAGE }],
+      });
+    }
+
     return this.createAndSendInvitation(owner, {
       ...payload,
-      role: UserRole.ADMIN,
+      role,
     });
   }
 
@@ -109,6 +159,57 @@ export class InvitationsService {
     }
 
     return this.createAndSendInvitation(admin, payload);
+  }
+
+  async list(actor: User) {
+    const invitations = await this.prisma.invitation.findMany({
+      where: {
+        organizationId: actor.organizationId,
+        role: { in: visibleRoles(actor) },
+      },
+      orderBy: { createdAt: 'desc' },
+    });
+
+    return { invitations: invitations.map(toInvitationView) };
+  }
+
+  async getById(actor: User, invitationId: string) {
+    const invitation = await this.findInvitationForActor(actor, invitationId);
+    return toInvitationView(invitation);
+  }
+
+  async cancel(actor: User, invitationId: string) {
+    const invitation = await this.findInvitationForActor(actor, invitationId, {
+      forCancel: true,
+    });
+
+    if (invitation.status === InvitationStatus.CANCELLED) {
+      throw new BadRequestException({
+        statusCode: 400,
+        message: INVITATION_ALREADY_CANCELLED_MESSAGE,
+      });
+    }
+
+    const invitedUser = invitation.user;
+    if (
+      invitation.status !== InvitationStatus.PENDING ||
+      invitation.acceptedAt ||
+      !invitedUser ||
+      invitedUser.deletedAt ||
+      invitedUser.status !== UserStatus.INVITED
+    ) {
+      throw new BadRequestException({
+        statusCode: 400,
+        message: INVITATION_ALREADY_USED_MESSAGE,
+      });
+    }
+
+    const cancelled = await this.prisma.invitation.update({
+      where: { id: invitation.id },
+      data: { status: InvitationStatus.CANCELLED },
+    });
+
+    return toInvitationView(cancelled);
   }
 
   async verifyToken(rawToken: string): Promise<VerifyInvitationResponseDto> {
@@ -205,6 +306,30 @@ export class InvitationsService {
         organizationId: invitation.organizationId,
       },
     };
+  }
+
+  private async findInvitationForActor(
+    actor: User,
+    invitationId: string,
+    options?: { forCancel?: boolean },
+  ) {
+    const invitation = await this.prisma.invitation.findUnique({
+      where: { id: invitationId },
+      include: { user: true },
+    });
+
+    if (!invitation || invitation.organizationId !== actor.organizationId) {
+      throw new NotFoundException(INVITATION_NOT_FOUND_MESSAGE);
+    }
+
+    const allowed = options?.forCancel
+      ? canCancelRole(actor, invitation.role)
+      : visibleRoles(actor).includes(invitation.role);
+    if (!allowed) {
+      throw new ForbiddenException('Insufficient permissions');
+    }
+
+    return invitation;
   }
 
   private async findActivatableInvitation(rawToken: string) {

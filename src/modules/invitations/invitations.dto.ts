@@ -15,6 +15,11 @@ import {
   MinLength,
 } from 'class-validator';
 import { Match } from '../../common/validators/match.decorator';
+import {
+  PASSWORD_STRENGTH_MESSAGE,
+  PASSWORD_STRENGTH_REGEX,
+} from '../../common/validators/password-strength';
+import { IsPlainText } from '../../common/validators/plain-text.decorator';
 
 const PHONE_REGEX = /^\+?[0-9\s-]{7,20}$/;
 
@@ -28,18 +33,28 @@ export const ADMIN_INVITABLE_ROLES: UserRole[] = [
   UserRole.STUDENT,
 ];
 
+export const OWNER_INVITABLE_ROLES: UserRole[] = [
+  UserRole.ADMIN,
+  ...ADMIN_INVITABLE_ROLES,
+];
+
 export const INVALID_INVITE_ROLE_MESSAGE =
   'Можна запрошувати лише TEACHER, INSTRUCTOR або STUDENT.';
+
+export const INVALID_OWNER_INVITE_ROLE_MESSAGE =
+  'Можна запросити лише ADMIN, TEACHER, INSTRUCTOR або STUDENT.';
 
 export class InviteAdminDto {
   @ApiProperty({ example: 'Олена' })
   @MaxLength(60)
+  @IsPlainText()
   @IsString()
   @IsNotEmpty({ message: REQUIRED_FIELD_MESSAGE })
   firstName: string;
 
   @ApiProperty({ example: 'Коваль' })
   @MaxLength(60)
+  @IsPlainText()
   @IsString()
   @IsNotEmpty({ message: REQUIRED_FIELD_MESSAGE })
   lastName: string;
@@ -64,6 +79,17 @@ class InviteMemberRoleDto {
   @IsIn(ADMIN_INVITABLE_ROLES, { message: INVALID_INVITE_ROLE_MESSAGE })
   @IsNotEmpty({ message: REQUIRED_FIELD_MESSAGE })
   role: UserRole;
+}
+
+export class InviteByOwnerDto extends InviteAdminDto {
+  @ApiPropertyOptional({
+    enum: OWNER_INVITABLE_ROLES,
+    default: UserRole.ADMIN,
+    description: 'Роль запрошеного. Якщо поле не передати, буде ADMIN.',
+  })
+  @IsIn(OWNER_INVITABLE_ROLES, { message: INVALID_OWNER_INVITE_ROLE_MESSAGE })
+  @IsOptional()
+  role?: UserRole;
 }
 
 export class InviteMemberDto extends IntersectionType(
@@ -118,6 +144,11 @@ export class CreatedInvitationDto {
 
   @ApiProperty()
   organizationId: string;
+}
+
+export class InvitationListDto {
+  @ApiProperty({ type: [CreatedInvitationDto] })
+  invitations: CreatedInvitationDto[];
 }
 
 export class InviteResponseDto {
@@ -187,6 +218,7 @@ export class ActivateInvitationDto {
   token: string;
 
   @ApiProperty({ example: 'SecurePassword123!' })
+  @Matches(PASSWORD_STRENGTH_REGEX, { message: PASSWORD_STRENGTH_MESSAGE })
   @MaxLength(72, { message: 'Пароль занадто довгий.' })
   @MinLength(8, { message: 'Пароль має містити щонайменше 8 символів.' })
   @IsString()

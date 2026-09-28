@@ -1,4 +1,5 @@
 import {
+  BadRequestException,
   ForbiddenException,
   InternalServerErrorException,
   NotFoundException,
@@ -15,6 +16,9 @@ import {
   EMAIL_ALREADY_EXISTS_MESSAGE,
   EXPIRED_INVITATION_TOKEN_MESSAGE,
   INVALID_INVITATION_TOKEN_MESSAGE,
+  INVITATION_ALREADY_CANCELLED_MESSAGE,
+  INVITATION_ALREADY_USED_MESSAGE,
+  INVITATION_NOT_FOUND_MESSAGE,
   invitationAcceptUrl,
   InvitationsService,
   USED_INVITATION_TOKEN_MESSAGE,
@@ -110,7 +114,12 @@ describe('InvitationsService', () => {
   const prisma = {
     organization: { findUnique: jest.fn() },
     user: { delete: jest.fn(), update: jest.fn() },
-    invitation: { findUnique: jest.fn(), delete: jest.fn() },
+    invitation: {
+      findUnique: jest.fn(),
+      findMany: jest.fn(),
+      update: jest.fn(),
+      delete: jest.fn(),
+    },
     $transaction: jest.fn(),
   };
   const mailService = {
@@ -197,6 +206,32 @@ describe('InvitationsService', () => {
     });
     expect(result).not.toHaveProperty('token');
     expect(JSON.stringify(result)).not.toContain('tokenHash');
+  });
+
+  it('creates an INVITED STUDENT when the owner passes role', async () => {
+    const student = { ...createdUser, role: UserRole.STUDENT };
+    tx.user.create.mockResolvedValue(student);
+
+    const result = await service.inviteAdmin(owner as never, {
+      ...payload,
+      role: UserRole.STUDENT,
+    });
+
+    expect(tx.user.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({ role: UserRole.STUDENT }),
+    });
+    expect(result.user.role).toBe(UserRole.STUDENT);
+  });
+
+  it('rejects an invitation with role OWNER', async () => {
+    await expect(
+      service.inviteAdmin(owner as never, {
+        ...payload,
+        role: UserRole.OWNER,
+      }),
+    ).rejects.toBeInstanceOf(BadRequestException);
+
+    expect(tx.user.create).not.toHaveBeenCalled();
   });
 
   it('stores a hash of the invitation token and emails the raw token', async () => {
@@ -887,6 +922,163 @@ describe('InvitationsService', () => {
         },
       });
       expect(activateTx.user.updateMany).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('list, getById and cancel', () => {
+    const pendingAdminInvitation = {
+      id: 'invite-1',
+      email: 'admin@example.com',
+      role: UserRole.ADMIN,
+      status: InvitationStatus.PENDING,
+      expiresAt: new Date('2026-10-01T00:00:00.000Z'),
+      acceptedAt: null as Date | null,
+      userId: 'admin-1',
+      organizationId: 'org-1',
+      user: {
+        status: UserStatus.INVITED,
+        deletedAt: null as Date | null,
+      },
+    };
+
+    const pendingTeacherInvitation = {
+      ...pendingAdminInvitation,
+      id: 'invite-teacher-1',
+      email: 'teacher@example.com',
+      role: UserRole.TEACHER,
+      userId: 'teacher-1',
+    };
+
+    it('lists every school invitation for OWNER and only member invitations for ADMIN', async () => {
+      prisma.invitation.findMany.mockResolvedValue([pendingAdminInvitation]);
+
+      await service.list(owner as never);
+
+      expect(prisma.invitation.findMany).toHaveBeenCalledWith({
+        where: {
+          organizationId: 'org-1',
+          role: {
+            in: [
+              UserRole.ADMIN,
+              UserRole.TEACHER,
+              UserRole.INSTRUCTOR,
+              UserRole.STUDENT,
+            ],
+          },
+        },
+        orderBy: { createdAt: 'desc' },
+      });
+
+      prisma.invitation.findMany.mockResolvedValue([pendingTeacherInvitation]);
+      const adminList = await service.list(admin as never);
+
+      expect(prisma.invitation.findMany).toHaveBeenLastCalledWith({
+        where: {
+          organizationId: 'org-1',
+          role: {
+            in: [UserRole.TEACHER, UserRole.INSTRUCTOR, UserRole.STUDENT],
+          },
+        },
+        orderBy: { createdAt: 'desc' },
+      });
+      expect(adminList.invitations).toEqual([
+        {
+          id: 'invite-teacher-1',
+          email: 'teacher@example.com',
+          role: UserRole.TEACHER,
+          status: InvitationStatus.PENDING,
+          expiresAt: pendingTeacherInvitation.expiresAt,
+          userId: 'teacher-1',
+          organizationId: 'org-1',
+        },
+      ]);
+    });
+
+    it('returns one invitation by id and hides invitations from another school', async () => {
+      prisma.invitation.findUnique.mockResolvedValue(pendingTeacherInvitation);
+
+      await expect(
+        service.getById(admin as never, 'invite-teacher-1'),
+      ).resolves.toMatchObject({
+        id: 'invite-teacher-1',
+        role: UserRole.TEACHER,
+      });
+
+      prisma.invitation.findUnique.mockResolvedValue({
+        ...pendingTeacherInvitation,
+        organizationId: 'org-2',
+      });
+      await expect(
+        service.getById(admin as never, 'invite-teacher-1'),
+      ).rejects.toMatchObject({
+        message: INVITATION_NOT_FOUND_MESSAGE,
+      });
+    });
+
+    it('lets OWNER cancel a pending ADMIN invitation', async () => {
+      prisma.invitation.findUnique.mockResolvedValue(pendingAdminInvitation);
+      prisma.invitation.update.mockResolvedValue({
+        ...pendingAdminInvitation,
+        status: InvitationStatus.CANCELLED,
+      });
+
+      await expect(
+        service.cancel(owner as never, 'invite-1'),
+      ).resolves.toMatchObject({
+        id: 'invite-1',
+        status: InvitationStatus.CANCELLED,
+      });
+      expect(prisma.invitation.update).toHaveBeenCalledWith({
+        where: { id: 'invite-1' },
+        data: { status: InvitationStatus.CANCELLED },
+      });
+    });
+
+    it('lets ADMIN cancel a member invitation and forbids cancelling an ADMIN invitation', async () => {
+      prisma.invitation.findUnique.mockResolvedValue(pendingTeacherInvitation);
+      prisma.invitation.update.mockResolvedValue({
+        ...pendingTeacherInvitation,
+        status: InvitationStatus.CANCELLED,
+      });
+
+      await expect(
+        service.cancel(admin as never, 'invite-teacher-1'),
+      ).resolves.toMatchObject({ status: InvitationStatus.CANCELLED });
+
+      prisma.invitation.findUnique.mockResolvedValue(pendingAdminInvitation);
+      await expect(
+        service.cancel(admin as never, 'invite-1'),
+      ).rejects.toBeInstanceOf(ForbiddenException);
+    });
+
+    it('rejects a second cancel and an already accepted invitation', async () => {
+      prisma.invitation.findUnique.mockResolvedValue({
+        ...pendingAdminInvitation,
+        status: InvitationStatus.CANCELLED,
+      });
+      await expect(
+        service.cancel(owner as never, 'invite-1'),
+      ).rejects.toMatchObject({
+        response: {
+          statusCode: 400,
+          message: INVITATION_ALREADY_CANCELLED_MESSAGE,
+        },
+      });
+
+      prisma.invitation.findUnique.mockResolvedValue({
+        ...pendingAdminInvitation,
+        status: InvitationStatus.ACCEPTED,
+        acceptedAt: new Date(),
+      });
+      await expect(
+        service.cancel(owner as never, 'invite-1'),
+      ).rejects.toMatchObject({
+        response: {
+          statusCode: 400,
+          message: INVITATION_ALREADY_USED_MESSAGE,
+        },
+      });
+      expect(prisma.invitation.update).not.toHaveBeenCalled();
     });
   });
 });

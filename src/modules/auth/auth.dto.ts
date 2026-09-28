@@ -1,4 +1,4 @@
-import { ApiProperty } from '@nestjs/swagger';
+import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import { UserRole, UserStatus } from '@prisma/client';
 import {
   Equals,
@@ -16,6 +16,7 @@ import {
   PASSWORD_STRENGTH_MESSAGE,
   PASSWORD_STRENGTH_REGEX,
 } from '../../common/validators/password-strength';
+import { IsPlainText } from '../../common/validators/plain-text.decorator';
 
 const PHONE_REGEX = /^\+?[0-9\s-]{7,20}$/;
 
@@ -55,18 +56,21 @@ export class GoogleIdTokenDto {
 export class RegisterDto {
   @ApiProperty({ example: 'Автошкола Drive' })
   @MaxLength(120)
+  @IsPlainText()
   @IsString()
   @IsNotEmpty({ message: REQUIRED_FIELD_MESSAGE })
   organizationName: string;
 
   @ApiProperty({ example: 'Іван' })
   @MaxLength(60)
+  @IsPlainText()
   @IsString()
   @IsNotEmpty({ message: REQUIRED_FIELD_MESSAGE })
   firstName: string;
 
   @ApiProperty({ example: 'Петренко' })
   @MaxLength(60)
+  @IsPlainText()
   @IsString()
   @IsNotEmpty({ message: REQUIRED_FIELD_MESSAGE })
   lastName: string;
@@ -125,6 +129,13 @@ export class RegisteredUserDto {
 
   @ApiProperty({ example: 'owner@example.com' })
   email: string;
+
+  @ApiPropertyOptional({
+    nullable: true,
+    type: String,
+    example: '+380991234567',
+  })
+  phone: string | null;
 
   @ApiProperty({ enum: UserRole, example: UserRole.OWNER })
   role: UserRole;
