@@ -1,12 +1,7 @@
 import { ApiProperty } from '@nestjs/swagger';
-import {
-  IsEmail,
-  IsNotEmpty,
-  IsString,
-  MaxLength,
-  MinLength,
-} from 'class-validator';
+import { IsEmail, IsNotEmpty, IsString } from 'class-validator';
 import { Match } from '../../common/validators/match.decorator';
+import { IsStrongEnoughPassword } from '../../common/validators/password.decorator';
 
 const REQUIRED_FIELD_MESSAGE = "Заповніть обов'язкове поле.";
 const INVALID_EMAIL_MESSAGE = 'Введіть коректний email.';
@@ -26,8 +21,7 @@ export class ResetPasswordDto {
   token: string;
 
   @ApiProperty({ example: 'SecurePassword123!' })
-  @MaxLength(72, { message: 'Пароль занадто довгий.' })
-  @MinLength(8, { message: 'Пароль має містити щонайменше 8 символів.' })
+  @IsStrongEnoughPassword()
   @IsString()
   @IsNotEmpty({ message: REQUIRED_FIELD_MESSAGE })
   password: string;

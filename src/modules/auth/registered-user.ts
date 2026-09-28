@@ -6,6 +6,7 @@ export function toRegisteredUser(user: User) {
     firstName: user.firstName,
     lastName: user.lastName,
     email: user.email,
+    phone: user.phone,
     role: user.role,
     status: user.status,
     organizationId: user.organizationId,

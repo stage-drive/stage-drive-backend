@@ -33,7 +33,7 @@ describe('UsersService.changePassword', () => {
   });
 
   it('sets tokensInvalidBefore and revokes all refresh tokens on success', async () => {
-    await service.changePassword(user, 'CurrentPass1', 'NewPassword1');
+    await service.changePassword(user, 'CurrentPass1', 'NewPassword1!');
 
     expect(prisma.user.update).toHaveBeenCalledWith({
       where: { id: 'user-1' },
@@ -42,16 +42,14 @@ describe('UsersService.changePassword', () => {
         tokensInvalidBefore: expect.any(Date),
       },
     });
-    expect(refreshTokenService.revokeAllForUser).toHaveBeenCalledWith(
-      'user-1',
-    );
+    expect(refreshTokenService.revokeAllForUser).toHaveBeenCalledWith('user-1');
   });
 
   it('does not invalidate sessions when the current password is wrong', async () => {
     (bcrypt.compare as jest.Mock).mockResolvedValue(false);
 
     await expect(
-      service.changePassword(user, 'WrongPass1', 'NewPassword1'),
+      service.changePassword(user, 'WrongPass1', 'NewPassword1!'),
     ).rejects.toBeInstanceOf(BadRequestException);
 
     expect(prisma.user.update).not.toHaveBeenCalled();
@@ -61,6 +59,15 @@ describe('UsersService.changePassword', () => {
   it('does not invalidate sessions when the new password is too short', async () => {
     await expect(
       service.changePassword(user, 'CurrentPass1', 'short'),
+    ).rejects.toBeInstanceOf(BadRequestException);
+
+    expect(prisma.user.update).not.toHaveBeenCalled();
+    expect(refreshTokenService.revokeAllForUser).not.toHaveBeenCalled();
+  });
+
+  it('does not change the password when it has no uppercase letter', async () => {
+    await expect(
+      service.changePassword(user, 'CurrentPass1', 'password1!'),
     ).rejects.toBeInstanceOf(BadRequestException);
 
     expect(prisma.user.update).not.toHaveBeenCalled();

@@ -6,8 +6,9 @@ import {
   IsString,
   Matches,
   MaxLength,
-  MinLength,
 } from 'class-validator';
+import { IsStrongEnoughPassword } from '../../common/validators/password.decorator';
+import { IsPlainText } from '../../common/validators/plain-text.decorator';
 
 const PHONE_REGEX = /^\+?[0-9\s-]{7,20}$/;
 
@@ -43,6 +44,7 @@ export class PublicUserDto {
 
 export class UpdateProfileDto {
   @ApiPropertyOptional({ example: 'Іван' })
+  @IsPlainText()
   @IsOptional()
   @IsString()
   @IsNotEmpty()
@@ -50,6 +52,7 @@ export class UpdateProfileDto {
   firstName?: string;
 
   @ApiPropertyOptional({ example: 'Петренко' })
+  @IsPlainText()
   @IsOptional()
   @IsString()
   @IsNotEmpty()
@@ -73,9 +76,8 @@ export class ChangePasswordDto {
   currentPassword: string;
 
   @ApiProperty({ minLength: 8, example: 'SecurePassword123!' })
+  @IsStrongEnoughPassword()
   @IsString()
-  @MinLength(8)
-  @MaxLength(72)
   newPassword: string;
 }
 

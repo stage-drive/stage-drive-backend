@@ -1,5 +1,6 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import { IsNotEmpty, IsOptional, IsString, MaxLength } from 'class-validator';
+import { IsPlainText } from '../../common/validators/plain-text.decorator';
 
 export class PublicOrganizationDto {
   @ApiProperty({ example: '11111111-1111-1111-1111-111111111111' })
@@ -17,6 +18,7 @@ export class PublicOrganizationDto {
 
 export class UpdateOrganizationDto {
   @ApiPropertyOptional({ example: 'Автошкола Drive' })
+  @IsPlainText()
   @IsOptional()
   @IsString()
   @IsNotEmpty()

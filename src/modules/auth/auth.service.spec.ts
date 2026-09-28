@@ -63,12 +63,12 @@ describe('AuthService', () => {
         message: INVALID_CREDENTIALS_MESSAGE,
         status: 401,
       });
-      await expect(service.login('owner@example.com', '')).rejects.toMatchObject(
-        {
-          message: INVALID_CREDENTIALS_MESSAGE,
-          status: 401,
-        },
-      );
+      await expect(
+        service.login('owner@example.com', ''),
+      ).rejects.toMatchObject({
+        message: INVALID_CREDENTIALS_MESSAGE,
+        status: 401,
+      });
     });
 
     it('rejects when the user is not found', async () => {
@@ -205,7 +205,10 @@ describe('AuthService', () => {
       });
       (bcrypt.compare as jest.Mock).mockResolvedValue(true);
 
-      const result = await service.login('owner@example.com', 'SecurePassword123');
+      const result = await service.login(
+        'owner@example.com',
+        'SecurePassword123',
+      );
 
       expect(prisma.user.update).toHaveBeenCalledWith({
         where: { id: 'user-1' },
@@ -218,7 +221,10 @@ describe('AuthService', () => {
       prisma.user.findUnique.mockResolvedValue(activeUser);
       (bcrypt.compare as jest.Mock).mockResolvedValue(true);
 
-      const result = await service.login('owner@example.com', 'SecurePassword123');
+      const result = await service.login(
+        'owner@example.com',
+        'SecurePassword123',
+      );
 
       expect(prisma.user.update).toHaveBeenCalledWith({
         where: { id: 'user-1' },
@@ -237,7 +243,7 @@ describe('AuthService', () => {
       firstName: 'Іван',
       lastName: 'Петренко',
       email: 'Owner@Example.com ',
-      phone: undefined,
+      phone: '+380991234567',
       password: 'SecurePassword123',
       passwordConfirmation: 'SecurePassword123',
       termsAccepted: true,
@@ -248,6 +254,7 @@ describe('AuthService', () => {
       firstName: 'Іван',
       lastName: 'Петренко',
       email: 'owner@example.com',
+      phone: '+380991234567',
       role: UserRole.OWNER,
       status: 'ACTIVE',
       organizationId: 'org-1',
@@ -274,6 +281,7 @@ describe('AuthService', () => {
           data: expect.objectContaining({
             role: UserRole.OWNER,
             organizationId: 'org-1',
+            phone: '+380991234567',
             passwordHash: 'hashed-secret',
           }),
         }),
