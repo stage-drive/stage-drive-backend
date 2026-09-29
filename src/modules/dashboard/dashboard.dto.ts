@@ -237,3 +237,80 @@ export class TeacherDashboardDto {
   })
   upcomingLessons: TeacherDashboardLessonDto[];
 }
+
+
+export class StudentDashboardProfileDto {
+  @ApiProperty()
+  id: string;
+
+  @ApiProperty({ example: 'Олена' })
+  firstName: string;
+
+  @ApiProperty({ example: 'Петренко' })
+  lastName: string;
+
+  @ApiProperty({ example: 'student@example.com' })
+  email: string;
+
+  @ApiProperty({ enum: UserStatus, example: UserStatus.ACTIVE })
+  status: UserStatus;
+}
+
+export class StudentDashboardGroupDto {
+  @ApiProperty()
+  id: string;
+
+  @ApiProperty({ example: 'ПДР — Група А' })
+  name: string;
+
+  @ApiProperty({ enum: GroupStatus, example: GroupStatus.ACTIVE })
+  status: GroupStatus;
+
+  @ApiProperty({ example: 'Ганна Коваль' })
+  teacherName: string;
+}
+
+export class StudentDashboardLessonDto {
+  @ApiProperty()
+  id: string;
+
+  @ApiProperty()
+  groupId: string;
+
+  @ApiProperty({ example: 'ПДР — Група А' })
+  groupName: string;
+
+  @ApiProperty({ example: 'Розділ 3: Дорожні знаки' })
+  topic: string;
+
+  @ApiProperty()
+  scheduledAt: Date;
+}
+
+export class StudentDashboardStatsDto {
+  @ApiProperty({ example: 2 })
+  groupsTotal: number;
+
+  @ApiProperty({ example: 3 })
+  upcomingLessonsTotal: number;
+}
+
+export class StudentDashboardDto {
+  @ApiProperty({ type: AdminDashboardOrganizationDto })
+  organization: AdminDashboardOrganizationDto;
+
+  @ApiProperty({ type: StudentDashboardProfileDto })
+  student: StudentDashboardProfileDto;
+
+  @ApiProperty({ type: StudentDashboardStatsDto })
+  stats: StudentDashboardStatsDto;
+
+  @ApiProperty({ type: [StudentDashboardGroupDto] })
+  groups: StudentDashboardGroupDto[];
+
+  @ApiProperty({
+    type: [StudentDashboardLessonDto],
+    description: 'Наступні 5 запланованих занять студента, за зростанням дати.',
+  })
+  upcomingLessons: StudentDashboardLessonDto[];
+}

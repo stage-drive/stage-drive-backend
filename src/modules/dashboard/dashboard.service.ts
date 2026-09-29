@@ -1,7 +1,7 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
 import { EnrollmentStatus, InvitationStatus, LessonStatus, User, UserRole, UserStatus } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
-import { AdminDashboardDto, OwnerDashboardDto, TeacherDashboardDto } from './dashboard.dto';
+import { AdminDashboardDto, OwnerDashboardDto, StudentDashboardDto, TeacherDashboardDto } from './dashboard.dto';
 
 const USER_ROLES = Object.values(UserRole);
 const USER_STATUSES = Object.values(UserStatus);
@@ -189,6 +189,76 @@ export class DashboardService {
         name: group.name,
         status: group.status,
         studentsCount: group._count.enrollments,
+      })),
+      upcomingLessons: upcomingLessons.map((lesson) => ({
+        id: lesson.id,
+        groupId: lesson.groupId,
+        groupName: lesson.group.name,
+        topic: lesson.topic,
+        scheduledAt: lesson.scheduledAt,
+      })),
+    };
+  }
+
+  async getStudentDashboard(student: User): Promise<StudentDashboardDto> {
+    const organization = await this.requireOrganization(student.organizationId);
+    const now = new Date();
+
+    const [enrollments, upcomingLessons] = await Promise.all([
+      this.prisma.enrollment.findMany({
+        where: {
+          studentId: student.id,
+          status: EnrollmentStatus.ACTIVE,
+          group: { organizationId: student.organizationId },
+        },
+        include: {
+          group: {
+            include: {
+              teacher: { select: { firstName: true, lastName: true } },
+            },
+          },
+        },
+      }),
+      this.prisma.lesson.findMany({
+        where: {
+          group: {
+            organizationId: student.organizationId,
+            enrollments: {
+              some: { studentId: student.id, status: EnrollmentStatus.ACTIVE },
+            },
+          },
+          scheduledAt: { gte: now },
+          status: LessonStatus.SCHEDULED,
+        },
+        include: { group: { select: { name: true } } },
+        orderBy: { scheduledAt: 'asc' },
+        take: 5,
+      }),
+    ]);
+
+    return {
+      organization: {
+        id: organization.id,
+        name: organization.name,
+        logoUrl: organization.logoUrl,
+        timezone: organization.timezone,
+      },
+      student: {
+        id: student.id,
+        firstName: student.firstName,
+        lastName: student.lastName,
+        email: student.email,
+        status: student.status,
+      },
+      stats: {
+        groupsTotal: enrollments.length,
+        upcomingLessonsTotal: upcomingLessons.length,
+      },
+      groups: enrollments.map((enrollment) => ({
+        id: enrollment.group.id,
+        name: enrollment.group.name,
+        status: enrollment.group.status,
+        teacherName: `${enrollment.group.teacher.firstName} ${enrollment.group.teacher.lastName}`,
       })),
       upcomingLessons: upcomingLessons.map((lesson) => ({
         id: lesson.id,
