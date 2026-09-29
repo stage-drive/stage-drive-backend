@@ -462,4 +462,136 @@ describe('DashboardService', () => {
     ).rejects.toBeInstanceOf(NotFoundException);
     expect(prisma.group.findMany).not.toHaveBeenCalled();
   });
+
+  const student = {
+    id: 'student-1',
+    role: UserRole.STUDENT,
+    organizationId: 'org-1',
+    firstName: 'Олена',
+    lastName: 'Петренко',
+    email: 'student@example.com',
+    status: UserStatus.ACTIVE,
+  };
+
+  it('returns zero stats and empty lists when the student has no active enrollments', async () => {
+    await expect(service.getStudentDashboard(student as never)).resolves.toEqual(
+      {
+        organization: {
+          id: 'org-1',
+          name: 'Stage Drive School',
+          logoUrl: null,
+          timezone: 'Europe/Kyiv',
+        },
+        student: {
+          id: 'student-1',
+          firstName: 'Олена',
+          lastName: 'Петренко',
+          email: 'student@example.com',
+          status: UserStatus.ACTIVE,
+        },
+        stats: { groupsTotal: 0, upcomingLessonsTotal: 0 },
+        groups: [],
+        upcomingLessons: [],
+      },
+    );
+
+    expect(prisma.enrollment.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: {
+          studentId: 'student-1',
+          status: 'ACTIVE',
+          group: { organizationId: 'org-1' },
+        },
+      }),
+    );
+    expect(prisma.lesson.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: {
+          group: {
+            organizationId: 'org-1',
+            enrollments: {
+              some: { studentId: 'student-1', status: 'ACTIVE' },
+            },
+          },
+          scheduledAt: { gte: expect.any(Date) },
+          status: 'SCHEDULED',
+        },
+        take: 5,
+      }),
+    );
+  });
+
+  it('maps enrolled groups with their teacher name', async () => {
+    prisma.enrollment.findMany.mockResolvedValue([
+      {
+        group: {
+          id: 'group-1',
+          name: 'ПДР — Група А',
+          status: GroupStatus.ACTIVE,
+          teacher: { firstName: 'Ганна', lastName: 'Коваль' },
+        },
+      },
+    ]);
+
+    const result = await service.getStudentDashboard(student as never);
+
+    expect(result.stats.groupsTotal).toBe(1);
+    expect(result.groups).toEqual([
+      {
+        id: 'group-1',
+        name: 'ПДР — Група А',
+        status: GroupStatus.ACTIVE,
+        teacherName: 'Ганна Коваль',
+      },
+    ]);
+    expect(result.groups[0]).not.toHaveProperty('students');
+  });
+
+  it('maps upcoming lessons with their group name', async () => {
+    const scheduledAt = new Date('2026-10-01T10:00:00.000Z');
+    prisma.lesson.findMany.mockResolvedValue([
+      {
+        id: 'lesson-1',
+        groupId: 'group-1',
+        topic: 'Розділ 3: Дорожні знаки',
+        scheduledAt,
+        group: { name: 'ПДР — Група А' },
+      },
+    ]);
+
+    const result = await service.getStudentDashboard(student as never);
+
+    expect(result.stats.upcomingLessonsTotal).toBe(1);
+    expect(result.upcomingLessons).toEqual([
+      {
+        id: 'lesson-1',
+        groupId: 'group-1',
+        groupName: 'ПДР — Група А',
+        topic: 'Розділ 3: Дорожні знаки',
+        scheduledAt,
+      },
+    ]);
+  });
+
+  it('rejects a missing organization for student', async () => {
+    prisma.organization.findUnique.mockResolvedValue(null);
+
+    await expect(
+      service.getStudentDashboard(student as never),
+    ).rejects.toBeInstanceOf(NotFoundException);
+    expect(prisma.enrollment.findMany).not.toHaveBeenCalled();
+    expect(prisma.lesson.findMany).not.toHaveBeenCalled();
+  });
+
+  it('rejects a deleted organization for student', async () => {
+    prisma.organization.findUnique.mockResolvedValue({
+      ...organization,
+      deletedAt: new Date(),
+    });
+
+    await expect(
+      service.getStudentDashboard(student as never),
+    ).rejects.toBeInstanceOf(NotFoundException);
+    expect(prisma.enrollment.findMany).not.toHaveBeenCalled();
+  });
 });
