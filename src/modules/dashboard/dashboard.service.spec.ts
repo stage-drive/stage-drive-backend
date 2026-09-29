@@ -1,5 +1,10 @@
 import { NotFoundException } from '@nestjs/common';
-import { OrganizationStatus, UserRole, UserStatus } from '@prisma/client';
+import {
+  GroupStatus,
+  OrganizationStatus,
+  UserRole,
+  UserStatus,
+} from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
 import { DashboardService } from './dashboard.service';
 
@@ -23,6 +28,9 @@ describe('DashboardService', () => {
     organization: { findUnique: jest.fn() },
     user: { groupBy: jest.fn() },
     invitation: { count: jest.fn() },
+    group: { findMany: jest.fn() },
+    lesson: { findMany: jest.fn() },
+    enrollment: { findMany: jest.fn() },
   };
 
   let service: DashboardService;
@@ -32,6 +40,9 @@ describe('DashboardService', () => {
     prisma.organization.findUnique.mockResolvedValue(organization);
     prisma.user.groupBy.mockResolvedValue([]);
     prisma.invitation.count.mockResolvedValue(0);
+    prisma.group.findMany.mockResolvedValue([]);
+    prisma.lesson.findMany.mockResolvedValue([]);
+    prisma.enrollment.findMany.mockResolvedValue([]);
     service = new DashboardService(prisma as unknown as PrismaService);
   });
 
@@ -291,5 +302,164 @@ describe('DashboardService', () => {
       service.getAdminDashboard(admin as never),
     ).rejects.toBeInstanceOf(NotFoundException);
     expect(prisma.user.groupBy).not.toHaveBeenCalled();
+  });
+
+  const teacher = {
+    id: 'teacher-1',
+    role: UserRole.TEACHER,
+    organizationId: 'org-1',
+    firstName: 'Ганна',
+    lastName: 'Коваль',
+    email: 'teacher@example.com',
+    status: UserStatus.ACTIVE,
+  };
+
+  it('returns zero stats and empty lists when the teacher has no groups', async () => {
+    await expect(service.getTeacherDashboard(teacher as never)).resolves.toEqual(
+      {
+        organization: {
+          id: 'org-1',
+          name: 'Stage Drive School',
+          logoUrl: null,
+          timezone: 'Europe/Kyiv',
+        },
+        teacher: {
+          id: 'teacher-1',
+          firstName: 'Ганна',
+          lastName: 'Коваль',
+          email: 'teacher@example.com',
+          status: UserStatus.ACTIVE,
+        },
+        stats: { groupsTotal: 0, studentsTotal: 0, upcomingLessonsTotal: 0 },
+        groups: [],
+        upcomingLessons: [],
+      },
+    );
+
+    expect(prisma.group.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { teacherId: 'teacher-1', organizationId: 'org-1' },
+      }),
+    );
+    expect(prisma.lesson.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: {
+          group: { teacherId: 'teacher-1', organizationId: 'org-1' },
+          scheduledAt: { gte: expect.any(Date) },
+          status: 'SCHEDULED',
+        },
+        take: 5,
+      }),
+    );
+    expect(prisma.enrollment.findMany).toHaveBeenCalledWith({
+      where: {
+        status: 'ACTIVE',
+        group: { teacherId: 'teacher-1', organizationId: 'org-1' },
+      },
+      select: { studentId: true },
+      distinct: ['studentId'],
+    });
+  });
+
+  it('maps groups with their active-enrollment counts', async () => {
+    prisma.group.findMany.mockResolvedValue([
+      {
+        id: 'group-1',
+        name: 'ПДР — Група А',
+        status: GroupStatus.ACTIVE,
+        _count: { enrollments: 12 },
+      },
+      {
+        id: 'group-2',
+        name: 'ПДР — Група Б',
+        status: GroupStatus.PLANNED,
+        _count: { enrollments: 0 },
+      },
+    ]);
+
+    const result = await service.getTeacherDashboard(teacher as never);
+
+    expect(result.stats.groupsTotal).toBe(2);
+    expect(result.groups).toEqual([
+      {
+        id: 'group-1',
+        name: 'ПДР — Група А',
+        status: GroupStatus.ACTIVE,
+        studentsCount: 12,
+      },
+      {
+        id: 'group-2',
+        name: 'ПДР — Група Б',
+        status: GroupStatus.PLANNED,
+        studentsCount: 0,
+      },
+    ]);
+  });
+
+  it('counts distinct students, not the sum of per-group enrollment counts', async () => {
+    prisma.group.findMany.mockResolvedValue([
+      { id: 'group-1', name: 'A', status: GroupStatus.ACTIVE, _count: { enrollments: 2 } },
+      { id: 'group-2', name: 'B', status: GroupStatus.ACTIVE, _count: { enrollments: 2 } },
+    ]);
+    // A student enrolled in both groups is returned once by the distinct query,
+    // even though the per-group counts above sum to 4.
+    prisma.enrollment.findMany.mockResolvedValue([
+      { studentId: 'student-1' },
+      { studentId: 'student-2' },
+      { studentId: 'student-3' },
+    ]);
+
+    const result = await service.getTeacherDashboard(teacher as never);
+
+    expect(result.stats.studentsTotal).toBe(3);
+  });
+
+  it('maps upcoming lessons with their group name, ordered by the query', async () => {
+    const scheduledAt = new Date('2026-10-01T10:00:00.000Z');
+    prisma.lesson.findMany.mockResolvedValue([
+      {
+        id: 'lesson-1',
+        groupId: 'group-1',
+        topic: 'Розділ 3: Дорожні знаки',
+        scheduledAt,
+        group: { name: 'ПДР — Група А' },
+      },
+    ]);
+
+    const result = await service.getTeacherDashboard(teacher as never);
+
+    expect(result.stats.upcomingLessonsTotal).toBe(1);
+    expect(result.upcomingLessons).toEqual([
+      {
+        id: 'lesson-1',
+        groupId: 'group-1',
+        groupName: 'ПДР — Група А',
+        topic: 'Розділ 3: Дорожні знаки',
+        scheduledAt,
+      },
+    ]);
+  });
+
+  it('rejects a missing organization for teacher', async () => {
+    prisma.organization.findUnique.mockResolvedValue(null);
+
+    await expect(
+      service.getTeacherDashboard(teacher as never),
+    ).rejects.toBeInstanceOf(NotFoundException);
+    expect(prisma.group.findMany).not.toHaveBeenCalled();
+    expect(prisma.lesson.findMany).not.toHaveBeenCalled();
+    expect(prisma.enrollment.findMany).not.toHaveBeenCalled();
+  });
+
+  it('rejects a deleted organization for teacher', async () => {
+    prisma.organization.findUnique.mockResolvedValue({
+      ...organization,
+      deletedAt: new Date(),
+    });
+
+    await expect(
+      service.getTeacherDashboard(teacher as never),
+    ).rejects.toBeInstanceOf(NotFoundException);
+    expect(prisma.group.findMany).not.toHaveBeenCalled();
   });
 });
