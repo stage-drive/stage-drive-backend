@@ -1,5 +1,5 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
-import { OrganizationStatus, UserRole, UserStatus } from '@prisma/client';
+import { GroupStatus, OrganizationStatus, UserRole, UserStatus } from '@prisma/client';
 
 export class DashboardOrganizationDto {
   @ApiProperty()
@@ -153,4 +153,87 @@ export class AdminDashboardDto {
 
   @ApiProperty({ type: AdminDashboardInvitationsDto })
   invitations: AdminDashboardInvitationsDto;
+}
+
+
+export class TeacherDashboardGroupDto {
+  @ApiProperty()
+  id: string;
+
+  @ApiProperty({ example: 'ПДР — Група А' })
+  name: string;
+
+  @ApiProperty({ enum: GroupStatus, example: GroupStatus.ACTIVE })
+  status: GroupStatus;
+
+  @ApiProperty({ example: 12 })
+  studentsCount: number;
+}
+
+export class TeacherDashboardLessonDto {
+  @ApiProperty()
+  id: string;
+
+  @ApiProperty()
+  groupId: string;
+
+  @ApiProperty({ example: 'ПДР — Група А' })
+  groupName: string;
+
+  @ApiProperty({ example: 'Розділ 3: Дорожні знаки' })
+  topic: string;
+
+  @ApiProperty()
+  scheduledAt: Date;
+}
+
+export class TeacherDashboardStatsDto {
+  @ApiProperty({ example: 3 })
+  groupsTotal: number;
+
+  @ApiProperty({
+    description: 'Унікальні студенти в усіх групах цього TEACHER (без дублів, якщо студент у двох групах).',
+    example: 34,
+  })
+  studentsTotal: number;
+
+  @ApiProperty({ example: 5 })
+  upcomingLessonsTotal: number;
+}
+
+export class TeacherDashboardProfileDto {
+  @ApiProperty()
+  id: string;
+
+  @ApiProperty({ example: 'Ганна' })
+  firstName: string;
+
+  @ApiProperty({ example: 'Коваль' })
+  lastName: string;
+
+  @ApiProperty({ example: 'teacher@example.com' })
+  email: string;
+
+  @ApiProperty({ enum: UserStatus, example: UserStatus.ACTIVE })
+  status: UserStatus;
+}
+
+export class TeacherDashboardDto {
+  @ApiProperty({ type: AdminDashboardOrganizationDto })
+  organization: AdminDashboardOrganizationDto;
+
+  @ApiProperty({ type: TeacherDashboardProfileDto })
+  teacher: TeacherDashboardProfileDto;
+
+  @ApiProperty({ type: TeacherDashboardStatsDto })
+  stats: TeacherDashboardStatsDto;
+
+  @ApiProperty({ type: [TeacherDashboardGroupDto] })
+  groups: TeacherDashboardGroupDto[];
+
+  @ApiProperty({
+    type: [TeacherDashboardLessonDto],
+    description: 'Наступні 5 запланованих занять цього TEACHER, за зростанням дати.',
+  })
+  upcomingLessons: TeacherDashboardLessonDto[];
 }

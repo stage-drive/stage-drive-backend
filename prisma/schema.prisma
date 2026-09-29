@@ -36,6 +36,25 @@ enum InvitationStatus {
   CANCELLED
 }
 
+enum GroupStatus {
+  PLANNED
+  ACTIVE
+  COMPLETED
+  ARCHIVED
+}
+
+enum EnrollmentStatus {
+  ACTIVE
+  COMPLETED
+  DROPPED
+}
+
+enum LessonStatus {
+  SCHEDULED
+  COMPLETED
+  CANCELLED
+}
+
 model Organization {
   id        String             @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   name      String             @db.VarChar(255)
@@ -51,6 +70,7 @@ model Organization {
   deletedAt DateTime?          @map("deleted_at")
   users     User[]
   invitations Invitation[]
+  groups      Group[]
 
   @@index([deletedAt])
   @@map("organizations")
@@ -79,6 +99,8 @@ model User {
   passwordResetToken    PasswordResetToken[]
   sentInvitations       Invitation[]         @relation("SentInvitations")
   receivedInvitations   Invitation[]         @relation("ReceivedInvitations")
+  taughtGroups          Group[]              @relation("TeacherGroups")
+  enrollments           Enrollment[]         @relation("StudentEnrollments")
 
   @@index([deletedAt])
   @@index([organizationId])
@@ -169,4 +191,54 @@ model Invitation {
   @@index([invitedById])
   @@index([email])
   @@map("invitations")
+}
+
+model Group {
+  id             String       @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  name           String       @db.VarChar(120)
+  status         GroupStatus  @default(PLANNED)
+  organizationId String       @map("organization_id") @db.Uuid
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  teacherId      String       @map("teacher_id") @db.Uuid
+  teacher        User         @relation("TeacherGroups", fields: [teacherId], references: [id], onDelete: Cascade)
+  startDate      DateTime?    @map("start_date")
+  endDate        DateTime?    @map("end_date")
+  createdAt      DateTime     @default(now()) @map("created_at")
+  updatedAt      DateTime     @updatedAt @map("updated_at")
+  enrollments    Enrollment[]
+  lessons        Lesson[]
+
+  @@index([organizationId])
+  @@index([teacherId])
+  @@map("groups")
+}
+
+model Enrollment {
+  id         String           @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  groupId    String           @map("group_id") @db.Uuid
+  group      Group            @relation(fields: [groupId], references: [id], onDelete: Cascade)
+  studentId  String           @map("student_id") @db.Uuid
+  student    User             @relation("StudentEnrollments", fields: [studentId], references: [id], onDelete: Cascade)
+  status     EnrollmentStatus @default(ACTIVE)
+  enrolledAt DateTime         @default(now()) @map("enrolled_at")
+
+  @@unique([groupId, studentId])
+  @@index([groupId])
+  @@index([studentId])
+  @@map("enrollments")
+}
+
+model Lesson {
+  id          String       @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  groupId     String       @map("group_id") @db.Uuid
+  group       Group        @relation(fields: [groupId], references: [id], onDelete: Cascade)
+  topic       String       @db.VarChar(200)
+  scheduledAt DateTime     @map("scheduled_at")
+  durationMin Int          @default(90) @map("duration_min")
+  status      LessonStatus @default(SCHEDULED)
+  createdAt   DateTime     @default(now()) @map("created_at")
+
+  @@index([groupId])
+  @@index([scheduledAt])
+  @@map("lessons")
 }
