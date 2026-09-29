@@ -314,3 +314,62 @@ export class StudentDashboardDto {
   })
   upcomingLessons: StudentDashboardLessonDto[];
 }
+
+export class InstructorDashboardProfileDto {
+  @ApiProperty()
+  id: string;
+
+  @ApiProperty({ example: 'Максим' })
+  firstName: string;
+
+  @ApiProperty({ example: 'Гриценко' })
+  lastName: string;
+
+  @ApiProperty({ example: 'instructor@example.com' })
+  email: string;
+
+  @ApiProperty({ enum: UserStatus, example: UserStatus.ACTIVE })
+  status: UserStatus;
+}
+
+export class InstructorDashboardLessonDto {
+  @ApiProperty()
+  id: string;
+
+  @ApiProperty()
+  studentId: string;
+
+  @ApiProperty({ example: 'Олена Петренко' })
+  studentName: string;
+
+  @ApiProperty()
+  scheduledAt: Date;
+}
+
+export class InstructorDashboardStatsDto {
+  @ApiProperty({
+    description: 'Унікальні студенти з майбутніми заняттями цього INSTRUCTOR.',
+    example: 8,
+  })
+  studentsTotal: number;
+
+  @ApiProperty({ example: 5 })
+  upcomingLessonsTotal: number;
+}
+
+export class InstructorDashboardDto {
+  @ApiProperty({ type: AdminDashboardOrganizationDto })
+  organization: AdminDashboardOrganizationDto;
+
+  @ApiProperty({ type: InstructorDashboardProfileDto })
+  instructor: InstructorDashboardProfileDto;
+
+  @ApiProperty({ type: InstructorDashboardStatsDto })
+  stats: InstructorDashboardStatsDto;
+
+  @ApiProperty({
+    type: [InstructorDashboardLessonDto],
+    description: 'Наступні 5 запланованих практичних занять, за зростанням дати.',
+  })
+  upcomingLessons: InstructorDashboardLessonDto[];
+}
