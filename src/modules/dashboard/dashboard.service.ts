@@ -1,7 +1,15 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
-import { EnrollmentStatus, InvitationStatus, LessonStatus, User, UserRole, UserStatus } from '@prisma/client';
+import {
+  DrivingLessonStatus,
+  EnrollmentStatus,
+  InvitationStatus,
+  LessonStatus,
+  User,
+  UserRole,
+  UserStatus,
+} from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
-import { AdminDashboardDto, OwnerDashboardDto, StudentDashboardDto, TeacherDashboardDto } from './dashboard.dto';
+import { AdminDashboardDto, InstructorDashboardDto, OwnerDashboardDto, StudentDashboardDto, TeacherDashboardDto } from './dashboard.dto';
 
 const USER_ROLES = Object.values(UserRole);
 const USER_STATUSES = Object.values(UserStatus);
@@ -265,6 +273,60 @@ export class DashboardService {
         groupId: lesson.groupId,
         groupName: lesson.group.name,
         topic: lesson.topic,
+        scheduledAt: lesson.scheduledAt,
+      })),
+    };
+  }
+
+  async getInstructorDashboard(instructor: User): Promise<InstructorDashboardDto> {
+    const organization = await this.requireOrganization(instructor.organizationId);
+    const now = new Date();
+
+    const [upcomingLessons, distinctStudents] = await Promise.all([
+      this.prisma.drivingLesson.findMany({
+        where: {
+          instructorId: instructor.id,
+          organizationId: instructor.organizationId,
+          scheduledAt: { gte: now },
+          status: DrivingLessonStatus.SCHEDULED,
+        },
+        include: { student: { select: { firstName: true, lastName: true } } },
+        orderBy: { scheduledAt: 'asc' },
+        take: 5,
+      }),
+      this.prisma.drivingLesson.findMany({
+        where: {
+          instructorId: instructor.id,
+          organizationId: instructor.organizationId,
+          status: DrivingLessonStatus.SCHEDULED,
+        },
+        select: { studentId: true },
+        distinct: ['studentId'],
+      }),
+    ]);
+
+    return {
+      organization: {
+        id: organization.id,
+        name: organization.name,
+        logoUrl: organization.logoUrl,
+        timezone: organization.timezone,
+      },
+      instructor: {
+        id: instructor.id,
+        firstName: instructor.firstName,
+        lastName: instructor.lastName,
+        email: instructor.email,
+        status: instructor.status,
+      },
+      stats: {
+        studentsTotal: distinctStudents.length,
+        upcomingLessonsTotal: upcomingLessons.length,
+      },
+      upcomingLessons: upcomingLessons.map((lesson) => ({
+        id: lesson.id,
+        studentId: lesson.studentId,
+        studentName: `${lesson.student.firstName} ${lesson.student.lastName}`,
         scheduledAt: lesson.scheduledAt,
       })),
     };

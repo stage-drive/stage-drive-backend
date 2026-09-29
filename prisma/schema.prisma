@@ -55,6 +55,12 @@ enum LessonStatus {
   CANCELLED
 }
 
+enum DrivingLessonStatus {
+  SCHEDULED
+  COMPLETED
+  CANCELLED
+}
+
 model Organization {
   id        String             @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   name      String             @db.VarChar(255)
@@ -71,6 +77,7 @@ model Organization {
   users     User[]
   invitations Invitation[]
   groups      Group[]
+  drivingLessons DrivingLesson[]
 
   @@index([deletedAt])
   @@map("organizations")
@@ -101,6 +108,8 @@ model User {
   receivedInvitations   Invitation[]         @relation("ReceivedInvitations")
   taughtGroups          Group[]              @relation("TeacherGroups")
   enrollments           Enrollment[]         @relation("StudentEnrollments")
+  instructorDrivingLessons DrivingLesson[]   @relation("InstructorDrivingLessons")
+  studentDrivingLessons    DrivingLesson[]   @relation("StudentDrivingLessons")
 
   @@index([deletedAt])
   @@index([organizationId])
@@ -241,4 +250,24 @@ model Lesson {
   @@index([groupId])
   @@index([scheduledAt])
   @@map("lessons")
+}
+
+model DrivingLesson {
+  id             String              @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  organizationId String              @map("organization_id") @db.Uuid
+  organization   Organization        @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  instructorId   String              @map("instructor_id") @db.Uuid
+  instructor     User                @relation("InstructorDrivingLessons", fields: [instructorId], references: [id], onDelete: Cascade)
+  studentId      String              @map("student_id") @db.Uuid
+  student        User                @relation("StudentDrivingLessons", fields: [studentId], references: [id], onDelete: Cascade)
+  scheduledAt    DateTime            @map("scheduled_at")
+  durationMin    Int                 @default(60) @map("duration_min")
+  status         DrivingLessonStatus @default(SCHEDULED)
+  createdAt      DateTime            @default(now()) @map("created_at")
+
+  @@index([organizationId])
+  @@index([instructorId])
+  @@index([studentId])
+  @@index([scheduledAt])
+  @@map("driving_lessons")
 }

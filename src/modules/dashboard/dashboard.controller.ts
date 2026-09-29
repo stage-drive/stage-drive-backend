@@ -13,7 +13,7 @@ import { AuthGuard } from '../auth/auth.guard';
 import { CurrentUser } from '../auth/current-user.decorator';
 import { Roles } from '../auth/roles.decorator';
 import { RolesGuard } from '../auth/roles.guard';
-import { AdminDashboardDto, OwnerDashboardDto, StudentDashboardDto, TeacherDashboardDto } from './dashboard.dto';
+import { AdminDashboardDto, InstructorDashboardDto, OwnerDashboardDto, StudentDashboardDto, TeacherDashboardDto } from './dashboard.dto';
 import { DashboardService } from './dashboard.service';
 
 @ApiTags('dashboard')
@@ -94,5 +94,19 @@ export class DashboardController {
   @ApiNotFoundResponse({ description: 'Автошколу не знайдено або її видалено.' })
   getStudentDashboard(@CurrentUser() user: User) {
     return this.dashboardService.getStudentDashboard(user);
+  }
+
+  @Get('instructor')
+  @Roles(UserRole.INSTRUCTOR)
+  @ApiOperation({
+    summary: 'Дані Instructor Dashboard',
+    description:
+      'Публічні дані школи й власний профіль поточного INSTRUCTOR. Дані інших користувачів не повертаються.',
+  })
+  @ApiOkResponse({ type: InstructorDashboardDto })
+  @ApiForbiddenResponse({ description: 'Дані Instructor Dashboard доступні лише INSTRUCTOR.' })
+  @ApiNotFoundResponse({ description: 'Автошколу не знайдено або її видалено.' })
+  getInstructorDashboard(@CurrentUser() user: User) {
+    return this.dashboardService.getInstructorDashboard(user);
   }
 }

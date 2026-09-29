@@ -31,6 +31,7 @@ describe('DashboardService', () => {
     group: { findMany: jest.fn() },
     lesson: { findMany: jest.fn() },
     enrollment: { findMany: jest.fn() },
+    drivingLesson: { findMany: jest.fn() },
   };
 
   let service: DashboardService;
@@ -43,6 +44,7 @@ describe('DashboardService', () => {
     prisma.group.findMany.mockResolvedValue([]);
     prisma.lesson.findMany.mockResolvedValue([]);
     prisma.enrollment.findMany.mockResolvedValue([]);
+    prisma.drivingLesson.findMany.mockResolvedValue([]);
     service = new DashboardService(prisma as unknown as PrismaService);
   });
 
@@ -593,5 +595,128 @@ describe('DashboardService', () => {
       service.getStudentDashboard(student as never),
     ).rejects.toBeInstanceOf(NotFoundException);
     expect(prisma.enrollment.findMany).not.toHaveBeenCalled();
+  });
+
+  const instructor = {
+    id: 'instructor-1',
+    role: UserRole.INSTRUCTOR,
+    organizationId: 'org-1',
+    firstName: 'Максим',
+    lastName: 'Гриценко',
+    email: 'instructor@example.com',
+    status: UserStatus.ACTIVE,
+  };
+
+  it('returns zero stats and empty list when the instructor has no upcoming lessons', async () => {
+    await expect(
+      service.getInstructorDashboard(instructor as never),
+    ).resolves.toEqual({
+      organization: {
+        id: 'org-1',
+        name: 'Stage Drive School',
+        logoUrl: null,
+        timezone: 'Europe/Kyiv',
+      },
+      instructor: {
+        id: 'instructor-1',
+        firstName: 'Максим',
+        lastName: 'Гриценко',
+        email: 'instructor@example.com',
+        status: UserStatus.ACTIVE,
+      },
+      stats: { studentsTotal: 0, upcomingLessonsTotal: 0 },
+      upcomingLessons: [],
+    });
+
+    expect(prisma.drivingLesson.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: {
+          instructorId: 'instructor-1',
+          organizationId: 'org-1',
+          scheduledAt: { gte: expect.any(Date) },
+          status: 'SCHEDULED',
+        },
+        take: 5,
+      }),
+    );
+    expect(prisma.drivingLesson.findMany).toHaveBeenCalledWith({
+      where: {
+        instructorId: 'instructor-1',
+        organizationId: 'org-1',
+        status: 'SCHEDULED',
+      },
+      select: { studentId: true },
+      distinct: ['studentId'],
+    });
+  });
+
+  it('maps upcoming lessons with the student name', async () => {
+    const scheduledAt = new Date('2026-10-05T09:00:00.000Z');
+    prisma.drivingLesson.findMany.mockResolvedValueOnce([
+      {
+        id: 'lesson-1',
+        studentId: 'student-1',
+        scheduledAt,
+        student: { firstName: 'Олена', lastName: 'Петренко' },
+      },
+    ]);
+
+    const result = await service.getInstructorDashboard(instructor as never);
+
+    expect(result.stats.upcomingLessonsTotal).toBe(1);
+    expect(result.upcomingLessons).toEqual([
+      {
+        id: 'lesson-1',
+        studentId: 'student-1',
+        studentName: 'Олена Петренко',
+        scheduledAt,
+      },
+    ]);
+  });
+
+  it('counts distinct students, not the number of upcoming lessons', async () => {
+    // Two upcoming lessons with the same student should still count as one student.
+    prisma.drivingLesson.findMany
+      .mockResolvedValueOnce([
+        {
+          id: 'lesson-1',
+          studentId: 'student-1',
+          scheduledAt: new Date('2026-10-05T09:00:00.000Z'),
+          student: { firstName: 'Олена', lastName: 'Петренко' },
+        },
+        {
+          id: 'lesson-2',
+          studentId: 'student-1',
+          scheduledAt: new Date('2026-10-06T09:00:00.000Z'),
+          student: { firstName: 'Олена', lastName: 'Петренко' },
+        },
+      ])
+      .mockResolvedValueOnce([{ studentId: 'student-1' }]);
+
+    const result = await service.getInstructorDashboard(instructor as never);
+
+    expect(result.stats.upcomingLessonsTotal).toBe(2);
+    expect(result.stats.studentsTotal).toBe(1);
+  });
+
+  it('rejects a missing organization for instructor', async () => {
+    prisma.organization.findUnique.mockResolvedValue(null);
+
+    await expect(
+      service.getInstructorDashboard(instructor as never),
+    ).rejects.toBeInstanceOf(NotFoundException);
+    expect(prisma.drivingLesson.findMany).not.toHaveBeenCalled();
+  });
+
+  it('rejects a deleted organization for instructor', async () => {
+    prisma.organization.findUnique.mockResolvedValue({
+      ...organization,
+      deletedAt: new Date(),
+    });
+
+    await expect(
+      service.getInstructorDashboard(instructor as never),
+    ).rejects.toBeInstanceOf(NotFoundException);
+    expect(prisma.drivingLesson.findMany).not.toHaveBeenCalled();
   });
 });
