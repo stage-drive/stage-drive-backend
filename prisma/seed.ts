@@ -5,9 +5,11 @@ import {
   EnrollmentStatus,
   GroupStatus,
   InvitationStatus,
+  LicenseCategory,
   OrganizationStatus,
   PrismaClient,
   TrainingStatus,
+  Transmission,
   UserRole,
   UserStatus,
 } from '@prisma/client';
@@ -43,6 +45,19 @@ const DEMO_ARCHIVED_PROFILE_ID = '19191919-1919-4191-8191-191919191919';
 const DEMO_GROUPED_EMAIL = 'grouped-student@example.com';
 const DEMO_DROPPED_EMAIL = 'dropped-student@example.com';
 const DEMO_GRADUATED_EMAIL = 'graduated-student@example.com';
+const DEMO_INSTRUCTOR_ID = '23232323-2323-4232-8232-232323232323';
+const DEMO_INSTRUCTOR_EMAIL = 'instructor@example.com';
+const DEMO_INSTRUCTOR_2_ID = '24242424-2424-4242-8242-242424242424';
+const DEMO_INSTRUCTOR_2_EMAIL = 'instructor2@example.com';
+const DEMO_BLOCKED_INSTRUCTOR_ID = '25252525-2525-4252-8252-252525252525';
+const DEMO_BLOCKED_INSTRUCTOR_EMAIL = 'instructor-blocked@example.com';
+const DEMO_OTHER_INSTRUCTOR_ID = '26262626-2626-4262-8262-262626262626';
+const DEMO_OTHER_INSTRUCTOR_EMAIL = 'foreign-instructor@example.com';
+const DEMO_CAR_MATCH_ID = '31313131-3131-4131-8131-313131313131';
+const DEMO_CAR_AUTO_ID = '32323232-3232-4232-8232-323232323232';
+const DEMO_CAR_CATEGORY_ID = '34343434-3434-4343-8343-343434343434';
+const DEMO_CAR_OTHER_INSTRUCTOR_ID = '35353535-3535-4353-8353-353535353535';
+const DEMO_CAR_OTHER_ORG_ID = '36363636-3636-4363-8363-363636363636';
 
 const DEMO_EMAIL = 'owner@example.com';
 const DEMO_ADMIN_EMAIL = 'admin@example.com';
@@ -181,7 +196,15 @@ async function upsertStudentProfile(
 ) {
   return prisma.student.upsert({
     where: { userId },
-    update: { organizationId, groupId, trainingStatus },
+    update: {
+      organizationId,
+      groupId,
+      trainingStatus,
+      category: LicenseCategory.B,
+      transmission: Transmission.MANUAL,
+      instructorId: null,
+      carId: null,
+    },
     create: {
       id: profileId,
       userId,
@@ -189,6 +212,8 @@ async function upsertStudentProfile(
       groupId,
       instructorId: null,
       carId: null,
+      category: LicenseCategory.B,
+      transmission: Transmission.MANUAL,
       trainingStatus,
     },
   });
@@ -208,6 +233,27 @@ async function upsertGroup(input: {
       status: input.status,
       organizationId: input.organizationId,
       teacherId: input.teacherId,
+    },
+    create: input,
+  });
+}
+
+async function upsertCar(input: {
+  id: string;
+  organizationId: string;
+  instructorId: string;
+  plateNumber: string;
+  category: LicenseCategory;
+  transmission: Transmission;
+}) {
+  return prisma.car.upsert({
+    where: { id: input.id },
+    update: {
+      organizationId: input.organizationId,
+      instructorId: input.instructorId,
+      plateNumber: input.plateNumber,
+      category: input.category,
+      transmission: input.transmission,
     },
     create: input,
   });
@@ -437,6 +483,84 @@ async function main() {
     EnrollmentStatus.COMPLETED,
   );
 
+  const instructor = await upsertUser(organization.id, {
+    id: DEMO_INSTRUCTOR_ID,
+    email: DEMO_INSTRUCTOR_EMAIL,
+    firstName: 'Taras',
+    lastName: 'Shevchenko',
+    role: UserRole.INSTRUCTOR,
+    status: UserStatus.ACTIVE,
+    passwordHash,
+  });
+  const secondInstructor = await upsertUser(organization.id, {
+    id: DEMO_INSTRUCTOR_2_ID,
+    email: DEMO_INSTRUCTOR_2_EMAIL,
+    firstName: 'Bohdan',
+    lastName: 'Kovalenko',
+    role: UserRole.INSTRUCTOR,
+    status: UserStatus.ACTIVE,
+    passwordHash,
+  });
+  const blockedInstructor = await upsertUser(organization.id, {
+    id: DEMO_BLOCKED_INSTRUCTOR_ID,
+    email: DEMO_BLOCKED_INSTRUCTOR_EMAIL,
+    firstName: 'Ivan',
+    lastName: 'BlockedInstructor',
+    role: UserRole.INSTRUCTOR,
+    status: UserStatus.BLOCKED,
+    passwordHash,
+  });
+  const foreignInstructor = await upsertUser(otherOrganization.id, {
+    id: DEMO_OTHER_INSTRUCTOR_ID,
+    email: DEMO_OTHER_INSTRUCTOR_EMAIL,
+    firstName: 'Foreign',
+    lastName: 'Instructor',
+    role: UserRole.INSTRUCTOR,
+    status: UserStatus.ACTIVE,
+    passwordHash,
+  });
+
+  const matchingCar = await upsertCar({
+    id: DEMO_CAR_MATCH_ID,
+    organizationId: organization.id,
+    instructorId: instructor.id,
+    plateNumber: 'AA0001BB',
+    category: LicenseCategory.B,
+    transmission: Transmission.MANUAL,
+  });
+  const automaticCar = await upsertCar({
+    id: DEMO_CAR_AUTO_ID,
+    organizationId: organization.id,
+    instructorId: instructor.id,
+    plateNumber: 'AA0002BB',
+    category: LicenseCategory.B,
+    transmission: Transmission.AUTOMATIC,
+  });
+  const categoryCar = await upsertCar({
+    id: DEMO_CAR_CATEGORY_ID,
+    organizationId: organization.id,
+    instructorId: instructor.id,
+    plateNumber: 'AA0003BB',
+    category: LicenseCategory.C,
+    transmission: Transmission.MANUAL,
+  });
+  const otherInstructorCar = await upsertCar({
+    id: DEMO_CAR_OTHER_INSTRUCTOR_ID,
+    organizationId: organization.id,
+    instructorId: secondInstructor.id,
+    plateNumber: 'AA0004BB',
+    category: LicenseCategory.B,
+    transmission: Transmission.MANUAL,
+  });
+  const foreignCar = await upsertCar({
+    id: DEMO_CAR_OTHER_ORG_ID,
+    organizationId: otherOrganization.id,
+    instructorId: foreignInstructor.id,
+    plateNumber: 'AA0005BB',
+    category: LicenseCategory.B,
+    transmission: Transmission.MANUAL,
+  });
+
   const tokenHash = hashToken(DEMO_INVITE_TOKEN);
   const expiresAt = new Date(Date.now() + INVITATION_TTL_MS);
 
@@ -495,6 +619,29 @@ async function main() {
   console.log(`  group C COMPLETED: ${completedGroup.id}`);
   console.log(`  group D ARCHIVED:  ${archivedGroup.id}`);
   console.log(`  other-org group:   ${foreignGroup.id}`);
+  console.log(
+    `  ACTIVE instructor: ${DEMO_INSTRUCTOR_EMAIL} / ${DEMO_PASSWORD} id=${instructor.id}`,
+  );
+  console.log(
+    `  second instructor: ${DEMO_INSTRUCTOR_2_EMAIL} / ${DEMO_PASSWORD} id=${secondInstructor.id}`,
+  );
+  console.log(
+    `  BLOCKED instructor: ${DEMO_BLOCKED_INSTRUCTOR_EMAIL} id=${blockedInstructor.id}`,
+  );
+  console.log(`  other-org instructor id: ${foreignInstructor.id}`);
+  console.log(
+    `  matching car B/MANUAL (use with student@example.com): ${matchingCar.id}`,
+  );
+  console.log(`  car B/AUTOMATIC (transmission mismatch): ${automaticCar.id}`);
+  console.log(`  car C/MANUAL (category mismatch): ${categoryCar.id}`);
+  console.log(`  car of the second instructor: ${otherInstructorCar.id}`);
+  console.log(`  other-org car: ${foreignCar.id}`);
+  console.log(
+    'PATCH /api/students/{id}/practice-access — only ADMIN. Body: { "instructorId", "carId" }.',
+  );
+  console.log(
+    `  eligible student (ACTIVE, category B, MANUAL): ${DEMO_STUDENT_EMAIL} id=${activeStudent.id}`,
+  );
   console.log(
     `Invitation token (POST /api/invitations/verify and /activate): ${DEMO_INVITE_TOKEN}`,
   );

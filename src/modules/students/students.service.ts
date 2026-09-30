@@ -10,8 +10,10 @@ import {
   EnrollmentStatus,
   GroupStatus,
   InvitationStatus,
+  LicenseCategory,
   Prisma,
   TrainingStatus,
+  Transmission,
   User,
   UserRole,
   UserStatus,
@@ -29,6 +31,7 @@ import {
   AssignStudentGroupDto,
   CreateStudentDto,
   CreateStudentResponseDto,
+  GrantPracticeAccessDto,
   ListStudentsQueryDto,
   StudentCardDto,
   StudentListDto,
@@ -58,6 +61,8 @@ export const STUDENT_UPDATE_ROLES = [UserRole.OWNER, UserRole.ADMIN] as const;
 
 export const STUDENT_STATUS_ROLES = [UserRole.ADMIN] as const;
 
+export const STUDENT_PRACTICE_ACCESS_ROLES = [UserRole.ADMIN] as const;
+
 export const GROUP_NOT_FOUND_MESSAGE = 'Group not found';
 export const STUDENT_NOT_FOUND_MESSAGE = 'Student not found';
 export const STUDENT_TRAINING_STATUS_MESSAGE =
@@ -68,6 +73,15 @@ export const STUDENT_ACTIVE_GROUP_MESSAGE =
   'Студент уже перебуває в іншій активній групі.';
 export const TRAINING_STATUS_TRANSITION_MESSAGE =
   'Недозволений перехід навчального статусу.';
+export const INSTRUCTOR_NOT_FOUND_MESSAGE = 'Instructor not found';
+export const CAR_NOT_FOUND_MESSAGE = 'Car not found';
+export const INSTRUCTOR_ROLE_MESSAGE = 'Користувач не має ролі INSTRUCTOR.';
+export const INSTRUCTOR_NOT_ACTIVE_MESSAGE =
+  'Інструктор має бути в статусі ACTIVE.';
+export const INSTRUCTOR_CAR_MISMATCH_MESSAGE =
+  'Некоректна комбінація інструктора та автомобіля.';
+export const STUDENT_PRACTICE_ACCESS_MESSAGE =
+  'Студент не має права на допуск до практичного навчання.';
 
 const TRAINING_STATUS_TRANSITIONS: Record<
   TrainingStatus,
@@ -79,6 +93,11 @@ const TRAINING_STATUS_TRANSITIONS: Record<
     TrainingStatus.ARCHIVED,
   ],
   [TrainingStatus.ACTIVE]: [
+    TrainingStatus.GRADUATED,
+    TrainingStatus.DROPPED,
+    TrainingStatus.ARCHIVED,
+  ],
+  [TrainingStatus.PRACTICE]: [
     TrainingStatus.GRADUATED,
     TrainingStatus.DROPPED,
     TrainingStatus.ARCHIVED,
@@ -146,6 +165,8 @@ const studentCardSelect = {
       groupId: true,
       instructorId: true,
       carId: true,
+      category: true,
+      transmission: true,
       trainingStatus: true,
     },
   },
@@ -193,6 +214,32 @@ function assertCanChangeTrainingStatus(actor: User): void {
   if (!(STUDENT_STATUS_ROLES as readonly UserRole[]).includes(actor.role)) {
     throw new ForbiddenException('Insufficient permissions');
   }
+}
+
+function assertCanGrantPracticeAccess(actor: User): void {
+  if (
+    !(STUDENT_PRACTICE_ACCESS_ROLES as readonly UserRole[]).includes(actor.role)
+  ) {
+    throw new ForbiddenException('Insufficient permissions');
+  }
+}
+
+function isEligibleForPractice(student: {
+  status: UserStatus;
+  studentProfile: {
+    trainingStatus: TrainingStatus;
+    category: LicenseCategory | null;
+    transmission: Transmission | null;
+  };
+}): boolean {
+  const { trainingStatus, category, transmission } = student.studentProfile;
+  return (
+    student.status === UserStatus.ACTIVE &&
+    (trainingStatus === TrainingStatus.ACTIVE ||
+      trainingStatus === TrainingStatus.PRACTICE) &&
+    category != null &&
+    transmission != null
+  );
 }
 
 function canChangeTrainingStatus(
@@ -384,6 +431,8 @@ function toStudentCard(row: StudentCardRow): StudentCardDto {
           groupId: row.studentProfile.groupId,
           instructorId: row.studentProfile.instructorId,
           carId: row.studentProfile.carId,
+          category: row.studentProfile.category ?? null,
+          transmission: row.studentProfile.transmission ?? null,
           trainingStatus: row.studentProfile.trainingStatus,
         }
       : null,
@@ -499,6 +548,8 @@ export class StudentsService {
         groupId: string | null;
         instructorId: string | null;
         carId: string | null;
+        category: LicenseCategory | null;
+        transmission: Transmission | null;
         trainingStatus: TrainingStatus;
       };
       invitation: {
@@ -615,6 +666,8 @@ export class StudentsService {
         groupId: created.student.groupId,
         instructorId: created.student.instructorId,
         carId: created.student.carId,
+        category: created.student.category ?? null,
+        transmission: created.student.transmission ?? null,
         trainingStatus: created.student.trainingStatus,
       },
       invitation: {
@@ -825,6 +878,95 @@ export class StudentsService {
         ...student,
         studentProfile: {
           ...student.studentProfile,
+          trainingStatus: profile.trainingStatus,
+        },
+      });
+    });
+
+    return updated;
+  }
+
+  async grantPracticeAccess(
+    actor: User,
+    studentId: string,
+    payload: GrantPracticeAccessDto,
+  ): Promise<StudentCardDto> {
+    assertCanGrantPracticeAccess(actor);
+    await this.requireOrganization(actor.organizationId);
+
+    const updated = await this.prisma.$transaction(async (tx) => {
+      const student = await tx.user.findFirst({
+        where: {
+          id: studentId,
+          organizationId: actor.organizationId,
+          role: UserRole.STUDENT,
+          deletedAt: null,
+        },
+        select: studentCardSelect,
+      });
+
+      if (
+        !student ||
+        !belongsToOrganization(student, actor.organizationId) ||
+        !student.studentProfile
+      ) {
+        throw new NotFoundException(STUDENT_NOT_FOUND_MESSAGE);
+      }
+
+      if (!isEligibleForPractice(student)) {
+        throw new ConflictException(STUDENT_PRACTICE_ACCESS_MESSAGE);
+      }
+
+      const instructor = await tx.user.findUnique({
+        where: { id: payload.instructorId },
+      });
+      if (
+        !instructor ||
+        instructor.deletedAt ||
+        instructor.organizationId !== actor.organizationId
+      ) {
+        throw new NotFoundException(INSTRUCTOR_NOT_FOUND_MESSAGE);
+      }
+      if (instructor.role !== UserRole.INSTRUCTOR) {
+        throw new ConflictException(INSTRUCTOR_ROLE_MESSAGE);
+      }
+      if (instructor.status !== UserStatus.ACTIVE) {
+        throw new ConflictException(INSTRUCTOR_NOT_ACTIVE_MESSAGE);
+      }
+
+      const car = await tx.car.findUnique({
+        where: { id: payload.carId },
+      });
+      if (!car || car.organizationId !== actor.organizationId) {
+        throw new NotFoundException(CAR_NOT_FOUND_MESSAGE);
+      }
+      if (
+        car.instructorId !== instructor.id ||
+        car.category !== student.studentProfile.category ||
+        car.transmission !== student.studentProfile.transmission
+      ) {
+        throw new ConflictException(INSTRUCTOR_CAR_MISMATCH_MESSAGE);
+      }
+
+      const profile = await tx.student.update({
+        where: { id: student.studentProfile.id },
+        data: {
+          instructorId: instructor.id,
+          carId: car.id,
+          trainingStatus: TrainingStatus.PRACTICE,
+        },
+      });
+
+      this.logger.log(
+        `Student practice access granted studentId=${student.id} instructorId=${instructor.id} carId=${car.id} actorId=${actor.id} organizationId=${actor.organizationId}`,
+      );
+
+      return toStudentCard({
+        ...student,
+        studentProfile: {
+          ...student.studentProfile,
+          instructorId: profile.instructorId,
+          carId: profile.carId,
           trainingStatus: profile.trainingStatus,
         },
       });

@@ -8,8 +8,10 @@ import {
 import {
   EnrollmentStatus,
   GroupStatus,
+  LicenseCategory,
   Prisma,
   TrainingStatus,
+  Transmission,
   User,
   UserRole,
   UserStatus,
@@ -23,11 +25,17 @@ import {
 import { MailService } from '../mail/mail.service';
 import { ListStudentsQueryDto } from './students.dto';
 import {
+  CAR_NOT_FOUND_MESSAGE,
   GROUP_NOT_ASSIGNABLE_MESSAGE,
   GROUP_NOT_FOUND_MESSAGE,
+  INSTRUCTOR_CAR_MISMATCH_MESSAGE,
+  INSTRUCTOR_NOT_ACTIVE_MESSAGE,
+  INSTRUCTOR_NOT_FOUND_MESSAGE,
+  INSTRUCTOR_ROLE_MESSAGE,
   NO_STUDENT_FIELDS_MESSAGE,
   STUDENT_ACTIVE_GROUP_MESSAGE,
   STUDENT_NOT_FOUND_MESSAGE,
+  STUDENT_PRACTICE_ACCESS_MESSAGE,
   STUDENT_TRAINING_STATUS_MESSAGE,
   TRAINING_STATUS_TRANSITION_MESSAGE,
   StudentsService,
@@ -92,6 +100,7 @@ describe('StudentsService', () => {
     },
     group: { findUnique: jest.fn() },
     student: { create: jest.fn(), update: jest.fn() },
+    car: { findUnique: jest.fn() },
     enrollment: {
       findFirst: jest.fn(),
       upsert: jest.fn(),
@@ -368,6 +377,8 @@ describe('StudentsService', () => {
       groupId: null as string | null,
       instructorId: null,
       carId: null,
+      category: null,
+      transmission: null,
       trainingStatus: TrainingStatus.INVITED,
     };
 
@@ -448,6 +459,8 @@ describe('StudentsService', () => {
           groupId: null,
           instructorId: null,
           carId: null,
+          category: null,
+          transmission: null,
           trainingStatus: TrainingStatus.INVITED,
         },
         invitation: {
@@ -624,6 +637,8 @@ describe('StudentsService', () => {
       groupId: 'group-1' as string | null,
       instructorId: null,
       carId: null,
+      category: null,
+      transmission: null,
       trainingStatus: TrainingStatus.ACTIVE,
     };
 
@@ -1240,9 +1255,7 @@ describe('StudentsService', () => {
       trainingStatus: TrainingStatus.ACTIVE,
     };
 
-    function statusRow(
-      trainingStatus: TrainingStatus = TrainingStatus.ACTIVE,
-    ) {
+    function statusRow(trainingStatus: TrainingStatus = TrainingStatus.ACTIVE) {
       return {
         ...studentRow(),
         updatedAt: new Date('2026-02-01T00:00:00.000Z'),
@@ -1327,6 +1340,17 @@ describe('StudentsService', () => {
       expect(prisma.enrollment.updateMany).not.toHaveBeenCalled();
     });
 
+    it('does not assign PRACTICE through the status endpoint', async () => {
+      await expect(
+        service.changeTrainingStatus(actor(UserRole.ADMIN), 'student-1', {
+          status: TrainingStatus.PRACTICE,
+        }),
+      ).rejects.toMatchObject({
+        message: `${TRAINING_STATUS_TRANSITION_MESSAGE} ACTIVE → PRACTICE.`,
+      });
+      expect(prisma.student.update).not.toHaveBeenCalled();
+    });
+
     it('rejects a transition that is not allowed', async () => {
       prisma.user.findFirst.mockResolvedValue(
         statusRow(TrainingStatus.GRADUATED),
@@ -1343,13 +1367,31 @@ describe('StudentsService', () => {
       expect(Logger.prototype.log).not.toHaveBeenCalled();
     });
 
+    it('allows leaving PRACTICE toward graduation', async () => {
+      prisma.user.findFirst.mockResolvedValue(
+        statusRow(TrainingStatus.PRACTICE),
+      );
+
+      await expect(
+        service.changeTrainingStatus(actor(UserRole.ADMIN), 'student-1', {
+          status: TrainingStatus.GRADUATED,
+        }),
+      ).resolves.toMatchObject({
+        student: { trainingStatus: TrainingStatus.GRADUATED },
+      });
+    });
+
     it('does not change a student of another organization', async () => {
       prisma.user.findFirst.mockResolvedValue(null);
 
       await expect(
-        service.changeTrainingStatus(actor(UserRole.ADMIN, 'org-2'), 'student-1', {
-          status: TrainingStatus.ARCHIVED,
-        }),
+        service.changeTrainingStatus(
+          actor(UserRole.ADMIN, 'org-2'),
+          'student-1',
+          {
+            status: TrainingStatus.ARCHIVED,
+          },
+        ),
       ).rejects.toMatchObject({ message: STUDENT_NOT_FOUND_MESSAGE });
       expect(prisma.student.update).not.toHaveBeenCalled();
     });
@@ -1366,6 +1408,308 @@ describe('StudentsService', () => {
         }),
       ).rejects.toBeInstanceOf(NotFoundException);
       expect(prisma.user.findFirst).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('grantPracticeAccess', () => {
+    const instructor = {
+      id: 'instructor-1',
+      role: UserRole.INSTRUCTOR,
+      status: UserStatus.ACTIVE,
+      organizationId: 'org-1',
+      deletedAt: null as Date | null,
+    };
+    const car = {
+      id: 'car-1',
+      organizationId: 'org-1',
+      instructorId: 'instructor-1',
+      category: LicenseCategory.B,
+      transmission: Transmission.MANUAL,
+    };
+    const payload = { instructorId: 'instructor-1', carId: 'car-1' };
+    const profile = {
+      id: 'profile-1',
+      userId: 'student-1',
+      organizationId: 'org-1',
+      groupId: null as string | null,
+      instructorId: null as string | null,
+      carId: null as string | null,
+      category: LicenseCategory.B as LicenseCategory | null,
+      transmission: Transmission.MANUAL as Transmission | null,
+      trainingStatus: TrainingStatus.ACTIVE as TrainingStatus,
+    };
+
+    function practiceRow(
+      overrides: {
+        status?: UserStatus;
+        studentProfile?: typeof profile | null;
+      } = {},
+    ) {
+      const { studentProfile, ...userOverrides } = overrides;
+      return {
+        ...studentRow(),
+        updatedAt: new Date('2026-02-01T00:00:00.000Z'),
+        studentProfile: profile,
+        ...userOverrides,
+        ...(studentProfile !== undefined ? { studentProfile } : {}),
+      };
+    }
+
+    beforeEach(() => {
+      prisma.user.findFirst.mockResolvedValue(practiceRow());
+      prisma.user.findUnique.mockResolvedValue(instructor);
+      prisma.car.findUnique.mockResolvedValue(car);
+      prisma.student.update.mockImplementation(
+        (args: {
+          data: {
+            instructorId: string;
+            carId: string;
+            trainingStatus: TrainingStatus;
+          };
+        }) =>
+          Promise.resolve({
+            ...profile,
+            instructorId: args.data.instructorId,
+            carId: args.data.carId,
+            trainingStatus: args.data.trainingStatus,
+          }),
+      );
+      jest.spyOn(Logger.prototype, 'log').mockImplementation(() => undefined);
+    });
+
+    afterEach(() => {
+      jest.restoreAllMocks();
+    });
+
+    it('assigns the instructor, the car and PRACTICE for ADMIN', async () => {
+      const result = await service.grantPracticeAccess(
+        actor(UserRole.ADMIN),
+        'student-1',
+        payload,
+      );
+
+      expect(prisma.student.update).toHaveBeenCalledWith({
+        where: { id: 'profile-1' },
+        data: {
+          instructorId: 'instructor-1',
+          carId: 'car-1',
+          trainingStatus: TrainingStatus.PRACTICE,
+        },
+      });
+      expect(result.student).toMatchObject({
+        instructorId: 'instructor-1',
+        carId: 'car-1',
+        category: LicenseCategory.B,
+        transmission: Transmission.MANUAL,
+        trainingStatus: TrainingStatus.PRACTICE,
+      });
+      expect(Logger.prototype.log).toHaveBeenCalledWith(
+        'Student practice access granted studentId=student-1 instructorId=instructor-1 carId=car-1 actorId=admin-1 organizationId=org-1',
+      );
+    });
+
+    it('allows changing instructor and car when the student is already in PRACTICE', async () => {
+      prisma.user.findFirst.mockResolvedValue(
+        practiceRow({
+          studentProfile: {
+            ...profile,
+            trainingStatus: TrainingStatus.PRACTICE,
+            instructorId: 'old-instructor',
+            carId: 'old-car',
+          },
+        }),
+      );
+
+      await expect(
+        service.grantPracticeAccess(
+          actor(UserRole.ADMIN),
+          'student-1',
+          payload,
+        ),
+      ).resolves.toMatchObject({
+        student: {
+          instructorId: 'instructor-1',
+          carId: 'car-1',
+          trainingStatus: TrainingStatus.PRACTICE,
+        },
+      });
+    });
+
+    it.each([
+      UserRole.OWNER,
+      UserRole.TEACHER,
+      UserRole.INSTRUCTOR,
+      UserRole.STUDENT,
+    ] as const)('rejects %s before reading the student', async (role) => {
+      await expect(
+        service.grantPracticeAccess(actor(role), 'student-1', payload),
+      ).rejects.toBeInstanceOf(ForbiddenException);
+      expect(prisma.user.findFirst).not.toHaveBeenCalled();
+      expect(prisma.student.update).not.toHaveBeenCalled();
+    });
+
+    it('returns 404 when the student does not exist', async () => {
+      prisma.user.findFirst.mockResolvedValue(null);
+
+      await expect(
+        service.grantPracticeAccess(actor(UserRole.ADMIN), 'missing', payload),
+      ).rejects.toMatchObject({ message: STUDENT_NOT_FOUND_MESSAGE });
+      expect(prisma.student.update).not.toHaveBeenCalled();
+    });
+
+    it('returns 404 for a student of another organization', async () => {
+      prisma.user.findFirst.mockResolvedValue(null);
+
+      await expect(
+        service.grantPracticeAccess(
+          actor(UserRole.ADMIN, 'org-2'),
+          'student-1',
+          payload,
+        ),
+      ).rejects.toMatchObject({ message: STUDENT_NOT_FOUND_MESSAGE });
+    });
+
+    it.each([
+      TrainingStatus.INVITED,
+      TrainingStatus.GRADUATED,
+      TrainingStatus.DROPPED,
+      TrainingStatus.ARCHIVED,
+    ])('rejects training status %s', async (trainingStatus) => {
+      prisma.user.findFirst.mockResolvedValue(
+        practiceRow({
+          studentProfile: { ...profile, trainingStatus },
+        }),
+      );
+
+      await expect(
+        service.grantPracticeAccess(
+          actor(UserRole.ADMIN),
+          'student-1',
+          payload,
+        ),
+      ).rejects.toMatchObject({ message: STUDENT_PRACTICE_ACCESS_MESSAGE });
+      expect(prisma.student.update).not.toHaveBeenCalled();
+    });
+
+    it('rejects a blocked account', async () => {
+      prisma.user.findFirst.mockResolvedValue(
+        practiceRow({ status: UserStatus.BLOCKED }),
+      );
+
+      await expect(
+        service.grantPracticeAccess(
+          actor(UserRole.ADMIN),
+          'student-1',
+          payload,
+        ),
+      ).rejects.toMatchObject({ message: STUDENT_PRACTICE_ACCESS_MESSAGE });
+    });
+
+    it('rejects a student without category or transmission', async () => {
+      prisma.user.findFirst.mockResolvedValue(
+        practiceRow({
+          studentProfile: { ...profile, category: null, transmission: null },
+        }),
+      );
+
+      await expect(
+        service.grantPracticeAccess(
+          actor(UserRole.ADMIN),
+          'student-1',
+          payload,
+        ),
+      ).rejects.toMatchObject({ message: STUDENT_PRACTICE_ACCESS_MESSAGE });
+    });
+
+    it('returns 404 when the instructor is missing or from another organization', async () => {
+      prisma.user.findUnique.mockResolvedValue({
+        ...instructor,
+        organizationId: 'org-2',
+      });
+
+      await expect(
+        service.grantPracticeAccess(
+          actor(UserRole.ADMIN),
+          'student-1',
+          payload,
+        ),
+      ).rejects.toMatchObject({ message: INSTRUCTOR_NOT_FOUND_MESSAGE });
+      expect(prisma.car.findUnique).not.toHaveBeenCalled();
+    });
+
+    it('rejects an instructor whose role is not INSTRUCTOR', async () => {
+      prisma.user.findUnique.mockResolvedValue({
+        ...instructor,
+        role: UserRole.TEACHER,
+      });
+
+      await expect(
+        service.grantPracticeAccess(
+          actor(UserRole.ADMIN),
+          'student-1',
+          payload,
+        ),
+      ).rejects.toMatchObject({ message: INSTRUCTOR_ROLE_MESSAGE });
+    });
+
+    it('rejects an instructor who is not ACTIVE', async () => {
+      prisma.user.findUnique.mockResolvedValue({
+        ...instructor,
+        status: UserStatus.BLOCKED,
+      });
+
+      await expect(
+        service.grantPracticeAccess(
+          actor(UserRole.ADMIN),
+          'student-1',
+          payload,
+        ),
+      ).rejects.toMatchObject({ message: INSTRUCTOR_NOT_ACTIVE_MESSAGE });
+    });
+
+    it('returns 404 when the car is missing or from another organization', async () => {
+      prisma.car.findUnique.mockResolvedValue({
+        ...car,
+        organizationId: 'org-2',
+      });
+
+      await expect(
+        service.grantPracticeAccess(
+          actor(UserRole.ADMIN),
+          'student-1',
+          payload,
+        ),
+      ).rejects.toMatchObject({ message: CAR_NOT_FOUND_MESSAGE });
+      expect(prisma.student.update).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      {
+        instructorId: 'other-instructor',
+        category: LicenseCategory.B,
+        transmission: Transmission.MANUAL,
+      },
+      {
+        instructorId: 'instructor-1',
+        category: LicenseCategory.C,
+        transmission: Transmission.MANUAL,
+      },
+      {
+        instructorId: 'instructor-1',
+        category: LicenseCategory.B,
+        transmission: Transmission.AUTOMATIC,
+      },
+    ])('rejects a mismatched instructor and car', async (mismatch) => {
+      prisma.car.findUnique.mockResolvedValue({ ...car, ...mismatch });
+
+      await expect(
+        service.grantPracticeAccess(
+          actor(UserRole.ADMIN),
+          'student-1',
+          payload,
+        ),
+      ).rejects.toMatchObject({ message: INSTRUCTOR_CAR_MISMATCH_MESSAGE });
+      expect(prisma.student.update).not.toHaveBeenCalled();
     });
   });
 });

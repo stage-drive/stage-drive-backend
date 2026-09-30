@@ -1,7 +1,9 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import {
   InvitationStatus,
+  LicenseCategory,
   TrainingStatus,
+  Transmission,
   UserRole,
   UserStatus,
 } from '@prisma/client';
@@ -278,23 +280,46 @@ export class StudentProfileDto {
   @ApiPropertyOptional({
     nullable: true,
     type: String,
-    description: 'При створенні завжди null.',
+    description:
+      'null, доки ADMIN не надасть допуск до практики через PATCH /api/students/{id}/practice-access.',
   })
   instructorId: string | null;
 
   @ApiPropertyOptional({
     nullable: true,
     type: String,
-    description: 'При створенні завжди null.',
+    description:
+      'null, доки ADMIN не надасть допуск до практики через PATCH /api/students/{id}/practice-access.',
   })
   carId: string | null;
+
+  @ApiProperty({
+    enum: LicenseCategory,
+    nullable: true,
+    example: LicenseCategory.B,
+    description:
+      'Категорія, на яку навчається студент. Потрібна для допуску до практики. ' +
+      'Новий учень створюється з null.',
+  })
+  category: LicenseCategory | null;
+
+  @ApiProperty({
+    enum: Transmission,
+    nullable: true,
+    example: Transmission.MANUAL,
+    description:
+      'Коробка передач, на яку навчається студент. Має збігатися з автомобілем допуску. ' +
+      'Новий учень створюється з null.',
+  })
+  transmission: Transmission | null;
 
   @ApiProperty({
     enum: TrainingStatus,
     example: TrainingStatus.INVITED,
     description:
       'Навчальний статус. Новий учень створюється як INVITED. ' +
-      'Змінюється лише через PATCH /api/students/{id}/status.',
+      'PRACTICE встановлюється лише через PATCH /api/students/{id}/practice-access. ' +
+      'Інші переходи — через PATCH /api/students/{id}/status.',
   })
   trainingStatus: TrainingStatus;
 }
@@ -341,12 +366,14 @@ export class UpdateStudentTrainingStatusDto {
       'Новий навчальний статус. Дозволені переходи: ' +
       'INVITED → ACTIVE, DROPPED, ARCHIVED; ' +
       'ACTIVE → GRADUATED, DROPPED, ARCHIVED; ' +
+      'PRACTICE → GRADUATED, DROPPED, ARCHIVED; ' +
       'GRADUATED → ARCHIVED; DROPPED → ARCHIVED. ' +
-      'ARCHIVED далі не змінюється.',
+      'ARCHIVED далі не змінюється. ' +
+      'PRACTICE цим запитом не призначається.',
   })
   @IsEnum(TrainingStatus, {
     message:
-      'status має бути INVITED, ACTIVE, GRADUATED, DROPPED або ARCHIVED.',
+      'status має бути INVITED, ACTIVE, PRACTICE, GRADUATED, DROPPED або ARCHIVED.',
   })
   status: TrainingStatus;
 }
@@ -360,6 +387,26 @@ export class AssignStudentGroupDto {
   @IsUUID('4', { message: 'groupId має бути UUID.' })
   @IsNotEmpty({ message: REQUIRED_FIELD_MESSAGE })
   groupId: string;
+}
+
+export class GrantPracticeAccessDto {
+  @ApiProperty({
+    description:
+      'Інструктор тієї самої автошколи з роллю INSTRUCTOR і статусом ACTIVE.',
+    example: '23232323-2323-4232-8232-232323232323',
+  })
+  @IsUUID('4', { message: 'instructorId має бути UUID.' })
+  @IsNotEmpty({ message: REQUIRED_FIELD_MESSAGE })
+  instructorId: string;
+
+  @ApiProperty({
+    description:
+      'Автомобіль цього інструктора. category і transmission мають збігатися зі студентом.',
+    example: '31313131-3131-4131-8131-313131313131',
+  })
+  @IsUUID('4', { message: 'carId має бути UUID.' })
+  @IsNotEmpty({ message: REQUIRED_FIELD_MESSAGE })
+  carId: string;
 }
 
 export class UpdateStudentDto {
