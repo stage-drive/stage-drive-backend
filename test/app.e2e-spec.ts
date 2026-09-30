@@ -2316,9 +2316,10 @@ describe('API (e2e)', () => {
     const paths = (response.body as { paths: Record<string, unknown> }).paths;
     expect(paths['/api/students'] ?? paths['/students']).toBeDefined();
     const card = (paths['/api/students/{id}'] ?? paths['/students/{id}']) as
-      { get?: unknown; patch?: unknown } | undefined;
+      { get?: unknown; patch?: unknown; delete?: unknown } | undefined;
     expect(card?.get).toBeDefined();
     expect(card?.patch).toBeDefined();
+    expect(card?.delete).toBeDefined();
   });
 
   const studentCardId = '12121212-1212-4212-8212-121212121212';
@@ -3208,6 +3209,29 @@ describe('API (e2e)', () => {
     expect(prismaMock.student.update).not.toHaveBeenCalled();
   });
 
+  it('PATCH /api/students/:id/practice-access rejects a new booking for an archived student', async () => {
+    mockStudentCard(
+      studentCardRecord({
+        status: 'ARCHIVED',
+        trainingStatus: 'ARCHIVED',
+      }),
+    );
+
+    const token = signAccessToken(admin.id);
+    const response = await request(app.getHttpServer())
+      .patch(`/api/students/${studentCardId}/practice-access`)
+      .set('Authorization', `Bearer ${token}`)
+      .send({ instructorId: practiceInstructorId, carId: practiceCarId })
+      .expect(409);
+
+    expect(response.body).toMatchObject({
+      statusCode: 409,
+      message:
+        'Архівованому студенту не можна створювати нове бронювання практики.',
+    });
+    expect(prismaMock.student.update).not.toHaveBeenCalled();
+  });
+
   it('PATCH /api/students/:id/practice-access rejects a student who is not eligible', async () => {
     mockStudentCard(studentCardRecord({ trainingStatus: 'GRADUATED' }));
 
@@ -3251,6 +3275,107 @@ describe('API (e2e)', () => {
 
     expect(response.body).toMatchObject({ statusCode: 400 });
     expect(prismaMock.student.update).not.toHaveBeenCalled();
+  });
+
+  it('DELETE /api/students/:id without token returns 401', () => {
+    return request(app.getHttpServer())
+      .delete(`/api/students/${studentCardId}`)
+      .expect(401);
+  });
+
+  it.each(['TEACHER', 'INSTRUCTOR', 'STUDENT'] as const)(
+    'DELETE /api/students/:id is forbidden for %s',
+    async (role) => {
+      const actor =
+        role === 'TEACHER'
+          ? teacher
+          : role === 'INSTRUCTOR'
+            ? instructor
+            : pupil;
+      const token = signAccessToken(actor.id);
+      const response = await request(app.getHttpServer())
+        .delete(`/api/students/${studentCardId}`)
+        .set('Authorization', `Bearer ${token}`)
+        .expect(403);
+
+      expect(response.body).toMatchObject({
+        statusCode: 403,
+        message: 'Insufficient permissions',
+      });
+      expect(prismaMock.user.update).not.toHaveBeenCalled();
+      expect(prismaMock.user.delete).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(['OWNER', 'ADMIN'] as const)(
+    'DELETE /api/students/:id archives the student for %s and keeps the row',
+    async (role) => {
+      mockStudentCard(studentCardRecord({ trainingStatus: 'PRACTICE' }));
+      const actor = role === 'OWNER' ? owner : admin;
+      const token = signAccessToken(actor.id);
+
+      const response = await request(app.getHttpServer())
+        .delete(`/api/students/${studentCardId}`)
+        .set('Authorization', `Bearer ${token}`)
+        .expect(200);
+
+      expect(response.body).toMatchObject({
+        id: studentCardId,
+        role: 'STUDENT',
+        status: 'ARCHIVED',
+        organizationId: organization.id,
+        student: {
+          id: createdStudentProfileId,
+          trainingStatus: 'ARCHIVED',
+        },
+      });
+      expect(prismaMock.user.update).toHaveBeenCalledWith({
+        where: { id: studentCardId },
+        data: { status: 'ARCHIVED' },
+      });
+      expect(prismaMock.student.update).toHaveBeenCalledWith({
+        where: { id: createdStudentProfileId },
+        data: { trainingStatus: 'ARCHIVED' },
+      });
+      expect(prismaMock.user.delete).not.toHaveBeenCalled();
+      expect(prismaMock.enrollment.updateMany).not.toHaveBeenCalled();
+    },
+  );
+
+  it('DELETE /api/students/:id does not archive a student of another organization', async () => {
+    prismaMock.user.findFirst.mockResolvedValue(null);
+
+    const token = signAccessToken(admin.id);
+    const response = await request(app.getHttpServer())
+      .delete(`/api/students/${foreignStudentId}`)
+      .set('Authorization', `Bearer ${token}`)
+      .expect(404);
+
+    expect(response.body).toMatchObject({
+      statusCode: 404,
+      message: 'Student not found',
+    });
+    expect(prismaMock.user.update).not.toHaveBeenCalled();
+    expect(prismaMock.user.delete).not.toHaveBeenCalled();
+  });
+
+  it('DELETE /api/students/:id returns 404 when the organization is deleted', async () => {
+    prismaMock.organization.findUnique.mockResolvedValue({
+      ...organization,
+      deletedAt: new Date(),
+    });
+
+    const token = signAccessToken(admin.id);
+    const response = await request(app.getHttpServer())
+      .delete(`/api/students/${studentCardId}`)
+      .set('Authorization', `Bearer ${token}`)
+      .expect(404);
+
+    expect(response.body).toMatchObject({
+      statusCode: 404,
+      message: 'Organization not found',
+    });
+    expect(prismaMock.user.findFirst).not.toHaveBeenCalled();
   });
 
   it('OpenAPI documents student practice access', async () => {

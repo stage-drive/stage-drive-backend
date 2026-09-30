@@ -1,6 +1,7 @@
 import {
   Body,
   Controller,
+  Delete,
   Get,
   HttpCode,
   HttpStatus,
@@ -44,6 +45,7 @@ import {
   UpdateStudentTrainingStatusDto,
 } from './students.dto';
 import {
+  STUDENT_ARCHIVE_ROLES,
   STUDENT_CARD_ROLES,
   STUDENT_CREATE_ROLES,
   STUDENT_LIST_ROLES,
@@ -336,5 +338,39 @@ export class StudentsController {
     @Body() body: UpdateStudentDto,
   ) {
     return this.studentsService.update(user, id, body);
+  }
+
+  @Delete(':id')
+  @Roles(...STUDENT_ARCHIVE_ROLES)
+  @ApiOperation({
+    summary: 'Архівувати студента без фізичного видалення',
+    description:
+      'OWNER або ADMIN своєї автошколи. organizationId береться з авторизованого ' +
+      'користувача: студент іншої організації повертає 404. Запис Student і User ' +
+      'не видаляються і deletedAt не ставиться. Встановлюються ' +
+      'Student.trainingStatus = ARCHIVED і User.status = ARCHIVED. ' +
+      'Зарахування, заняття, оплати та практичні заняття лишаються в базі. ' +
+      'Нове бронювання практики для архівованого студента відхиляється.',
+  })
+  @ApiParam({
+    name: 'id',
+    format: 'uuid',
+    description: 'Id користувача-студента.',
+    example: '88888888-8888-4888-8888-888888888888',
+  })
+  @ApiOkResponse({ type: StudentCardDto })
+  @ApiForbiddenResponse({
+    description: 'Архівувати студента можуть лише OWNER або ADMIN.',
+  })
+  @ApiNotFoundResponse({
+    description:
+      'Студента не знайдено, його видалено, або він належить іншій автошколі. ' +
+      'Також якщо автошколу видалено.',
+  })
+  archive(
+    @CurrentUser() user: User,
+    @Param('id', new ParseUUIDPipe({ version: '4' })) id: string,
+  ) {
+    return this.studentsService.archive(user, id);
   }
 }
