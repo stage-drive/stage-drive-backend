@@ -2267,12 +2267,362 @@ describe('API (e2e)', () => {
     expect(mailServiceMock.sendEmail).not.toHaveBeenCalled();
   });
 
-  it('OpenAPI documents GET /api/students', async () => {
+  it('OpenAPI documents the student collection and card', async () => {
     const response = await request(app.getHttpServer())
       .get('/api/docs-json')
       .expect(200);
 
     const paths = (response.body as { paths: Record<string, unknown> }).paths;
     expect(paths['/api/students'] ?? paths['/students']).toBeDefined();
+    const card = (paths['/api/students/{id}'] ?? paths['/students/{id}']) as
+      { get?: unknown; patch?: unknown } | undefined;
+    expect(card?.get).toBeDefined();
+    expect(card?.patch).toBeDefined();
+  });
+
+  const studentCardId = '12121212-1212-4212-8212-121212121212';
+  const foreignStudentId = 'abababab-abab-4bab-8bab-abababababab';
+
+  function studentCardRecord(
+    overrides: {
+      id?: string;
+      email?: string;
+      organizationId?: string;
+      deletedAt?: Date | null;
+      status?: 'INVITED' | 'ACTIVE' | 'BLOCKED' | 'ARCHIVED';
+    } = {},
+  ) {
+    const id = overrides.id ?? studentCardId;
+    const organizationId = overrides.organizationId ?? organization.id;
+    return {
+      id,
+      email: overrides.email ?? 'olena.koval@example.com',
+      firstName: 'Олена',
+      lastName: 'Коваль',
+      phone: '+380991234567',
+      avatarUrl: null,
+      role: 'STUDENT' as const,
+      status: overrides.status ?? ('ACTIVE' as const),
+      organizationId,
+      createdAt: new Date('2026-01-02T00:00:00.000Z'),
+      updatedAt: new Date('2026-02-01T00:00:00.000Z'),
+      deletedAt: overrides.deletedAt ?? null,
+      studentProfile: {
+        id: createdStudentProfileId,
+        userId: id,
+        organizationId,
+        groupId: null,
+        instructorId: null,
+        carId: null,
+      },
+    };
+  }
+
+  function mockStudentCard(
+    record: ReturnType<typeof studentCardRecord> | null,
+  ) {
+    prismaMock.user.findFirst.mockImplementation(
+      (args: {
+        where: { id?: string; organizationId?: string; role?: string };
+      }) => {
+        if (!record || args.where.id !== record.id) {
+          return Promise.resolve(null);
+        }
+        if (
+          args.where.organizationId &&
+          args.where.organizationId !== record.organizationId
+        ) {
+          return Promise.resolve(null);
+        }
+        if (args.where.role && args.where.role !== record.role) {
+          return Promise.resolve(null);
+        }
+        return Promise.resolve(record);
+      },
+    );
+  }
+
+  it('GET /api/students/:id without token returns 401', () => {
+    return request(app.getHttpServer())
+      .get(`/api/students/${studentCardId}`)
+      .expect(401);
+  });
+
+  it('GET /api/students/:id rejects an id that is not a UUID', async () => {
+    const token = signAccessToken(admin.id);
+    const response = await request(app.getHttpServer())
+      .get('/api/students/not-a-uuid')
+      .set('Authorization', `Bearer ${token}`)
+      .expect(400);
+
+    expect(response.body).toMatchObject({ statusCode: 400 });
+    expect(prismaMock.user.findFirst).not.toHaveBeenCalled();
+  });
+
+  it('GET /api/students/:id is forbidden for STUDENT', async () => {
+    const token = signAccessToken(pupil.id);
+    const response = await request(app.getHttpServer())
+      .get(`/api/students/${studentCardId}`)
+      .set('Authorization', `Bearer ${token}`)
+      .expect(403);
+
+    expect(response.body).toMatchObject({
+      statusCode: 403,
+      message: 'Insufficient permissions',
+    });
+    expect(prismaMock.user.findFirst).not.toHaveBeenCalled();
+  });
+
+  it.each(['OWNER', 'ADMIN', 'TEACHER', 'INSTRUCTOR'] as const)(
+    'GET /api/students/:id returns the student card for %s',
+    async (role) => {
+      const actor =
+        role === 'OWNER'
+          ? owner
+          : role === 'ADMIN'
+            ? admin
+            : role === 'TEACHER'
+              ? teacher
+              : instructor;
+      mockStudentCard(studentCardRecord());
+
+      const token = signAccessToken(actor.id);
+      const response = await request(app.getHttpServer())
+        .get(`/api/students/${studentCardId}`)
+        .set('Authorization', `Bearer ${token}`)
+        .expect(200);
+
+      expect(response.body).toEqual({
+        id: studentCardId,
+        email: 'olena.koval@example.com',
+        firstName: 'Олена',
+        lastName: 'Коваль',
+        phone: '+380991234567',
+        avatarUrl: null,
+        role: 'STUDENT',
+        status: 'ACTIVE',
+        organizationId: organization.id,
+        createdAt: '2026-01-02T00:00:00.000Z',
+        updatedAt: '2026-02-01T00:00:00.000Z',
+        student: {
+          id: createdStudentProfileId,
+          userId: studentCardId,
+          organizationId: organization.id,
+          groupId: null,
+          instructorId: null,
+          carId: null,
+        },
+      });
+      expect(response.body).not.toHaveProperty('passwordHash');
+      expect(prismaMock.user.findFirst).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: {
+            id: studentCardId,
+            organizationId: organization.id,
+            role: 'STUDENT',
+            deletedAt: null,
+          },
+        }),
+      );
+    },
+  );
+
+  it('GET /api/students/:id does not return a student of another organization', async () => {
+    const foreign = studentCardRecord({
+      id: foreignStudentId,
+      email: 'foreign-student@example.com',
+      organizationId: otherOrganizationId,
+    });
+    prismaMock.user.findFirst.mockImplementation(
+      (args: { where: { id?: string; organizationId?: string } }) => {
+        if (args.where.id !== foreign.id) {
+          return Promise.resolve(null);
+        }
+        if (args.where.organizationId === organization.id) {
+          return Promise.resolve(null);
+        }
+        return Promise.resolve(foreign);
+      },
+    );
+
+    const token = signAccessToken(admin.id);
+    const response = await request(app.getHttpServer())
+      .get(`/api/students/${foreignStudentId}`)
+      .set('Authorization', `Bearer ${token}`)
+      .expect(404);
+
+    expect(response.body).toMatchObject({
+      statusCode: 404,
+      message: 'Student not found',
+    });
+    expect(response.body).not.toHaveProperty('email');
+    expect(prismaMock.user.findFirst).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          id: foreignStudentId,
+          organizationId: organization.id,
+          role: 'STUDENT',
+          deletedAt: null,
+        }),
+      }),
+    );
+  });
+
+  it('GET /api/students/:id returns 404 when the organization is deleted', async () => {
+    prismaMock.organization.findUnique.mockResolvedValue({
+      ...organization,
+      deletedAt: new Date(),
+    });
+
+    const token = signAccessToken(admin.id);
+    const response = await request(app.getHttpServer())
+      .get(`/api/students/${studentCardId}`)
+      .set('Authorization', `Bearer ${token}`)
+      .expect(404);
+
+    expect(response.body).toMatchObject({
+      statusCode: 404,
+      message: 'Organization not found',
+    });
+    expect(prismaMock.user.findFirst).not.toHaveBeenCalled();
+  });
+
+  it('PATCH /api/students/:id without token returns 401', () => {
+    return request(app.getHttpServer())
+      .patch(`/api/students/${studentCardId}`)
+      .send({ firstName: 'Ірина' })
+      .expect(401);
+  });
+
+  it.each(['TEACHER', 'INSTRUCTOR', 'STUDENT'] as const)(
+    'PATCH /api/students/:id is forbidden for %s',
+    async (role) => {
+      const actor =
+        role === 'TEACHER'
+          ? teacher
+          : role === 'INSTRUCTOR'
+            ? instructor
+            : pupil;
+      const token = signAccessToken(actor.id);
+      const response = await request(app.getHttpServer())
+        .patch(`/api/students/${studentCardId}`)
+        .set('Authorization', `Bearer ${token}`)
+        .send({ firstName: 'Ірина' })
+        .expect(403);
+
+      expect(response.body).toMatchObject({
+        statusCode: 403,
+        message: 'Insufficient permissions',
+      });
+      expect(prismaMock.user.update).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(['role', 'organizationId', 'status'] as const)(
+    'PATCH /api/students/:id rejects %s and does not write it',
+    async (field) => {
+      mockStudentCard(studentCardRecord());
+      const token = signAccessToken(admin.id);
+      const value =
+        field === 'role'
+          ? 'ADMIN'
+          : field === 'status'
+            ? 'BLOCKED'
+            : otherOrganizationId;
+      const response = await request(app.getHttpServer())
+        .patch(`/api/students/${studentCardId}`)
+        .set('Authorization', `Bearer ${token}`)
+        .send({ firstName: 'Ірина', [field]: value })
+        .expect(400);
+
+      expect(response.body).toMatchObject({
+        statusCode: 400,
+        errors: [
+          {
+            field,
+            message: `property ${field} should not exist`,
+          },
+        ],
+      });
+      expect(prismaMock.user.update).not.toHaveBeenCalled();
+    },
+  );
+
+  it('PATCH /api/students/:id updates allowed fields and keeps role, organization and status', async () => {
+    const record = studentCardRecord({ status: 'INVITED' });
+    mockStudentCard(record);
+    prismaMock.user.update.mockImplementation(
+      (args: { data: { firstName?: string; phone?: string | null } }) =>
+        Promise.resolve({ ...record, ...args.data }),
+    );
+
+    const token = signAccessToken(owner.id);
+    const response = await request(app.getHttpServer())
+      .patch(`/api/students/${studentCardId}`)
+      .set('Authorization', `Bearer ${token}`)
+      .send({ firstName: '  Ірина ', phone: '+380671112233' })
+      .expect(200);
+
+    expect(response.body).toMatchObject({
+      id: studentCardId,
+      firstName: 'Ірина',
+      phone: '+380671112233',
+      role: 'STUDENT',
+      status: 'INVITED',
+      organizationId: organization.id,
+    });
+    expect(response.body).not.toHaveProperty('passwordHash');
+    expect(prismaMock.user.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { id: studentCardId },
+        data: { firstName: 'Ірина', phone: '+380671112233' },
+      }),
+    );
+    const updateData = (
+      prismaMock.user.update.mock.calls[0] as [
+        { data: Record<string, unknown> },
+      ]
+    )[0].data;
+    expect(updateData).not.toHaveProperty('role');
+    expect(updateData).not.toHaveProperty('organizationId');
+    expect(updateData).not.toHaveProperty('status');
+  });
+
+  it('PATCH /api/students/:id rejects an empty body', async () => {
+    const token = signAccessToken(admin.id);
+    const response = await request(app.getHttpServer())
+      .patch(`/api/students/${studentCardId}`)
+      .set('Authorization', `Bearer ${token}`)
+      .send({})
+      .expect(400);
+
+    expect(response.body).toMatchObject({
+      statusCode: 400,
+      errors: [
+        {
+          field: 'body',
+          message:
+            'Немає дозволених полів для оновлення (firstName, lastName, phone).',
+        },
+      ],
+    });
+    expect(prismaMock.user.update).not.toHaveBeenCalled();
+  });
+
+  it('PATCH /api/students/:id does not update a student of another organization', async () => {
+    prismaMock.user.findFirst.mockResolvedValue(null);
+
+    const token = signAccessToken(admin.id);
+    const response = await request(app.getHttpServer())
+      .patch(`/api/students/${foreignStudentId}`)
+      .set('Authorization', `Bearer ${token}`)
+      .send({ lastName: 'Чужа' })
+      .expect(404);
+
+    expect(response.body).toMatchObject({
+      statusCode: 404,
+      message: 'Student not found',
+    });
+    expect(prismaMock.user.update).not.toHaveBeenCalled();
   });
 });

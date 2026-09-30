@@ -318,3 +318,82 @@ export class CreateStudentResponseDto {
   @ApiProperty({ type: CreatedStudentInvitationDto })
   invitation: CreatedStudentInvitationDto;
 }
+
+export class UpdateStudentDto {
+  @ApiPropertyOptional({ example: 'Олена' })
+  @MaxLength(60, { message: 'Ім’я має містити не більше 60 символів.' })
+  @IsPlainText()
+  @IsString({ message: 'firstName має бути рядком.' })
+  @IsNotEmpty({ message: REQUIRED_FIELD_MESSAGE })
+  @IsOptional()
+  firstName?: string;
+
+  @ApiPropertyOptional({ example: 'Коваль' })
+  @MaxLength(60, { message: 'Прізвище має містити не більше 60 символів.' })
+  @IsPlainText()
+  @IsString({ message: 'lastName має бути рядком.' })
+  @IsNotEmpty({ message: REQUIRED_FIELD_MESSAGE })
+  @IsOptional()
+  lastName?: string;
+
+  @ApiPropertyOptional({
+    nullable: true,
+    type: String,
+    example: '+380991234567',
+    description: 'Передайте null, щоб очистити телефон.',
+  })
+  @Matches(PHONE_REGEX, { message: 'Введіть коректний номер телефону.' })
+  @IsString({ message: 'phone має бути рядком або null.' })
+  @IsOptional()
+  phone?: string | null;
+}
+
+export class StudentCardDto {
+  @ApiProperty({
+    example: '88888888-8888-4888-8888-888888888888',
+    description: 'Id користувача. Той самий id, що в списку студентів.',
+  })
+  id: string;
+
+  @ApiProperty({ example: 'student@example.com' })
+  email: string;
+
+  @ApiProperty({ example: 'Олена' })
+  firstName: string;
+
+  @ApiProperty({ example: 'Коваль' })
+  lastName: string;
+
+  @ApiPropertyOptional({
+    nullable: true,
+    type: String,
+    example: '+380991234567',
+  })
+  phone: string | null;
+
+  @ApiPropertyOptional({ nullable: true, type: String })
+  avatarUrl: string | null;
+
+  @ApiProperty({ enum: UserRole, example: UserRole.STUDENT })
+  role: UserRole;
+
+  @ApiProperty({ enum: UserStatus, example: UserStatus.ACTIVE })
+  status: UserStatus;
+
+  @ApiProperty({ example: '11111111-1111-1111-1111-111111111111' })
+  organizationId: string;
+
+  @ApiProperty({ example: '2026-01-02T00:00:00.000Z' })
+  createdAt: Date;
+
+  @ApiProperty({ example: '2026-02-01T00:00:00.000Z' })
+  updatedAt: Date;
+
+  @ApiPropertyOptional({
+    nullable: true,
+    type: StudentProfileDto,
+    description:
+      'Профіль учня. null, якщо рядок у таблиці students ще не створений.',
+  })
+  student: StudentProfileDto | null;
+}

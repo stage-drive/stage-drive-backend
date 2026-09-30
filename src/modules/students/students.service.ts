@@ -1,4 +1,5 @@
 import {
+  BadRequestException,
   ConflictException,
   ForbiddenException,
   Injectable,
@@ -24,10 +25,12 @@ import {
   CreateStudentDto,
   CreateStudentResponseDto,
   ListStudentsQueryDto,
+  StudentCardDto,
   StudentListDto,
   StudentListItemDto,
   StudentSortField,
   StudentSortOrder,
+  UpdateStudentDto,
 } from './students.dto';
 
 export const STUDENT_LIST_ROLES = [
@@ -38,7 +41,21 @@ export const STUDENT_LIST_ROLES = [
 
 export const STUDENT_CREATE_ROLES = [UserRole.OWNER, UserRole.ADMIN] as const;
 
+export const STUDENT_CARD_ROLES = [
+  UserRole.OWNER,
+  UserRole.ADMIN,
+  UserRole.TEACHER,
+  UserRole.INSTRUCTOR,
+] as const;
+
+export const STUDENT_UPDATE_ROLES = [UserRole.OWNER, UserRole.ADMIN] as const;
+
 export const GROUP_NOT_FOUND_MESSAGE = 'Group not found';
+export const STUDENT_NOT_FOUND_MESSAGE = 'Student not found';
+export const NO_STUDENT_FIELDS_MESSAGE =
+  'Немає дозволених полів для оновлення (firstName, lastName, phone).';
+
+const EMPTY_FIELD_MESSAGE = "Заповніть обов'язкове поле.";
 
 const DEFAULT_PAGE = 1;
 const DEFAULT_LIMIT = 20;
@@ -61,6 +78,35 @@ const studentSelect = {
 
 type StudentRow = Prisma.UserGetPayload<{ select: typeof studentSelect }>;
 
+const studentCardSelect = {
+  id: true,
+  email: true,
+  firstName: true,
+  lastName: true,
+  phone: true,
+  avatarUrl: true,
+  role: true,
+  status: true,
+  organizationId: true,
+  createdAt: true,
+  updatedAt: true,
+  deletedAt: true,
+  studentProfile: {
+    select: {
+      id: true,
+      userId: true,
+      organizationId: true,
+      groupId: true,
+      instructorId: true,
+      carId: true,
+    },
+  },
+} satisfies Prisma.UserSelect;
+
+type StudentCardRow = Prisma.UserGetPayload<{
+  select: typeof studentCardSelect;
+}>;
+
 function contains(value: string): Prisma.StringFilter {
   return { contains: value, mode: 'insensitive' };
 }
@@ -73,6 +119,18 @@ function assertCanListStudents(actor: User): void {
 
 function assertCanCreateStudent(actor: User): void {
   if (!(STUDENT_CREATE_ROLES as readonly UserRole[]).includes(actor.role)) {
+    throw new ForbiddenException('Insufficient permissions');
+  }
+}
+
+function assertCanReadStudent(actor: User): void {
+  if (!(STUDENT_CARD_ROLES as readonly UserRole[]).includes(actor.role)) {
+    throw new ForbiddenException('Insufficient permissions');
+  }
+}
+
+function assertCanUpdateStudent(actor: User): void {
+  if (!(STUDENT_UPDATE_ROLES as readonly UserRole[]).includes(actor.role)) {
     throw new ForbiddenException('Insufficient permissions');
   }
 }
@@ -197,6 +255,86 @@ function toStudentListItem(row: StudentRow): StudentListItemDto {
     organizationId: row.organizationId,
     createdAt: row.createdAt,
   };
+}
+
+function belongsToOrganization(
+  row: StudentCardRow,
+  organizationId: string,
+): boolean {
+  if (
+    row.organizationId !== organizationId ||
+    row.role !== UserRole.STUDENT ||
+    row.deletedAt != null
+  ) {
+    return false;
+  }
+
+  return (
+    !row.studentProfile || row.studentProfile.organizationId === organizationId
+  );
+}
+
+function toStudentCard(row: StudentCardRow): StudentCardDto {
+  return {
+    id: row.id,
+    email: row.email,
+    firstName: row.firstName,
+    lastName: row.lastName,
+    phone: row.phone,
+    avatarUrl: row.avatarUrl,
+    role: row.role,
+    status: row.status,
+    organizationId: row.organizationId,
+    createdAt: row.createdAt,
+    updatedAt: row.updatedAt,
+    student: row.studentProfile
+      ? {
+          id: row.studentProfile.id,
+          userId: row.studentProfile.userId,
+          organizationId: row.studentProfile.organizationId,
+          groupId: row.studentProfile.groupId,
+          instructorId: row.studentProfile.instructorId,
+          carId: row.studentProfile.carId,
+        }
+      : null,
+  };
+}
+
+function fieldError(field: string, message: string): BadRequestException {
+  return new BadRequestException({
+    statusCode: 400,
+    errors: [{ field, message }],
+  });
+}
+
+function profileUpdate(payload: UpdateStudentDto): Prisma.UserUpdateInput {
+  const data: Prisma.UserUpdateInput = {};
+
+  if (payload.firstName !== undefined) {
+    const firstName = payload.firstName.trim();
+    if (!firstName) {
+      throw fieldError('firstName', EMPTY_FIELD_MESSAGE);
+    }
+    data.firstName = firstName;
+  }
+
+  if (payload.lastName !== undefined) {
+    const lastName = payload.lastName.trim();
+    if (!lastName) {
+      throw fieldError('lastName', EMPTY_FIELD_MESSAGE);
+    }
+    data.lastName = lastName;
+  }
+
+  if (payload.phone !== undefined) {
+    data.phone = payload.phone === null ? null : payload.phone.trim() || null;
+  }
+
+  if (Object.keys(data).length === 0) {
+    throw fieldError('body', NO_STUDENT_FIELDS_MESSAGE);
+  }
+
+  return data;
 }
 
 @Injectable()
@@ -394,6 +532,57 @@ export class StudentsService {
         organizationId: created.invitation.organizationId,
       },
     };
+  }
+
+  async getById(actor: User, studentId: string): Promise<StudentCardDto> {
+    assertCanReadStudent(actor);
+    await this.requireOrganization(actor.organizationId);
+    const row = await this.findStudentCard(actor, studentId);
+    return toStudentCard(row);
+  }
+
+  async update(
+    actor: User,
+    studentId: string,
+    payload: UpdateStudentDto,
+  ): Promise<StudentCardDto> {
+    assertCanUpdateStudent(actor);
+    await this.requireOrganization(actor.organizationId);
+
+    const data = profileUpdate(payload);
+    const existing = await this.findStudentCard(actor, studentId);
+    const updated = await this.prisma.user.update({
+      where: { id: existing.id },
+      data,
+      select: studentCardSelect,
+    });
+
+    if (!belongsToOrganization(updated, actor.organizationId)) {
+      throw new NotFoundException(STUDENT_NOT_FOUND_MESSAGE);
+    }
+
+    return toStudentCard(updated);
+  }
+
+  private async findStudentCard(
+    actor: User,
+    studentId: string,
+  ): Promise<StudentCardRow> {
+    const row = await this.prisma.user.findFirst({
+      where: {
+        id: studentId,
+        organizationId: actor.organizationId,
+        role: UserRole.STUDENT,
+        deletedAt: null,
+      },
+      select: studentCardSelect,
+    });
+
+    if (!row || !belongsToOrganization(row, actor.organizationId)) {
+      throw new NotFoundException(STUDENT_NOT_FOUND_MESSAGE);
+    }
+
+    return row;
   }
 
   private emailAlreadyExists() {

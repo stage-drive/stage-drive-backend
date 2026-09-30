@@ -20,12 +20,20 @@ const DEMO_BLOCKED_ID = '44444444-4444-4444-4444-444444444444';
 const DEMO_ARCHIVED_ID = '55555555-5555-5555-5555-555555555555';
 const DEMO_ADMIN_ID = '66666666-6666-6666-6666-666666666666';
 const DEMO_INVITATION_ID = '77777777-7777-7777-7777-777777777777';
+const DEMO_STUDENT_ID = '88888888-8888-4888-8888-888888888888';
+const DEMO_STUDENT_PROFILE_ID = '99999999-9999-4999-8999-999999999999';
+const DEMO_OTHER_ORG_ID = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+const DEMO_OTHER_STUDENT_ID = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
+const DEMO_OTHER_STUDENT_PROFILE_ID = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc';
 
 const DEMO_EMAIL = 'owner@example.com';
 const DEMO_ADMIN_EMAIL = 'admin@example.com';
 const DEMO_INVITED_EMAIL = 'invited@example.com';
 const DEMO_BLOCKED_EMAIL = 'blocked@example.com';
 const DEMO_ARCHIVED_EMAIL = 'archived@example.com';
+const DEMO_STUDENT_EMAIL = 'student@example.com';
+const DEMO_OTHER_ORG_EMAIL = 'other-school@example.com';
+const DEMO_OTHER_STUDENT_EMAIL = 'foreign-student@example.com';
 const DEMO_PASSWORD = 'Password1';
 
 /** Real Gmail of the person who tests POST /api/auth/google. Must match the Google idToken email. */
@@ -113,6 +121,58 @@ async function upsertUser(
   });
 }
 
+async function upsertOrganizationByEmail(input: {
+  id: string;
+  name: string;
+  slug: string;
+  email: string;
+}) {
+  const existing =
+    (await prisma.organization.findUnique({ where: { email: input.email } })) ??
+    (await prisma.organization.findUnique({ where: { slug: input.slug } })) ??
+    (await prisma.organization.findUnique({ where: { id: input.id } }));
+
+  if (existing) {
+    return prisma.organization.update({
+      where: { id: existing.id },
+      data: {
+        name: input.name,
+        status: OrganizationStatus.ACTIVE,
+        deletedAt: null,
+      },
+    });
+  }
+
+  return prisma.organization.create({
+    data: {
+      id: input.id,
+      name: input.name,
+      slug: input.slug,
+      email: input.email,
+      timezone: 'Europe/Kyiv',
+    },
+  });
+}
+
+async function upsertStudentProfile(
+  profileId: string,
+  userId: string,
+  organizationId: string,
+) {
+  return prisma.student.upsert({
+    where: { userId },
+    update: { organizationId },
+    create: {
+      id: profileId,
+      userId,
+      organizationId,
+      groupId: null,
+      instructorId: null,
+      carId: null,
+    },
+  });
+}
+
 async function main() {
   const passwordHash = await bcrypt.hash(DEMO_PASSWORD, 10);
   const organization = await upsertOrganization();
@@ -167,6 +227,46 @@ async function main() {
     passwordHash,
   });
 
+  const activeStudent = await upsertUser(organization.id, {
+    id: DEMO_STUDENT_ID,
+    email: DEMO_STUDENT_EMAIL,
+    firstName: 'Olena',
+    lastName: 'Koval',
+    role: UserRole.STUDENT,
+    status: UserStatus.ACTIVE,
+    passwordHash,
+  });
+  await prisma.user.update({
+    where: { id: activeStudent.id },
+    data: { phone: '+380671112233' },
+  });
+  await upsertStudentProfile(
+    DEMO_STUDENT_PROFILE_ID,
+    activeStudent.id,
+    organization.id,
+  );
+
+  const otherOrganization = await upsertOrganizationByEmail({
+    id: DEMO_OTHER_ORG_ID,
+    name: 'Other School',
+    slug: 'other-school',
+    email: DEMO_OTHER_ORG_EMAIL,
+  });
+  const foreignStudent = await upsertUser(otherOrganization.id, {
+    id: DEMO_OTHER_STUDENT_ID,
+    email: DEMO_OTHER_STUDENT_EMAIL,
+    firstName: 'Foreign',
+    lastName: 'Student',
+    role: UserRole.STUDENT,
+    status: UserStatus.ACTIVE,
+    passwordHash,
+  });
+  await upsertStudentProfile(
+    DEMO_OTHER_STUDENT_PROFILE_ID,
+    foreignStudent.id,
+    otherOrganization.id,
+  );
+
   const tokenHash = hashToken(DEMO_INVITE_TOKEN);
   const expiresAt = new Date(Date.now() + INVITATION_TTL_MS);
 
@@ -202,6 +302,11 @@ async function main() {
   );
   console.log(`  BLOCKED student: ${DEMO_BLOCKED_EMAIL} / ${DEMO_PASSWORD}`);
   console.log(`  ARCHIVED student: ${DEMO_ARCHIVED_EMAIL} / ${DEMO_PASSWORD}`);
+  console.log(`  ACTIVE student:  ${DEMO_STUDENT_EMAIL} / ${DEMO_PASSWORD}`);
+  console.log(`  student card id: ${activeStudent.id}`);
+  console.log(
+    `  other-org student id (expect 404 for Stage Drive admin): ${foreignStudent.id}`,
+  );
   console.log(
     `Invitation token (POST /api/invitations/verify and /activate): ${DEMO_INVITE_TOKEN}`,
   );
