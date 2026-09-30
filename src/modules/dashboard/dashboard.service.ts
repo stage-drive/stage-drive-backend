@@ -1,7 +1,15 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
-import { InvitationStatus, User, UserRole, UserStatus } from '@prisma/client';
+import {
+  DrivingLessonStatus,
+  EnrollmentStatus,
+  InvitationStatus,
+  LessonStatus,
+  User,
+  UserRole,
+  UserStatus,
+} from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
-import { AdminDashboardDto, OwnerDashboardDto } from './dashboard.dto';
+import { AdminDashboardDto, InstructorDashboardDto, OwnerDashboardDto, StudentDashboardDto, TeacherDashboardDto } from './dashboard.dto';
 
 const USER_ROLES = Object.values(UserRole);
 const USER_STATUSES = Object.values(UserStatus);
@@ -128,6 +136,199 @@ export class DashboardService {
       },
       users: { total, byRole, byStatus },
       invitations: { pending, expired },
+    };
+  }
+
+  async getTeacherDashboard(teacher: User): Promise<TeacherDashboardDto> {
+    const organization = await this.requireOrganization(teacher.organizationId);
+    const now = new Date();
+
+    const [groups, upcomingLessons, distinctStudents] = await Promise.all([
+      this.prisma.group.findMany({
+        where: { teacherId: teacher.id, organizationId: teacher.organizationId },
+        include: {
+          _count: {
+            select: { enrollments: { where: { status: EnrollmentStatus.ACTIVE } } },
+          },
+        },
+        orderBy: { createdAt: 'asc' },
+      }),
+      this.prisma.lesson.findMany({
+        where: {
+          group: { teacherId: teacher.id, organizationId: teacher.organizationId },
+          scheduledAt: { gte: now },
+          status: LessonStatus.SCHEDULED,
+        },
+        include: { group: { select: { name: true } } },
+        orderBy: { scheduledAt: 'asc' },
+        take: 5,
+      }),
+      this.prisma.enrollment.findMany({
+        where: {
+          status: EnrollmentStatus.ACTIVE,
+          group: { teacherId: teacher.id, organizationId: teacher.organizationId },
+        },
+        select: { studentId: true },
+        distinct: ['studentId'],
+      }),
+    ]);
+
+    return {
+      organization: {
+        id: organization.id,
+        name: organization.name,
+        logoUrl: organization.logoUrl,
+        timezone: organization.timezone,
+      },
+      teacher: {
+        id: teacher.id,
+        firstName: teacher.firstName,
+        lastName: teacher.lastName,
+        email: teacher.email,
+        status: teacher.status,
+      },
+      stats: {
+        groupsTotal: groups.length,
+        studentsTotal: distinctStudents.length,
+        upcomingLessonsTotal: upcomingLessons.length,
+      },
+      groups: groups.map((group) => ({
+        id: group.id,
+        name: group.name,
+        status: group.status,
+        studentsCount: group._count.enrollments,
+      })),
+      upcomingLessons: upcomingLessons.map((lesson) => ({
+        id: lesson.id,
+        groupId: lesson.groupId,
+        groupName: lesson.group.name,
+        topic: lesson.topic,
+        scheduledAt: lesson.scheduledAt,
+      })),
+    };
+  }
+
+  async getStudentDashboard(student: User): Promise<StudentDashboardDto> {
+    const organization = await this.requireOrganization(student.organizationId);
+    const now = new Date();
+
+    const [enrollments, upcomingLessons] = await Promise.all([
+      this.prisma.enrollment.findMany({
+        where: {
+          studentId: student.id,
+          status: EnrollmentStatus.ACTIVE,
+          group: { organizationId: student.organizationId },
+        },
+        include: {
+          group: {
+            include: {
+              teacher: { select: { firstName: true, lastName: true } },
+            },
+          },
+        },
+      }),
+      this.prisma.lesson.findMany({
+        where: {
+          group: {
+            organizationId: student.organizationId,
+            enrollments: {
+              some: { studentId: student.id, status: EnrollmentStatus.ACTIVE },
+            },
+          },
+          scheduledAt: { gte: now },
+          status: LessonStatus.SCHEDULED,
+        },
+        include: { group: { select: { name: true } } },
+        orderBy: { scheduledAt: 'asc' },
+        take: 5,
+      }),
+    ]);
+
+    return {
+      organization: {
+        id: organization.id,
+        name: organization.name,
+        logoUrl: organization.logoUrl,
+        timezone: organization.timezone,
+      },
+      student: {
+        id: student.id,
+        firstName: student.firstName,
+        lastName: student.lastName,
+        email: student.email,
+        status: student.status,
+      },
+      stats: {
+        groupsTotal: enrollments.length,
+        upcomingLessonsTotal: upcomingLessons.length,
+      },
+      groups: enrollments.map((enrollment) => ({
+        id: enrollment.group.id,
+        name: enrollment.group.name,
+        status: enrollment.group.status,
+        teacherName: `${enrollment.group.teacher.firstName} ${enrollment.group.teacher.lastName}`,
+      })),
+      upcomingLessons: upcomingLessons.map((lesson) => ({
+        id: lesson.id,
+        groupId: lesson.groupId,
+        groupName: lesson.group.name,
+        topic: lesson.topic,
+        scheduledAt: lesson.scheduledAt,
+      })),
+    };
+  }
+
+  async getInstructorDashboard(instructor: User): Promise<InstructorDashboardDto> {
+    const organization = await this.requireOrganization(instructor.organizationId);
+    const now = new Date();
+
+    const [upcomingLessons, distinctStudents] = await Promise.all([
+      this.prisma.drivingLesson.findMany({
+        where: {
+          instructorId: instructor.id,
+          organizationId: instructor.organizationId,
+          scheduledAt: { gte: now },
+          status: DrivingLessonStatus.SCHEDULED,
+        },
+        include: { student: { select: { firstName: true, lastName: true } } },
+        orderBy: { scheduledAt: 'asc' },
+        take: 5,
+      }),
+      this.prisma.drivingLesson.findMany({
+        where: {
+          instructorId: instructor.id,
+          organizationId: instructor.organizationId,
+          status: DrivingLessonStatus.SCHEDULED,
+        },
+        select: { studentId: true },
+        distinct: ['studentId'],
+      }),
+    ]);
+
+    return {
+      organization: {
+        id: organization.id,
+        name: organization.name,
+        logoUrl: organization.logoUrl,
+        timezone: organization.timezone,
+      },
+      instructor: {
+        id: instructor.id,
+        firstName: instructor.firstName,
+        lastName: instructor.lastName,
+        email: instructor.email,
+        status: instructor.status,
+      },
+      stats: {
+        studentsTotal: distinctStudents.length,
+        upcomingLessonsTotal: upcomingLessons.length,
+      },
+      upcomingLessons: upcomingLessons.map((lesson) => ({
+        id: lesson.id,
+        studentId: lesson.studentId,
+        studentName: `${lesson.student.firstName} ${lesson.student.lastName}`,
+        scheduledAt: lesson.scheduledAt,
+      })),
     };
   }
 
