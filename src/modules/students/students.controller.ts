@@ -31,6 +31,7 @@ import { CurrentUser } from '../auth/current-user.decorator';
 import { Roles } from '../auth/roles.decorator';
 import { RolesGuard } from '../auth/roles.guard';
 import {
+  AssignStudentGroupDto,
   CreateStudentDto,
   CreateStudentResponseDto,
   ListStudentsQueryDto,
@@ -158,6 +159,49 @@ export class StudentsController {
     @Param('id', new ParseUUIDPipe({ version: '4' })) id: string,
   ) {
     return this.studentsService.getById(user, id);
+  }
+
+  @Patch(':id/group')
+  @Roles(...STUDENT_UPDATE_ROLES)
+  @ApiOperation({
+    summary: 'Призначити студента до навчальної групи',
+    description:
+      'OWNER або ADMIN призначає студента своєї автошколи до групи тієї самої ' +
+      'організації. Оновлюється student.groupId і створюється або поновлюється ' +
+      'активне зарахування. Студент зі статусом ARCHIVED, з зарахуванням DROPPED ' +
+      '(відрахований) або COMPLETED (GRADUATED) до нової групи не потрапляє. ' +
+      'Групи ARCHIVED і COMPLETED не призначаються. Студент, який уже є в іншій ' +
+      'активній групі, теж відхиляється.',
+  })
+  @ApiParam({
+    name: 'id',
+    format: 'uuid',
+    description: 'Id користувача-студента.',
+    example: '88888888-8888-4888-8888-888888888888',
+  })
+  @ApiOkResponse({ type: StudentCardDto })
+  @ApiForbiddenResponse({
+    description: 'Призначати групу можуть лише OWNER або ADMIN.',
+  })
+  @ApiBadRequestResponse({
+    description:
+      'Некоректне тіло запиту. Тіло містить errors: [{ field, message }].',
+  })
+  @ApiConflictResponse({
+    description:
+      'Студент уже в іншій активній групі, має заборонений статус навчання ' +
+      '(ARCHIVED, DROPPED або GRADUATED), або група ARCHIVED чи COMPLETED.',
+  })
+  @ApiNotFoundResponse({
+    description:
+      'Студента або групу не знайдено, їх видалено, або вони належать іншій автошколі.',
+  })
+  assignGroup(
+    @CurrentUser() user: User,
+    @Param('id', new ParseUUIDPipe({ version: '4' })) id: string,
+    @Body() body: AssignStudentGroupDto,
+  ) {
+    return this.studentsService.assignGroup(user, id, body);
   }
 
   @Patch(':id')

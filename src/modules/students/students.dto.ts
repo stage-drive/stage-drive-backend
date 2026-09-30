@@ -319,6 +319,17 @@ export class CreateStudentResponseDto {
   invitation: CreatedStudentInvitationDto;
 }
 
+export class AssignStudentGroupDto {
+  @ApiProperty({
+    description:
+      'Навчальна група тієї самої автошколи. Групи ARCHIVED і COMPLETED не приймаються.',
+    example: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+  })
+  @IsUUID('4', { message: 'groupId має бути UUID.' })
+  @IsNotEmpty({ message: REQUIRED_FIELD_MESSAGE })
+  groupId: string;
+}
+
 export class UpdateStudentDto {
   @ApiPropertyOptional({ example: 'Олена' })
   @MaxLength(60, { message: 'Ім’я має містити не більше 60 символів.' })

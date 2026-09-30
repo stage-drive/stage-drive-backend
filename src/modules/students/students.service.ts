@@ -6,6 +6,8 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import {
+  EnrollmentStatus,
+  GroupStatus,
   InvitationStatus,
   Prisma,
   User,
@@ -22,6 +24,7 @@ import {
 } from '../invitations/invitations.service';
 import { MailService } from '../mail/mail.service';
 import {
+  AssignStudentGroupDto,
   CreateStudentDto,
   CreateStudentResponseDto,
   ListStudentsQueryDto,
@@ -52,6 +55,18 @@ export const STUDENT_UPDATE_ROLES = [UserRole.OWNER, UserRole.ADMIN] as const;
 
 export const GROUP_NOT_FOUND_MESSAGE = 'Group not found';
 export const STUDENT_NOT_FOUND_MESSAGE = 'Student not found';
+export const STUDENT_TRAINING_STATUS_MESSAGE =
+  'Студента зі статусом ARCHIVED, DROPPED або GRADUATED не можна призначити до групи.';
+export const GROUP_NOT_ASSIGNABLE_MESSAGE =
+  'Групу зі статусом ARCHIVED або COMPLETED не можна призначити.';
+export const STUDENT_ACTIVE_GROUP_MESSAGE =
+  'Студент уже перебуває в іншій активній групі.';
+
+/** DROPPED — відрахований студент, COMPLETED — випуск (GRADUATED). */
+const TERMINAL_ENROLLMENT_STATUSES = [
+  EnrollmentStatus.DROPPED,
+  EnrollmentStatus.COMPLETED,
+] as const;
 export const NO_STUDENT_FIELDS_MESSAGE =
   'Немає дозволених полів для оновлення (firstName, lastName, phone).';
 
@@ -133,6 +148,16 @@ function assertCanUpdateStudent(actor: User): void {
   if (!(STUDENT_UPDATE_ROLES as readonly UserRole[]).includes(actor.role)) {
     throw new ForbiddenException('Insufficient permissions');
   }
+}
+
+function assertCanAssignStudentGroup(actor: User): void {
+  if (!(STUDENT_UPDATE_ROLES as readonly UserRole[]).includes(actor.role)) {
+    throw new ForbiddenException('Insufficient permissions');
+  }
+}
+
+function isOpenGroup(status: GroupStatus): boolean {
+  return status === GroupStatus.PLANNED || status === GroupStatus.ACTIVE;
 }
 
 function hashToken(token: string): string {
@@ -562,6 +587,109 @@ export class StudentsService {
     }
 
     return toStudentCard(updated);
+  }
+
+  async assignGroup(
+    actor: User,
+    studentId: string,
+    payload: AssignStudentGroupDto,
+  ): Promise<StudentCardDto> {
+    assertCanAssignStudentGroup(actor);
+    await this.requireOrganization(actor.organizationId);
+
+    return this.prisma.$transaction(async (tx) => {
+      const student = await tx.user.findFirst({
+        where: {
+          id: studentId,
+          organizationId: actor.organizationId,
+          role: UserRole.STUDENT,
+          deletedAt: null,
+        },
+        select: studentCardSelect,
+      });
+
+      if (
+        !student ||
+        !belongsToOrganization(student, actor.organizationId) ||
+        !student.studentProfile
+      ) {
+        throw new NotFoundException(STUDENT_NOT_FOUND_MESSAGE);
+      }
+
+      if (student.status === UserStatus.ARCHIVED) {
+        throw new ConflictException(STUDENT_TRAINING_STATUS_MESSAGE);
+      }
+
+      const terminalEnrollment = await tx.enrollment.findFirst({
+        where: {
+          studentId: student.id,
+          status: { in: [...TERMINAL_ENROLLMENT_STATUSES] },
+          group: { organizationId: actor.organizationId },
+        },
+      });
+      if (terminalEnrollment) {
+        throw new ConflictException(STUDENT_TRAINING_STATUS_MESSAGE);
+      }
+
+      const group = await tx.group.findUnique({
+        where: { id: payload.groupId },
+      });
+      if (!group || group.organizationId !== actor.organizationId) {
+        throw new NotFoundException(GROUP_NOT_FOUND_MESSAGE);
+      }
+      if (!isOpenGroup(group.status)) {
+        throw new ConflictException(GROUP_NOT_ASSIGNABLE_MESSAGE);
+      }
+
+      const currentGroupId = student.studentProfile.groupId;
+      if (currentGroupId && currentGroupId !== group.id) {
+        const currentGroup = await tx.group.findUnique({
+          where: { id: currentGroupId },
+        });
+        if (currentGroup && isOpenGroup(currentGroup.status)) {
+          throw new ConflictException(STUDENT_ACTIVE_GROUP_MESSAGE);
+        }
+      }
+
+      const otherActiveEnrollment = await tx.enrollment.findFirst({
+        where: {
+          studentId: student.id,
+          status: EnrollmentStatus.ACTIVE,
+          groupId: { not: group.id },
+          group: { organizationId: actor.organizationId },
+        },
+      });
+      if (otherActiveEnrollment) {
+        throw new ConflictException(STUDENT_ACTIVE_GROUP_MESSAGE);
+      }
+
+      const profile = await tx.student.update({
+        where: { id: student.studentProfile.id },
+        data: { groupId: group.id },
+      });
+      await tx.enrollment.upsert({
+        where: {
+          groupId_studentId: {
+            groupId: group.id,
+            studentId: student.id,
+          },
+        },
+        create: {
+          groupId: group.id,
+          studentId: student.id,
+          status: EnrollmentStatus.ACTIVE,
+        },
+        update: { status: EnrollmentStatus.ACTIVE },
+      });
+
+      return toStudentCard({
+        ...student,
+        studentProfile: {
+          ...student.studentProfile,
+          groupId: profile.groupId,
+        },
+      });
+    });
   }
 
   private async findStudentCard(
