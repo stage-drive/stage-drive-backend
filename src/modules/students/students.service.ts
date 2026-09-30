@@ -65,6 +65,9 @@ export const STUDENT_PRACTICE_ACCESS_ROLES = [UserRole.ADMIN] as const;
 
 export const STUDENT_ARCHIVE_ROLES = [UserRole.OWNER, UserRole.ADMIN] as const;
 
+/** Лише власний профіль. Staff-ролі цей доступ не отримують. */
+export const STUDENT_SELF_ROLES = [UserRole.STUDENT] as const;
+
 export const GROUP_NOT_FOUND_MESSAGE = 'Group not found';
 export const STUDENT_NOT_FOUND_MESSAGE = 'Student not found';
 export const STUDENT_TRAINING_STATUS_MESSAGE =
@@ -230,6 +233,12 @@ function assertCanGrantPracticeAccess(actor: User): void {
 
 function assertCanArchiveStudent(actor: User): void {
   if (!(STUDENT_ARCHIVE_ROLES as readonly UserRole[]).includes(actor.role)) {
+    throw new ForbiddenException('Insufficient permissions');
+  }
+}
+
+function assertCanReadOwnStudent(actor: User): void {
+  if (!(STUDENT_SELF_ROLES as readonly UserRole[]).includes(actor.role)) {
     throw new ForbiddenException('Insufficient permissions');
   }
 }
@@ -427,6 +436,23 @@ function belongsToOrganization(
 
   return (
     !row.studentProfile || row.studentProfile.organizationId === organizationId
+  );
+}
+
+function isOwnStudentProfile(row: StudentCardRow, actor: User): boolean {
+  const profile = row.studentProfile;
+  if (!profile) {
+    return false;
+  }
+
+  return (
+    row.id === actor.id &&
+    row.organizationId === actor.organizationId &&
+    belongsToOrganization(row, actor.organizationId) &&
+    profile.userId === actor.id &&
+    profile.userId === row.id &&
+    profile.organizationId === actor.organizationId &&
+    profile.organizationId === row.organizationId
   );
 }
 
@@ -706,6 +732,33 @@ export class StudentsService {
     assertCanReadStudent(actor);
     await this.requireOrganization(actor.organizationId);
     const row = await this.findStudentCard(actor, studentId);
+    return toStudentCard(row);
+  }
+
+  async getOwn(actor: User): Promise<StudentCardDto> {
+    assertCanReadOwnStudent(actor);
+    await this.requireOrganization(actor.organizationId);
+
+    const row = await this.prisma.user.findFirst({
+      where: {
+        id: actor.id,
+        organizationId: actor.organizationId,
+        role: UserRole.STUDENT,
+        deletedAt: null,
+        studentProfile: {
+          is: {
+            userId: actor.id,
+            organizationId: actor.organizationId,
+          },
+        },
+      },
+      select: studentCardSelect,
+    });
+
+    if (!row || !isOwnStudentProfile(row, actor)) {
+      throw new NotFoundException(STUDENT_NOT_FOUND_MESSAGE);
+    }
+
     return toStudentCard(row);
   }
 

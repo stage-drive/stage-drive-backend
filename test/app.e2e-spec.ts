@@ -2315,6 +2315,7 @@ describe('API (e2e)', () => {
 
     const paths = (response.body as { paths: Record<string, unknown> }).paths;
     expect(paths['/api/students'] ?? paths['/students']).toBeDefined();
+    expect(paths['/api/students/me'] ?? paths['/students/me']).toBeDefined();
     const card = (paths['/api/students/{id}'] ?? paths['/students/{id}']) as
       { get?: unknown; patch?: unknown; delete?: unknown } | undefined;
     expect(card?.get).toBeDefined();
@@ -2396,6 +2397,184 @@ describe('API (e2e)', () => {
       },
     );
   }
+
+  function ownStudentRecord(
+    overrides: Parameters<typeof studentCardRecord>[0] = {},
+  ) {
+    return studentCardRecord({
+      id: pupil.id,
+      email: pupil.email,
+      ...overrides,
+    });
+  }
+
+  it('GET /api/students/me without token returns 401', () => {
+    return request(app.getHttpServer()).get('/api/students/me').expect(401);
+  });
+
+  it('GET /api/students/me rejects an invalid access token', async () => {
+    const response = await request(app.getHttpServer())
+      .get('/api/students/me')
+      .set('Authorization', 'Bearer not-a-token')
+      .expect(401);
+
+    expect(response.body).toMatchObject({
+      statusCode: 401,
+      message: 'Invalid access token',
+    });
+    expect(prismaMock.user.findFirst).not.toHaveBeenCalled();
+  });
+
+  it('GET /api/students/me rejects a blocked student', async () => {
+    prismaMock.user.findUnique.mockResolvedValue({
+      ...pupil,
+      status: 'BLOCKED',
+    });
+
+    const token = signAccessToken(pupil.id);
+    const response = await request(app.getHttpServer())
+      .get('/api/students/me')
+      .set('Authorization', `Bearer ${token}`)
+      .expect(401);
+
+    expect(response.body).toMatchObject({
+      statusCode: 401,
+      message: ACCOUNT_NOT_ACTIVE_MESSAGE,
+    });
+    expect(prismaMock.user.findFirst).not.toHaveBeenCalled();
+  });
+
+  it.each(['OWNER', 'ADMIN', 'TEACHER', 'INSTRUCTOR'] as const)(
+    'GET /api/students/me does not expand access for %s',
+    async (role) => {
+      const actor =
+        role === 'OWNER'
+          ? owner
+          : role === 'ADMIN'
+            ? admin
+            : role === 'TEACHER'
+              ? teacher
+              : instructor;
+      mockStudentCard(studentCardRecord());
+
+      const token = signAccessToken(actor.id);
+      const response = await request(app.getHttpServer())
+        .get('/api/students/me')
+        .set('Authorization', `Bearer ${token}`)
+        .expect(403);
+
+      expect(response.body).toMatchObject({
+        statusCode: 403,
+        message: 'Insufficient permissions',
+      });
+      expect(prismaMock.user.findFirst).not.toHaveBeenCalled();
+    },
+  );
+
+  it('GET /api/students/me returns only the caller student profile', async () => {
+    const record = {
+      ...ownStudentRecord(),
+      firstName: pupil.firstName,
+      lastName: pupil.lastName,
+      phone: pupil.phone,
+    };
+    prismaMock.user.findFirst.mockResolvedValue(record);
+
+    const token = signAccessToken(pupil.id);
+    const response = await request(app.getHttpServer())
+      .get('/api/students/me')
+      .query({
+        userId: foreignStudentId,
+        organizationId: '22222222-2222-2222-2222-222222222222',
+      })
+      .set('Authorization', `Bearer ${token}`)
+      .expect(200);
+
+    expect(response.body).toEqual({
+      id: pupil.id,
+      email: pupil.email,
+      firstName: pupil.firstName,
+      lastName: pupil.lastName,
+      phone: null,
+      avatarUrl: null,
+      role: 'STUDENT',
+      status: 'ACTIVE',
+      organizationId: organization.id,
+      createdAt: '2026-01-02T00:00:00.000Z',
+      updatedAt: '2026-02-01T00:00:00.000Z',
+      student: {
+        id: createdStudentProfileId,
+        userId: pupil.id,
+        organizationId: organization.id,
+        groupId: null,
+        instructorId: null,
+        carId: null,
+        category: null,
+        transmission: null,
+        trainingStatus: 'ACTIVE',
+      },
+    });
+    expect(response.body).not.toHaveProperty('passwordHash');
+    expect(response.body).not.toHaveProperty('deletedAt');
+    expect(response.body.student.userId).toBe(pupil.id);
+    expect(response.body.organizationId).toBe(organization.id);
+    expect(prismaMock.user.findFirst).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: {
+          id: pupil.id,
+          organizationId: organization.id,
+          role: 'STUDENT',
+          deletedAt: null,
+          studentProfile: {
+            is: {
+              userId: pupil.id,
+              organizationId: organization.id,
+            },
+          },
+        },
+      }),
+    );
+  });
+
+  it('GET /api/students/me does not return another student', async () => {
+    prismaMock.user.findFirst.mockResolvedValue(
+      studentCardRecord({
+        id: foreignStudentId,
+        email: 'foreign-student@example.com',
+        organizationId: '22222222-2222-2222-2222-222222222222',
+      }),
+    );
+
+    const token = signAccessToken(pupil.id);
+    const response = await request(app.getHttpServer())
+      .get('/api/students/me')
+      .set('Authorization', `Bearer ${token}`)
+      .expect(404);
+
+    expect(response.body).toMatchObject({
+      statusCode: 404,
+      message: 'Student not found',
+    });
+    expect(JSON.stringify(response.body)).not.toContain(
+      'foreign-student@example.com',
+    );
+    expect(JSON.stringify(response.body)).not.toContain(foreignStudentId);
+  });
+
+  it('GET /api/students/me returns 404 when the student profile is missing', async () => {
+    prismaMock.user.findFirst.mockResolvedValue(null);
+
+    const token = signAccessToken(pupil.id);
+    const response = await request(app.getHttpServer())
+      .get('/api/students/me')
+      .set('Authorization', `Bearer ${token}`)
+      .expect(404);
+
+    expect(response.body).toMatchObject({
+      statusCode: 404,
+      message: 'Student not found',
+    });
+  });
 
   it('GET /api/students/:id without token returns 401', () => {
     return request(app.getHttpServer())
