@@ -3,6 +3,7 @@ import {
   ConflictException,
   ForbiddenException,
   Injectable,
+  Logger,
   NotFoundException,
 } from '@nestjs/common';
 import {
@@ -10,6 +11,7 @@ import {
   GroupStatus,
   InvitationStatus,
   Prisma,
+  TrainingStatus,
   User,
   UserRole,
   UserStatus,
@@ -34,6 +36,7 @@ import {
   StudentSortField,
   StudentSortOrder,
   UpdateStudentDto,
+  UpdateStudentTrainingStatusDto,
 } from './students.dto';
 
 export const STUDENT_LIST_ROLES = [
@@ -53,6 +56,8 @@ export const STUDENT_CARD_ROLES = [
 
 export const STUDENT_UPDATE_ROLES = [UserRole.OWNER, UserRole.ADMIN] as const;
 
+export const STUDENT_STATUS_ROLES = [UserRole.ADMIN] as const;
+
 export const GROUP_NOT_FOUND_MESSAGE = 'Group not found';
 export const STUDENT_NOT_FOUND_MESSAGE = 'Student not found';
 export const STUDENT_TRAINING_STATUS_MESSAGE =
@@ -61,6 +66,33 @@ export const GROUP_NOT_ASSIGNABLE_MESSAGE =
   'Групу зі статусом ARCHIVED або COMPLETED не можна призначити.';
 export const STUDENT_ACTIVE_GROUP_MESSAGE =
   'Студент уже перебуває в іншій активній групі.';
+export const TRAINING_STATUS_TRANSITION_MESSAGE =
+  'Недозволений перехід навчального статусу.';
+
+const TRAINING_STATUS_TRANSITIONS: Record<
+  TrainingStatus,
+  readonly TrainingStatus[]
+> = {
+  [TrainingStatus.INVITED]: [
+    TrainingStatus.ACTIVE,
+    TrainingStatus.DROPPED,
+    TrainingStatus.ARCHIVED,
+  ],
+  [TrainingStatus.ACTIVE]: [
+    TrainingStatus.GRADUATED,
+    TrainingStatus.DROPPED,
+    TrainingStatus.ARCHIVED,
+  ],
+  [TrainingStatus.GRADUATED]: [TrainingStatus.ARCHIVED],
+  [TrainingStatus.DROPPED]: [TrainingStatus.ARCHIVED],
+  [TrainingStatus.ARCHIVED]: [],
+};
+
+const TERMINAL_TRAINING_STATUSES = [
+  TrainingStatus.ARCHIVED,
+  TrainingStatus.DROPPED,
+  TrainingStatus.GRADUATED,
+] as const;
 
 /** DROPPED — відрахований студент, COMPLETED — випуск (GRADUATED). */
 const TERMINAL_ENROLLMENT_STATUSES = [
@@ -114,6 +146,7 @@ const studentCardSelect = {
       groupId: true,
       instructorId: true,
       carId: true,
+      trainingStatus: true,
     },
   },
 } satisfies Prisma.UserSelect;
@@ -154,6 +187,37 @@ function assertCanAssignStudentGroup(actor: User): void {
   if (!(STUDENT_UPDATE_ROLES as readonly UserRole[]).includes(actor.role)) {
     throw new ForbiddenException('Insufficient permissions');
   }
+}
+
+function assertCanChangeTrainingStatus(actor: User): void {
+  if (!(STUDENT_STATUS_ROLES as readonly UserRole[]).includes(actor.role)) {
+    throw new ForbiddenException('Insufficient permissions');
+  }
+}
+
+function canChangeTrainingStatus(
+  current: TrainingStatus,
+  next: TrainingStatus,
+): boolean {
+  return TRAINING_STATUS_TRANSITIONS[current].includes(next);
+}
+
+function isTerminalTrainingStatus(status: TrainingStatus): boolean {
+  return (TERMINAL_TRAINING_STATUSES as readonly TrainingStatus[]).includes(
+    status,
+  );
+}
+
+function enrollmentStatusForTraining(
+  status: TrainingStatus,
+): EnrollmentStatus | null {
+  if (status === TrainingStatus.GRADUATED) {
+    return EnrollmentStatus.COMPLETED;
+  }
+  if (status === TrainingStatus.DROPPED) {
+    return EnrollmentStatus.DROPPED;
+  }
+  return null;
 }
 
 function isOpenGroup(status: GroupStatus): boolean {
@@ -320,6 +384,7 @@ function toStudentCard(row: StudentCardRow): StudentCardDto {
           groupId: row.studentProfile.groupId,
           instructorId: row.studentProfile.instructorId,
           carId: row.studentProfile.carId,
+          trainingStatus: row.studentProfile.trainingStatus,
         }
       : null,
   };
@@ -364,6 +429,8 @@ function profileUpdate(payload: UpdateStudentDto): Prisma.UserUpdateInput {
 
 @Injectable()
 export class StudentsService {
+  private readonly logger = new Logger(StudentsService.name);
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly mailService: MailService,
@@ -432,6 +499,7 @@ export class StudentsService {
         groupId: string | null;
         instructorId: string | null;
         carId: string | null;
+        trainingStatus: TrainingStatus;
       };
       invitation: {
         id: string;
@@ -478,6 +546,7 @@ export class StudentsService {
             groupId,
             instructorId: null,
             carId: null,
+            trainingStatus: TrainingStatus.INVITED,
           },
         });
 
@@ -546,6 +615,7 @@ export class StudentsService {
         groupId: created.student.groupId,
         instructorId: created.student.instructorId,
         carId: created.student.carId,
+        trainingStatus: created.student.trainingStatus,
       },
       invitation: {
         id: created.invitation.id,
@@ -616,7 +686,10 @@ export class StudentsService {
         throw new NotFoundException(STUDENT_NOT_FOUND_MESSAGE);
       }
 
-      if (student.status === UserStatus.ARCHIVED) {
+      if (
+        student.status === UserStatus.ARCHIVED ||
+        isTerminalTrainingStatus(student.studentProfile.trainingStatus)
+      ) {
         throw new ConflictException(STUDENT_TRAINING_STATUS_MESSAGE);
       }
 
@@ -690,6 +763,74 @@ export class StudentsService {
         },
       });
     });
+  }
+
+  async changeTrainingStatus(
+    actor: User,
+    studentId: string,
+    payload: UpdateStudentTrainingStatusDto,
+  ): Promise<StudentCardDto> {
+    assertCanChangeTrainingStatus(actor);
+    await this.requireOrganization(actor.organizationId);
+
+    const updated = await this.prisma.$transaction(async (tx) => {
+      const student = await tx.user.findFirst({
+        where: {
+          id: studentId,
+          organizationId: actor.organizationId,
+          role: UserRole.STUDENT,
+          deletedAt: null,
+        },
+        select: studentCardSelect,
+      });
+
+      if (
+        !student ||
+        !belongsToOrganization(student, actor.organizationId) ||
+        !student.studentProfile
+      ) {
+        throw new NotFoundException(STUDENT_NOT_FOUND_MESSAGE);
+      }
+
+      const current = student.studentProfile.trainingStatus;
+      const next = payload.status;
+      if (!canChangeTrainingStatus(current, next)) {
+        throw new ConflictException(
+          `${TRAINING_STATUS_TRANSITION_MESSAGE} ${current} → ${next}.`,
+        );
+      }
+
+      const profile = await tx.student.update({
+        where: { id: student.studentProfile.id },
+        data: { trainingStatus: next },
+      });
+
+      const enrollmentStatus = enrollmentStatusForTraining(next);
+      if (enrollmentStatus) {
+        await tx.enrollment.updateMany({
+          where: {
+            studentId: student.id,
+            status: EnrollmentStatus.ACTIVE,
+            group: { organizationId: actor.organizationId },
+          },
+          data: { status: enrollmentStatus },
+        });
+      }
+
+      this.logger.log(
+        `Student training status changed studentId=${student.id} from=${current} to=${next} actorId=${actor.id} organizationId=${actor.organizationId}`,
+      );
+
+      return toStudentCard({
+        ...student,
+        studentProfile: {
+          ...student.studentProfile,
+          trainingStatus: profile.trainingStatus,
+        },
+      });
+    });
+
+    return updated;
   }
 
   private async findStudentCard(

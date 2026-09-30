@@ -1,5 +1,10 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
-import { InvitationStatus, UserRole, UserStatus } from '@prisma/client';
+import {
+  InvitationStatus,
+  TrainingStatus,
+  UserRole,
+  UserStatus,
+} from '@prisma/client';
 import { Transform } from 'class-transformer';
 import {
   IsEmail,
@@ -283,6 +288,15 @@ export class StudentProfileDto {
     description: 'При створенні завжди null.',
   })
   carId: string | null;
+
+  @ApiProperty({
+    enum: TrainingStatus,
+    example: TrainingStatus.INVITED,
+    description:
+      'Навчальний статус. Новий учень створюється як INVITED. ' +
+      'Змінюється лише через PATCH /api/students/{id}/status.',
+  })
+  trainingStatus: TrainingStatus;
 }
 
 export class CreatedStudentInvitationDto {
@@ -317,6 +331,24 @@ export class CreateStudentResponseDto {
 
   @ApiProperty({ type: CreatedStudentInvitationDto })
   invitation: CreatedStudentInvitationDto;
+}
+
+export class UpdateStudentTrainingStatusDto {
+  @ApiProperty({
+    enum: TrainingStatus,
+    example: TrainingStatus.ACTIVE,
+    description:
+      'Новий навчальний статус. Дозволені переходи: ' +
+      'INVITED → ACTIVE, DROPPED, ARCHIVED; ' +
+      'ACTIVE → GRADUATED, DROPPED, ARCHIVED; ' +
+      'GRADUATED → ARCHIVED; DROPPED → ARCHIVED. ' +
+      'ARCHIVED далі не змінюється.',
+  })
+  @IsEnum(TrainingStatus, {
+    message:
+      'status має бути INVITED, ACTIVE, GRADUATED, DROPPED або ARCHIVED.',
+  })
+  status: TrainingStatus;
 }
 
 export class AssignStudentGroupDto {

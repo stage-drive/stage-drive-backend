@@ -40,11 +40,13 @@ import {
   StudentCardDto,
   StudentListDto,
   UpdateStudentDto,
+  UpdateStudentTrainingStatusDto,
 } from './students.dto';
 import {
   STUDENT_CARD_ROLES,
   STUDENT_CREATE_ROLES,
   STUDENT_LIST_ROLES,
+  STUDENT_STATUS_ROLES,
   STUDENT_UPDATE_ROLES,
   StudentsService,
 } from './students.service';
@@ -202,6 +204,51 @@ export class StudentsController {
     @Body() body: AssignStudentGroupDto,
   ) {
     return this.studentsService.assignGroup(user, id, body);
+  }
+
+  @Patch(':id/status')
+  @Roles(...STUDENT_STATUS_ROLES)
+  @ApiOperation({
+    summary: 'Змінити навчальний статус студента',
+    description:
+      'Лише ADMIN своєї автошколи. organizationId береться з авторизованого ' +
+      'користувача: студент іншої організації повертає 404. Обліковий status ' +
+      'користувача (INVITED, ACTIVE, BLOCKED, ARCHIVED) цим запитом не змінюється. ' +
+      'Дозволені переходи TrainingStatus: ' +
+      'INVITED → ACTIVE | DROPPED | ARCHIVED; ' +
+      'ACTIVE → GRADUATED | DROPPED | ARCHIVED; ' +
+      'GRADUATED → ARCHIVED; DROPPED → ARCHIVED. ' +
+      'GRADUATED закриває активні зарахування як COMPLETED, DROPPED — як DROPPED. ' +
+      'Зміна пишеться в системний лог.',
+  })
+  @ApiParam({
+    name: 'id',
+    format: 'uuid',
+    description: 'Id користувача-студента.',
+    example: '88888888-8888-4888-8888-888888888888',
+  })
+  @ApiOkResponse({ type: StudentCardDto })
+  @ApiForbiddenResponse({
+    description: 'Змінювати навчальний статус може лише ADMIN.',
+  })
+  @ApiBadRequestResponse({
+    description:
+      'Некоректне тіло запиту. status має бути значенням TrainingStatus.',
+  })
+  @ApiConflictResponse({
+    description: 'Недозволений перехід навчального статусу.',
+  })
+  @ApiNotFoundResponse({
+    description:
+      'Студента не знайдено, його видалено, або він належить іншій автошколі. ' +
+      'Також якщо автошколу видалено.',
+  })
+  changeTrainingStatus(
+    @CurrentUser() user: User,
+    @Param('id', new ParseUUIDPipe({ version: '4' })) id: string,
+    @Body() body: UpdateStudentTrainingStatusDto,
+  ) {
+    return this.studentsService.changeTrainingStatus(user, id, body);
   }
 
   @Patch(':id')

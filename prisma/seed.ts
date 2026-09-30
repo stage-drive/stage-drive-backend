@@ -7,6 +7,7 @@ import {
   InvitationStatus,
   OrganizationStatus,
   PrismaClient,
+  TrainingStatus,
   UserRole,
   UserStatus,
 } from '@prisma/client';
@@ -176,10 +177,11 @@ async function upsertStudentProfile(
   userId: string,
   organizationId: string,
   groupId: string | null = null,
+  trainingStatus: TrainingStatus = TrainingStatus.ACTIVE,
 ) {
   return prisma.student.upsert({
     where: { userId },
-    update: { organizationId, groupId },
+    update: { organizationId, groupId, trainingStatus },
     create: {
       id: profileId,
       userId,
@@ -187,6 +189,7 @@ async function upsertStudentProfile(
       groupId,
       instructorId: null,
       carId: null,
+      trainingStatus,
     },
   });
 }
@@ -394,6 +397,8 @@ async function main() {
     DEMO_ARCHIVED_PROFILE_ID,
     archived.id,
     organization.id,
+    null,
+    TrainingStatus.ARCHIVED,
   );
   await upsertStudentProfile(
     DEMO_GROUPED_PROFILE_ID,
@@ -405,11 +410,15 @@ async function main() {
     DEMO_DROPPED_PROFILE_ID,
     droppedStudent.id,
     organization.id,
+    null,
+    TrainingStatus.DROPPED,
   );
   await upsertStudentProfile(
     DEMO_GRADUATED_PROFILE_ID,
     graduatedStudent.id,
     organization.id,
+    null,
+    TrainingStatus.GRADUATED,
   );
 
   await upsertEnrollment(
@@ -475,6 +484,9 @@ async function main() {
     `  GRADUATED student: ${DEMO_GRADUATED_EMAIL} id=${graduatedStudent.id}`,
   );
   console.log(`  ARCHIVED student id: ${archived.id}`);
+  console.log(
+    'PATCH /api/students/{id}/status — only ADMIN. Example body: { "status": "GRADUATED" }.',
+  );
   console.log(
     `  other-org student id (expect 404 for Stage Drive admin): ${foreignStudent.id}`,
   );
