@@ -50,6 +50,7 @@ import {
   STUDENT_CREATE_ROLES,
   STUDENT_LIST_ROLES,
   STUDENT_PRACTICE_ACCESS_ROLES,
+  STUDENT_SELF_ROLES,
   STUDENT_STATUS_ROLES,
   STUDENT_UPDATE_ROLES,
   StudentsService,
@@ -133,6 +134,29 @@ export class StudentsController {
   })
   create(@CurrentUser() user: User, @Body() body: CreateStudentDto) {
     return this.studentsService.create(user, body);
+  }
+
+  @Get('me')
+  @Roles(...STUDENT_SELF_ROLES)
+  @ApiOperation({
+    summary: 'Власний профіль студента',
+    description:
+      'Автентифікований STUDENT отримує лише власний Student profile. ' +
+      'userId і organizationId беруться з access token і звіряються із записом Student. ' +
+      'Шлях не містить id: query не змінює, чий профіль читається. ' +
+      'OWNER, ADMIN, TEACHER і INSTRUCTOR цей ендпоінт не відкриває: ' +
+      'їхні дозволи лишаються на окремих staff-ендпоінтах.',
+  })
+  @ApiOkResponse({ type: StudentCardDto })
+  @ApiForbiddenResponse({
+    description: 'Власний профіль студента доступний лише ролі STUDENT.',
+  })
+  @ApiNotFoundResponse({
+    description:
+      'Профіль не знайдено, користувача видалено, або userId чи organizationId не збігаються.',
+  })
+  getOwn(@CurrentUser() user: User) {
+    return this.studentsService.getOwn(user);
   }
 
   @Get(':id')
