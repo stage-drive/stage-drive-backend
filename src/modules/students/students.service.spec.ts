@@ -13,7 +13,12 @@ import {
 } from '../invitations/invitations.service';
 import { MailService } from '../mail/mail.service';
 import { ListStudentsQueryDto } from './students.dto';
-import { GROUP_NOT_FOUND_MESSAGE, StudentsService } from './students.service';
+import {
+  GROUP_NOT_FOUND_MESSAGE,
+  NO_STUDENT_FIELDS_MESSAGE,
+  STUDENT_NOT_FOUND_MESSAGE,
+  StudentsService,
+} from './students.service';
 
 function actor(role: UserRole, organizationId = 'org-1'): User {
   return {
@@ -67,7 +72,9 @@ describe('StudentsService', () => {
       findMany: jest.fn(),
       count: jest.fn(),
       findUnique: jest.fn(),
+      findFirst: jest.fn(),
       create: jest.fn(),
+      update: jest.fn(),
       delete: jest.fn(),
     },
     group: { findUnique: jest.fn() },
@@ -585,6 +592,253 @@ describe('StudentsService', () => {
         service.create(actor(UserRole.ADMIN), payload),
       ).rejects.toBeInstanceOf(NotFoundException);
       expect(prisma.user.create).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('card', () => {
+    const profile = {
+      id: 'profile-1',
+      userId: 'student-1',
+      organizationId: 'org-1',
+      groupId: 'group-1' as string | null,
+      instructorId: null,
+      carId: null,
+    };
+
+    function cardRow(
+      overrides: Partial<{
+        id: string;
+        organizationId: string;
+        role: UserRole;
+        status: UserStatus;
+        deletedAt: Date | null;
+        studentProfile: typeof profile | null;
+      }> = {},
+    ) {
+      const { studentProfile, ...userOverrides } = overrides;
+      return {
+        ...studentRow(),
+        updatedAt: new Date('2026-02-01T00:00:00.000Z'),
+        studentProfile: profile,
+        ...userOverrides,
+        ...(studentProfile !== undefined ? { studentProfile } : {}),
+      };
+    }
+
+    const visibleCard = {
+      id: 'student-1',
+      email: 'student@example.com',
+      firstName: 'Олена',
+      lastName: 'Коваль',
+      phone: '+380991234567',
+      avatarUrl: null,
+      role: UserRole.STUDENT,
+      status: UserStatus.ACTIVE,
+      organizationId: 'org-1',
+      createdAt: new Date('2026-01-02T00:00:00.000Z'),
+      updatedAt: new Date('2026-02-01T00:00:00.000Z'),
+      student: profile,
+    };
+
+    beforeEach(() => {
+      prisma.user.findFirst.mockReset();
+      prisma.user.update.mockReset();
+      prisma.user.findFirst.mockResolvedValue(null);
+    });
+
+    it.each([
+      UserRole.OWNER,
+      UserRole.ADMIN,
+      UserRole.TEACHER,
+      UserRole.INSTRUCTOR,
+    ] as const)('returns the student card for %s', async (role) => {
+      prisma.user.findFirst.mockResolvedValue(cardRow());
+
+      await expect(service.getById(actor(role), 'student-1')).resolves.toEqual(
+        visibleCard,
+      );
+      expect(prisma.user.findFirst).toHaveBeenCalledWith({
+        where: {
+          id: 'student-1',
+          organizationId: 'org-1',
+          role: UserRole.STUDENT,
+          deletedAt: null,
+        },
+        select: expect.not.objectContaining({ passwordHash: true }),
+      });
+    });
+
+    it('returns the card when the student profile row is missing', async () => {
+      prisma.user.findFirst.mockResolvedValue(
+        cardRow({ studentProfile: null }),
+      );
+
+      await expect(
+        service.getById(actor(UserRole.ADMIN), 'student-1'),
+      ).resolves.toMatchObject({
+        id: 'student-1',
+        student: null,
+      });
+    });
+
+    it('does not return a student of another organization to ADMIN', async () => {
+      prisma.user.findFirst.mockResolvedValue(cardRow());
+
+      await expect(
+        service.getById(actor(UserRole.ADMIN, 'org-2'), 'student-1'),
+      ).rejects.toMatchObject({ message: STUDENT_NOT_FOUND_MESSAGE });
+      expect(prisma.user.findFirst).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: expect.objectContaining({
+            id: 'student-1',
+            organizationId: 'org-2',
+          }),
+        }),
+      );
+    });
+
+    it('hides a student profile that belongs to another organization', async () => {
+      prisma.user.findFirst.mockResolvedValue(
+        cardRow({
+          studentProfile: { ...profile, organizationId: 'org-2' },
+        }),
+      );
+
+      await expect(
+        service.getById(actor(UserRole.ADMIN), 'student-1'),
+      ).rejects.toBeInstanceOf(NotFoundException);
+    });
+
+    it.each(['deleted student', 'another role'] as const)(
+      'returns 404 for a %s',
+      async (kind) => {
+        prisma.user.findFirst.mockResolvedValue(
+          kind === 'deleted student'
+            ? cardRow({ deletedAt: new Date('2026-03-01T00:00:00.000Z') })
+            : cardRow({ role: UserRole.TEACHER }),
+        );
+
+        await expect(
+          service.getById(actor(UserRole.ADMIN), 'student-1'),
+        ).rejects.toBeInstanceOf(NotFoundException);
+      },
+    );
+
+    it('returns 404 when the student does not exist', async () => {
+      await expect(
+        service.getById(actor(UserRole.TEACHER), 'missing-student'),
+      ).rejects.toBeInstanceOf(NotFoundException);
+      expect(prisma.user.update).not.toHaveBeenCalled();
+    });
+
+    it('rejects STUDENT before reading the card', async () => {
+      await expect(
+        service.getById(actor(UserRole.STUDENT), 'student-1'),
+      ).rejects.toBeInstanceOf(ForbiddenException);
+      expect(prisma.user.findFirst).not.toHaveBeenCalled();
+    });
+
+    it('updates only firstName, lastName and phone and keeps system fields', async () => {
+      const existing = cardRow({ status: UserStatus.INVITED });
+      prisma.user.findFirst.mockResolvedValue(existing);
+      prisma.user.update.mockImplementation(
+        (args: { data: { firstName?: string; phone?: string | null } }) =>
+          Promise.resolve({
+            ...existing,
+            ...args.data,
+          }),
+      );
+
+      const result = await service.update(actor(UserRole.ADMIN), 'student-1', {
+        firstName: '  Ірина ',
+        phone: ' +380671112233 ',
+        role: UserRole.OWNER,
+        organizationId: 'org-2',
+        status: UserStatus.BLOCKED,
+      } as never);
+
+      expect(prisma.user.update).toHaveBeenCalledWith({
+        where: { id: 'student-1' },
+        data: { firstName: 'Ірина', phone: '+380671112233' },
+        select: expect.any(Object),
+      });
+      const updateArgs = prisma.user.update.mock.calls[0][0] as {
+        data: Record<string, unknown>;
+        select: Record<string, unknown>;
+      };
+      expect(updateArgs.data).not.toHaveProperty('role');
+      expect(updateArgs.data).not.toHaveProperty('organizationId');
+      expect(updateArgs.data).not.toHaveProperty('status');
+      expect(updateArgs.select).not.toHaveProperty('passwordHash');
+      expect(result).toMatchObject({
+        firstName: 'Ірина',
+        phone: '+380671112233',
+        role: UserRole.STUDENT,
+        status: UserStatus.INVITED,
+        organizationId: 'org-1',
+      });
+    });
+
+    it('clears the phone when null is sent', async () => {
+      const existing = cardRow();
+      prisma.user.findFirst.mockResolvedValue(existing);
+      prisma.user.update.mockResolvedValue({ ...existing, phone: null });
+
+      await expect(
+        service.update(actor(UserRole.OWNER), 'student-1', { phone: null }),
+      ).resolves.toMatchObject({ phone: null, status: UserStatus.ACTIVE });
+      expect(prisma.user.update).toHaveBeenCalledWith(
+        expect.objectContaining({ data: { phone: null } }),
+      );
+    });
+
+    it('rejects an empty update', async () => {
+      await expect(
+        service.update(actor(UserRole.ADMIN), 'student-1', {}),
+      ).rejects.toMatchObject({
+        response: {
+          statusCode: 400,
+          errors: [{ field: 'body', message: NO_STUDENT_FIELDS_MESSAGE }],
+        },
+      });
+      expect(prisma.user.update).not.toHaveBeenCalled();
+    });
+
+    it('rejects a blank name', async () => {
+      await expect(
+        service.update(actor(UserRole.ADMIN), 'student-1', {
+          firstName: '   ',
+        }),
+      ).rejects.toMatchObject({
+        response: {
+          errors: [
+            { field: 'firstName', message: "Заповніть обов'язкове поле." },
+          ],
+        },
+      });
+      expect(prisma.user.findFirst).not.toHaveBeenCalled();
+    });
+
+    it.each([UserRole.TEACHER, UserRole.INSTRUCTOR, UserRole.STUDENT] as const)(
+      'rejects %s before updating a student',
+      async (role) => {
+        await expect(
+          service.update(actor(role), 'student-1', { firstName: 'Ірина' }),
+        ).rejects.toBeInstanceOf(ForbiddenException);
+        expect(prisma.user.update).not.toHaveBeenCalled();
+        expect(prisma.user.findFirst).not.toHaveBeenCalled();
+      },
+    );
+
+    it('does not update a student of another organization', async () => {
+      prisma.user.findFirst.mockResolvedValue(cardRow());
+
+      await expect(
+        service.update(actor(UserRole.ADMIN, 'org-2'), 'student-1', {
+          lastName: 'Інша',
+        }),
+      ).rejects.toMatchObject({ message: STUDENT_NOT_FOUND_MESSAGE });
+      expect(prisma.user.update).not.toHaveBeenCalled();
     });
   });
 });

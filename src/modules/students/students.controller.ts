@@ -4,6 +4,9 @@ import {
   Get,
   HttpCode,
   HttpStatus,
+  Param,
+  ParseUUIDPipe,
+  Patch,
   Post,
   Query,
   UseGuards,
@@ -17,6 +20,7 @@ import {
   ApiNotFoundResponse,
   ApiOkResponse,
   ApiOperation,
+  ApiParam,
   ApiQuery,
   ApiTags,
   ApiUnauthorizedResponse,
@@ -32,11 +36,15 @@ import {
   ListStudentsQueryDto,
   SORT_ORDERS,
   STUDENT_SORT_FIELDS,
+  StudentCardDto,
   StudentListDto,
+  UpdateStudentDto,
 } from './students.dto';
 import {
+  STUDENT_CARD_ROLES,
   STUDENT_CREATE_ROLES,
   STUDENT_LIST_ROLES,
+  STUDENT_UPDATE_ROLES,
   StudentsService,
 } from './students.service';
 
@@ -118,5 +126,72 @@ export class StudentsController {
   })
   create(@CurrentUser() user: User, @Body() body: CreateStudentDto) {
     return this.studentsService.create(user, body);
+  }
+
+  @Get(':id')
+  @Roles(...STUDENT_CARD_ROLES)
+  @ApiOperation({
+    summary: 'Картка студента своєї автошколи',
+    description:
+      'id — це id користувача зі списку студентів. OWNER, ADMIN, TEACHER і ' +
+      'INSTRUCTOR бачать лише студента своєї організації. Студент іншої ' +
+      'автошколи, інша роль і soft-delete повертають 404. Пароль і службові ' +
+      'поля у відповідь не потрапляють.',
+  })
+  @ApiParam({
+    name: 'id',
+    format: 'uuid',
+    description: 'Id користувача-студента.',
+    example: '88888888-8888-4888-8888-888888888888',
+  })
+  @ApiOkResponse({ type: StudentCardDto })
+  @ApiForbiddenResponse({
+    description:
+      'Картку студента можуть переглядати лише OWNER, ADMIN, TEACHER або INSTRUCTOR.',
+  })
+  @ApiNotFoundResponse({
+    description:
+      'Студента не знайдено, його видалено, або він належить іншій автошколі.',
+  })
+  getById(
+    @CurrentUser() user: User,
+    @Param('id', new ParseUUIDPipe({ version: '4' })) id: string,
+  ) {
+    return this.studentsService.getById(user, id);
+  }
+
+  @Patch(':id')
+  @Roles(...STUDENT_UPDATE_ROLES)
+  @ApiOperation({
+    summary: 'Редагувати дозволені дані картки студента',
+    description:
+      'OWNER або ADMIN змінюють лише firstName, lastName і phone студента ' +
+      'своєї автошколи. role, organizationId і системний status користувача ' +
+      'цим запитом не змінюються і відхиляються, якщо їх передати в тілі.',
+  })
+  @ApiParam({
+    name: 'id',
+    format: 'uuid',
+    description: 'Id користувача-студента.',
+    example: '88888888-8888-4888-8888-888888888888',
+  })
+  @ApiOkResponse({ type: StudentCardDto })
+  @ApiForbiddenResponse({
+    description: 'Редагувати картку студента можуть лише OWNER або ADMIN.',
+  })
+  @ApiBadRequestResponse({
+    description:
+      'Некоректне тіло або поле поза дозволеним набором. Тіло містить errors: [{ field, message }].',
+  })
+  @ApiNotFoundResponse({
+    description:
+      'Студента не знайдено, його видалено, або він належить іншій автошколі.',
+  })
+  update(
+    @CurrentUser() user: User,
+    @Param('id', new ParseUUIDPipe({ version: '4' })) id: string,
+    @Body() body: UpdateStudentDto,
+  ) {
+    return this.studentsService.update(user, id, body);
   }
 }
