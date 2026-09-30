@@ -192,6 +192,12 @@ describe('API (e2e)', () => {
       count: jest.fn(),
       findMany: jest.fn(),
     },
+    group: {
+      findUnique: jest.fn(),
+    },
+    student: {
+      create: jest.fn(),
+    },
     refreshToken: {
       create: jest.fn(),
       updateMany: jest.fn(),
@@ -246,6 +252,9 @@ describe('API (e2e)', () => {
     prismaMock.invitation.findFirst.mockResolvedValue(null);
     prismaMock.invitation.updateMany.mockReset();
     prismaMock.invitation.delete.mockReset();
+    prismaMock.group.findUnique.mockReset();
+    prismaMock.group.findUnique.mockResolvedValue(null);
+    prismaMock.student.create.mockReset();
     prismaMock.refreshToken.create.mockReset();
     prismaMock.refreshToken.create.mockResolvedValue({});
     prismaMock.refreshToken.updateMany.mockReset();
@@ -320,7 +329,10 @@ describe('API (e2e)', () => {
         };
       }) =>
         Promise.resolve({
-          id: createdAdmin.id,
+          id:
+            args.data.role === 'STUDENT'
+              ? '77777777-7777-7777-7777-777777777777'
+              : createdAdmin.id,
           email: args.data.email,
           firstName: args.data.firstName,
           lastName: args.data.lastName,
@@ -349,6 +361,25 @@ describe('API (e2e)', () => {
           expiresAt: args.data.expiresAt,
           userId: args.data.userId,
           organizationId: args.data.organizationId,
+        }),
+    );
+    prismaMock.student.create.mockImplementation(
+      (args: {
+        data: {
+          userId: string;
+          organizationId: string;
+          groupId: string | null;
+          instructorId: string | null;
+          carId: string | null;
+        };
+      }) =>
+        Promise.resolve({
+          id: '12121212-1212-1212-1212-121212121212',
+          userId: args.data.userId,
+          organizationId: args.data.organizationId,
+          groupId: args.data.groupId,
+          instructorId: args.data.instructorId,
+          carId: args.data.carId,
         }),
     );
     prismaMock.refreshToken.updateMany.mockResolvedValue({ count: 0 });
@@ -2018,6 +2049,222 @@ describe('API (e2e)', () => {
       message: 'Organization not found',
     });
     expect(prismaMock.user.findMany).not.toHaveBeenCalled();
+  });
+
+  const createdStudentUserId = '77777777-7777-7777-7777-777777777777';
+  const createdStudentProfileId = '12121212-1212-1212-1212-121212121212';
+  const schoolGroupId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+  const otherOrganizationId = '22222222-2222-2222-2222-222222222222';
+
+  it('POST /api/students without token returns 401', () => {
+    return request(app.getHttpServer()).post('/api/students').expect(401);
+  });
+
+  it.each(['TEACHER', 'INSTRUCTOR', 'STUDENT'] as const)(
+    'POST /api/students is forbidden for %s',
+    async (role) => {
+      const actor =
+        role === 'TEACHER'
+          ? teacher
+          : role === 'INSTRUCTOR'
+            ? instructor
+            : pupil;
+      const token = signAccessToken(actor.id);
+      const response = await request(app.getHttpServer())
+        .post('/api/students')
+        .set('Authorization', `Bearer ${token}`)
+        .send({
+          firstName: 'Olena',
+          lastName: 'Koval',
+          email: 'new-student@example.com',
+        })
+        .expect(403);
+
+      expect(response.body).toMatchObject({
+        statusCode: 403,
+        message: 'Insufficient permissions',
+      });
+      expect(prismaMock.user.create).not.toHaveBeenCalled();
+      expect(mailServiceMock.sendEmail).not.toHaveBeenCalled();
+    },
+  );
+
+  it('POST /api/students rejects organizationId from the body', async () => {
+    const token = signAccessToken(admin.id);
+    const response = await request(app.getHttpServer())
+      .post('/api/students')
+      .set('Authorization', `Bearer ${token}`)
+      .send({
+        firstName: 'Olena',
+        lastName: 'Koval',
+        email: 'new-student@example.com',
+        organizationId: otherOrganizationId,
+      })
+      .expect(400);
+
+    expect(response.body).toMatchObject({
+      statusCode: 400,
+      errors: [
+        {
+          field: 'organizationId',
+          message: 'property organizationId should not exist',
+        },
+      ],
+    });
+    expect(prismaMock.user.create).not.toHaveBeenCalled();
+  });
+
+  it('POST /api/students creates an INVITED student in the caller organization and sends the invitation', async () => {
+    const token = signAccessToken(admin.id);
+    const response = await request(app.getHttpServer())
+      .post('/api/students')
+      .set('Authorization', `Bearer ${token}`)
+      .send({
+        firstName: 'Olena',
+        lastName: 'Koval',
+        email: 'New-Student@Example.com',
+        phone: '+380991234567',
+      })
+      .expect(201);
+
+    expect(response.body).toMatchObject({
+      user: {
+        id: createdStudentUserId,
+        email: 'new-student@example.com',
+        firstName: 'Olena',
+        lastName: 'Koval',
+        phone: '+380991234567',
+        role: 'STUDENT',
+        status: 'INVITED',
+        organizationId: organization.id,
+      },
+      student: {
+        id: createdStudentProfileId,
+        userId: createdStudentUserId,
+        organizationId: organization.id,
+        groupId: null,
+        instructorId: null,
+        carId: null,
+      },
+      invitation: {
+        id: createdInvitation.id,
+        email: 'new-student@example.com',
+        role: 'STUDENT',
+        status: 'PENDING',
+        userId: createdStudentUserId,
+        organizationId: organization.id,
+      },
+    });
+    expect(response.body).not.toHaveProperty('token');
+    expect(response.body.user).not.toHaveProperty('passwordHash');
+    expect(prismaMock.user.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        email: 'new-student@example.com',
+        role: 'STUDENT',
+        status: 'INVITED',
+        organizationId: organization.id,
+        passwordHash: null,
+      }),
+    });
+    expect(prismaMock.student.create).toHaveBeenCalledWith({
+      data: {
+        userId: createdStudentUserId,
+        organizationId: organization.id,
+        groupId: null,
+        instructorId: null,
+        carId: null,
+      },
+    });
+    expect(mailServiceMock.sendEmail).toHaveBeenCalledWith(
+      expect.objectContaining({
+        to: 'new-student@example.com',
+        subject: expect.stringContaining(organization.name),
+      }),
+    );
+  });
+
+  it('POST /api/students stores groupId when the group belongs to the same organization', async () => {
+    prismaMock.group.findUnique.mockResolvedValue({
+      id: schoolGroupId,
+      organizationId: organization.id,
+    });
+
+    const token = signAccessToken(owner.id);
+    const response = await request(app.getHttpServer())
+      .post('/api/students')
+      .set('Authorization', `Bearer ${token}`)
+      .send({
+        firstName: 'Olena',
+        lastName: 'Koval',
+        email: 'grouped-student@example.com',
+        groupId: schoolGroupId,
+      })
+      .expect(201);
+
+    expect(response.body.student).toMatchObject({
+      organizationId: organization.id,
+      groupId: schoolGroupId,
+      instructorId: null,
+      carId: null,
+    });
+    expect(response.body.user.organizationId).toBe(organization.id);
+    expect(prismaMock.student.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        organizationId: organization.id,
+        groupId: schoolGroupId,
+        instructorId: null,
+        carId: null,
+      }),
+    });
+  });
+
+  it('POST /api/students does not create a student from another organization group', async () => {
+    prismaMock.group.findUnique.mockResolvedValue({
+      id: schoolGroupId,
+      organizationId: otherOrganizationId,
+    });
+
+    const token = signAccessToken(admin.id);
+    const response = await request(app.getHttpServer())
+      .post('/api/students')
+      .set('Authorization', `Bearer ${token}`)
+      .send({
+        firstName: 'Olena',
+        lastName: 'Koval',
+        email: 'foreign-group@example.com',
+        groupId: schoolGroupId,
+      })
+      .expect(404);
+
+    expect(response.body).toMatchObject({
+      statusCode: 404,
+      message: 'Group not found',
+    });
+    expect(prismaMock.user.create).not.toHaveBeenCalled();
+    expect(prismaMock.student.create).not.toHaveBeenCalled();
+    expect(mailServiceMock.sendEmail).not.toHaveBeenCalled();
+  });
+
+  it('POST /api/students returns 409 when the email already exists', async () => {
+    const token = signAccessToken(admin.id);
+    const response = await request(app.getHttpServer())
+      .post('/api/students')
+      .set('Authorization', `Bearer ${token}`)
+      .send({
+        firstName: 'Olena',
+        lastName: 'Koval',
+        email: owner.email,
+      })
+      .expect(409);
+
+    expect(response.body).toMatchObject({
+      statusCode: 409,
+      errors: [
+        { field: 'email', message: 'Користувач з таким email уже існує.' },
+      ],
+    });
+    expect(prismaMock.user.create).not.toHaveBeenCalled();
+    expect(mailServiceMock.sendEmail).not.toHaveBeenCalled();
   });
 
   it('OpenAPI documents GET /api/students', async () => {
