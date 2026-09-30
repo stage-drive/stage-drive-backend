@@ -34,6 +34,7 @@ import {
   AssignStudentGroupDto,
   CreateStudentDto,
   CreateStudentResponseDto,
+  GrantPracticeAccessDto,
   ListStudentsQueryDto,
   SORT_ORDERS,
   STUDENT_SORT_FIELDS,
@@ -46,6 +47,7 @@ import {
   STUDENT_CARD_ROLES,
   STUDENT_CREATE_ROLES,
   STUDENT_LIST_ROLES,
+  STUDENT_PRACTICE_ACCESS_ROLES,
   STUDENT_STATUS_ROLES,
   STUDENT_UPDATE_ROLES,
   StudentsService,
@@ -217,7 +219,9 @@ export class StudentsController {
       'Дозволені переходи TrainingStatus: ' +
       'INVITED → ACTIVE | DROPPED | ARCHIVED; ' +
       'ACTIVE → GRADUATED | DROPPED | ARCHIVED; ' +
+      'PRACTICE → GRADUATED | DROPPED | ARCHIVED; ' +
       'GRADUATED → ARCHIVED; DROPPED → ARCHIVED. ' +
+      'PRACTICE цим запитом не призначається. ' +
       'GRADUATED закриває активні зарахування як COMPLETED, DROPPED — як DROPPED. ' +
       'Зміна пишеться в системний лог.',
   })
@@ -249,6 +253,54 @@ export class StudentsController {
     @Body() body: UpdateStudentTrainingStatusDto,
   ) {
     return this.studentsService.changeTrainingStatus(user, id, body);
+  }
+
+  @Patch(':id/practice-access')
+  @Roles(...STUDENT_PRACTICE_ACCESS_ROLES)
+  @ApiOperation({
+    summary: 'Надати студенту допуск до практичного навчання',
+    description:
+      'Лише ADMIN своєї автошколи. organizationId береться з авторизованого ' +
+      'користувача. У тілі обов’язкові instructorId і carId. ' +
+      'Студент має існувати в цій автошколі, мати обліковий статус ACTIVE, ' +
+      'навчальний статус ACTIVE або PRACTICE, а також заповнені category і transmission. ' +
+      'Інструктор має роль INSTRUCTOR, статус ACTIVE і ту саму організацію. ' +
+      'Автомобіль належить вибраному інструктору, а його category і transmission ' +
+      'збігаються зі студентом. Некоректна комбінація відхиляється. ' +
+      'Після успіху встановлюються instructorId, carId і trainingStatus = PRACTICE.',
+  })
+  @ApiParam({
+    name: 'id',
+    format: 'uuid',
+    description: 'Id користувача-студента.',
+    example: '88888888-8888-4888-8888-888888888888',
+  })
+  @ApiOkResponse({ type: StudentCardDto })
+  @ApiForbiddenResponse({
+    description: 'Допуск до практики надає лише ADMIN.',
+  })
+  @ApiBadRequestResponse({
+    description:
+      'Некоректне тіло запиту. instructorId і carId мають бути UUID. ' +
+      'Тіло містить errors: [{ field, message }].',
+  })
+  @ApiConflictResponse({
+    description:
+      'Студент не має права на допуск, інструктор не INSTRUCTOR або не ACTIVE, ' +
+      'або комбінація інструктора й автомобіля некоректна ' +
+      '(авто не його, інша category або інша transmission).',
+  })
+  @ApiNotFoundResponse({
+    description:
+      'Студента, інструктора або автомобіль не знайдено, їх видалено, ' +
+      'або вони належать іншій автошколі. Також якщо автошколу видалено.',
+  })
+  grantPracticeAccess(
+    @CurrentUser() user: User,
+    @Param('id', new ParseUUIDPipe({ version: '4' })) id: string,
+    @Body() body: GrantPracticeAccessDto,
+  ) {
+    return this.studentsService.grantPracticeAccess(user, id, body);
   }
 
   @Patch(':id')

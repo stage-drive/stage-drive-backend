@@ -199,6 +199,9 @@ describe('API (e2e)', () => {
       create: jest.fn(),
       update: jest.fn(),
     },
+    car: {
+      findUnique: jest.fn(),
+    },
     enrollment: {
       findFirst: jest.fn(),
       upsert: jest.fn(),
@@ -264,18 +267,25 @@ describe('API (e2e)', () => {
     prismaMock.student.update.mockReset();
     prismaMock.student.update.mockImplementation(
       (args: {
-        data: { groupId?: string | null; trainingStatus?: string };
+        data: {
+          groupId?: string | null;
+          trainingStatus?: string;
+          instructorId?: string | null;
+          carId?: string | null;
+        };
       }) =>
         Promise.resolve({
           id: '12121212-1212-1212-1212-121212121212',
           userId: '77777777-7777-7777-7777-777777777777',
           organizationId: organization.id,
           groupId: args.data.groupId ?? null,
-          instructorId: null,
-          carId: null,
+          instructorId: args.data.instructorId ?? null,
+          carId: args.data.carId ?? null,
           trainingStatus: args.data.trainingStatus ?? 'ACTIVE',
         }),
     );
+    prismaMock.car.findUnique.mockReset();
+    prismaMock.car.findUnique.mockResolvedValue(null);
     prismaMock.enrollment.findFirst.mockReset();
     prismaMock.enrollment.findFirst.mockResolvedValue(null);
     prismaMock.enrollment.upsert.mockReset();
@@ -2325,9 +2335,12 @@ describe('API (e2e)', () => {
       trainingStatus?:
         | 'INVITED'
         | 'ACTIVE'
+        | 'PRACTICE'
         | 'GRADUATED'
         | 'DROPPED'
         | 'ARCHIVED';
+      category?: 'A' | 'B' | 'C' | 'D' | null;
+      transmission?: 'MANUAL' | 'AUTOMATIC' | null;
     } = {},
   ) {
     const id = overrides.id ?? studentCardId;
@@ -2352,6 +2365,8 @@ describe('API (e2e)', () => {
         groupId: overrides.groupId ?? null,
         instructorId: null,
         carId: null,
+        category: overrides.category ?? null,
+        transmission: overrides.transmission ?? null,
         trainingStatus: overrides.trainingStatus ?? 'ACTIVE',
       },
     };
@@ -2450,6 +2465,8 @@ describe('API (e2e)', () => {
           groupId: null,
           instructorId: null,
           carId: null,
+          category: null,
+          transmission: null,
           trainingStatus: 'ACTIVE',
         },
       });
@@ -3055,5 +3072,196 @@ describe('API (e2e)', () => {
     const status = (paths['/api/students/{id}/status'] ??
       paths['/students/{id}/status']) as { patch?: unknown } | undefined;
     expect(status?.patch).toBeDefined();
+  });
+
+  const practiceInstructorId = '23232323-2323-4232-8232-232323232323';
+  const practiceCarId = '31313131-3131-4131-8131-313131313131';
+
+  function mockPracticeInstructor(record: {
+    id?: string;
+    role?: string;
+    status?: string;
+    organizationId?: string;
+    deletedAt?: Date | null;
+  }) {
+    const findUnique = prismaMock.user.findUnique.getMockImplementation();
+    prismaMock.user.findUnique.mockImplementation(
+      (args: { where: { id?: string; email?: string } }) => {
+        if (args.where.id === (record.id ?? practiceInstructorId)) {
+          return Promise.resolve({
+            id: practiceInstructorId,
+            role: 'INSTRUCTOR',
+            status: 'ACTIVE',
+            organizationId: organization.id,
+            deletedAt: null,
+            ...record,
+          });
+        }
+        return findUnique?.(args);
+      },
+    );
+  }
+
+  it('PATCH /api/students/:id/practice-access without token returns 401', () => {
+    return request(app.getHttpServer())
+      .patch(`/api/students/${studentCardId}/practice-access`)
+      .send({ instructorId: practiceInstructorId, carId: practiceCarId })
+      .expect(401);
+  });
+
+  it.each(['OWNER', 'TEACHER', 'INSTRUCTOR', 'STUDENT'] as const)(
+    'PATCH /api/students/:id/practice-access is forbidden for %s',
+    async (role) => {
+      const actor =
+        role === 'OWNER'
+          ? owner
+          : role === 'TEACHER'
+            ? teacher
+            : role === 'INSTRUCTOR'
+              ? instructor
+              : pupil;
+      const token = signAccessToken(actor.id);
+      const response = await request(app.getHttpServer())
+        .patch(`/api/students/${studentCardId}/practice-access`)
+        .set('Authorization', `Bearer ${token}`)
+        .send({ instructorId: practiceInstructorId, carId: practiceCarId })
+        .expect(403);
+
+      expect(response.body).toMatchObject({
+        statusCode: 403,
+        message: 'Insufficient permissions',
+      });
+      expect(prismaMock.student.update).not.toHaveBeenCalled();
+    },
+  );
+
+  it('PATCH /api/students/:id/practice-access grants PRACTICE for ADMIN', async () => {
+    mockStudentCard(
+      studentCardRecord({
+        trainingStatus: 'ACTIVE',
+        category: 'B',
+        transmission: 'MANUAL',
+      }),
+    );
+    mockPracticeInstructor({});
+    prismaMock.car.findUnique.mockResolvedValue({
+      id: practiceCarId,
+      organizationId: organization.id,
+      instructorId: practiceInstructorId,
+      category: 'B',
+      transmission: 'MANUAL',
+    });
+
+    const token = signAccessToken(admin.id);
+    const response = await request(app.getHttpServer())
+      .patch(`/api/students/${studentCardId}/practice-access`)
+      .set('Authorization', `Bearer ${token}`)
+      .send({ instructorId: practiceInstructorId, carId: practiceCarId })
+      .expect(200);
+
+    expect(response.body).toMatchObject({
+      id: studentCardId,
+      role: 'STUDENT',
+      status: 'ACTIVE',
+      student: {
+        instructorId: practiceInstructorId,
+        carId: practiceCarId,
+        category: 'B',
+        transmission: 'MANUAL',
+        trainingStatus: 'PRACTICE',
+      },
+    });
+    expect(prismaMock.student.update).toHaveBeenCalledWith({
+      where: { id: createdStudentProfileId },
+      data: {
+        instructorId: practiceInstructorId,
+        carId: practiceCarId,
+        trainingStatus: 'PRACTICE',
+      },
+    });
+  });
+
+  it('PATCH /api/students/:id/practice-access rejects a mismatched car', async () => {
+    mockStudentCard(
+      studentCardRecord({ category: 'B', transmission: 'MANUAL' }),
+    );
+    mockPracticeInstructor({});
+    prismaMock.car.findUnique.mockResolvedValue({
+      id: practiceCarId,
+      organizationId: organization.id,
+      instructorId: practiceInstructorId,
+      category: 'B',
+      transmission: 'AUTOMATIC',
+    });
+
+    const token = signAccessToken(admin.id);
+    const response = await request(app.getHttpServer())
+      .patch(`/api/students/${studentCardId}/practice-access`)
+      .set('Authorization', `Bearer ${token}`)
+      .send({ instructorId: practiceInstructorId, carId: practiceCarId })
+      .expect(409);
+
+    expect(response.body).toMatchObject({
+      statusCode: 409,
+      message: 'Некоректна комбінація інструктора та автомобіля.',
+    });
+    expect(prismaMock.student.update).not.toHaveBeenCalled();
+  });
+
+  it('PATCH /api/students/:id/practice-access rejects a student who is not eligible', async () => {
+    mockStudentCard(studentCardRecord({ trainingStatus: 'GRADUATED' }));
+
+    const token = signAccessToken(admin.id);
+    const response = await request(app.getHttpServer())
+      .patch(`/api/students/${studentCardId}/practice-access`)
+      .set('Authorization', `Bearer ${token}`)
+      .send({ instructorId: practiceInstructorId, carId: practiceCarId })
+      .expect(409);
+
+    expect(response.body).toMatchObject({
+      statusCode: 409,
+      message: 'Студент не має права на допуск до практичного навчання.',
+    });
+    expect(prismaMock.car.findUnique).not.toHaveBeenCalled();
+  });
+
+  it('PATCH /api/students/:id/practice-access does not change a student of another organization', async () => {
+    prismaMock.user.findFirst.mockResolvedValue(null);
+
+    const token = signAccessToken(admin.id);
+    const response = await request(app.getHttpServer())
+      .patch(`/api/students/${foreignStudentId}/practice-access`)
+      .set('Authorization', `Bearer ${token}`)
+      .send({ instructorId: practiceInstructorId, carId: practiceCarId })
+      .expect(404);
+
+    expect(response.body).toMatchObject({
+      statusCode: 404,
+      message: 'Student not found',
+    });
+  });
+
+  it('PATCH /api/students/:id/practice-access rejects an invalid body', async () => {
+    const token = signAccessToken(admin.id);
+    const response = await request(app.getHttpServer())
+      .patch(`/api/students/${studentCardId}/practice-access`)
+      .set('Authorization', `Bearer ${token}`)
+      .send({ instructorId: 'not-a-uuid' })
+      .expect(400);
+
+    expect(response.body).toMatchObject({ statusCode: 400 });
+    expect(prismaMock.student.update).not.toHaveBeenCalled();
+  });
+
+  it('OpenAPI documents student practice access', async () => {
+    const response = await request(app.getHttpServer())
+      .get('/api/docs-json')
+      .expect(200);
+
+    const paths = (response.body as { paths: Record<string, unknown> }).paths;
+    const access = (paths['/api/students/{id}/practice-access'] ??
+      paths['/students/{id}/practice-access']) as
+      { patch?: unknown } | undefined;
+    expect(access?.patch).toBeDefined();
   });
 });

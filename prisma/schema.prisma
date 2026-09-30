@@ -50,12 +50,26 @@ enum EnrollmentStatus {
 }
 
 /// Навчальний статус учня. Не плутати з UserStatus (обліковий доступ).
+/// PRACTICE призначається лише допуском до практики.
 enum TrainingStatus {
   INVITED
   ACTIVE
+  PRACTICE
   GRADUATED
   DROPPED
   ARCHIVED
+}
+
+enum LicenseCategory {
+  A
+  B
+  C
+  D
+}
+
+enum Transmission {
+  MANUAL
+  AUTOMATIC
 }
 
 enum LessonStatus {
@@ -71,22 +85,23 @@ enum DrivingLessonStatus {
 }
 
 model Organization {
-  id        String             @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  name      String             @db.VarChar(255)
-  slug      String             @unique @db.VarChar(100)
-  email     String             @unique @db.VarChar(255)
-  phone     String?            @db.VarChar(20)
-  address   String?            @db.VarChar(255)
-  status    OrganizationStatus @default(ACTIVE)
-  logoUrl   String?            @map("logo_url") @db.VarChar(2048)
-  timezone  String             @default("Europe/Kyiv") @db.VarChar(64)
-  createdAt DateTime           @default(now()) @map("created_at")
-  updatedAt DateTime           @updatedAt @map("updated_at")
-  deletedAt DateTime?          @map("deleted_at")
-  users     User[]
-  invitations Invitation[]
-  groups      Group[]
-  students    Student[]
+  id             String             @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  name           String             @db.VarChar(255)
+  slug           String             @unique @db.VarChar(100)
+  email          String             @unique @db.VarChar(255)
+  phone          String?            @db.VarChar(20)
+  address        String?            @db.VarChar(255)
+  status         OrganizationStatus @default(ACTIVE)
+  logoUrl        String?            @map("logo_url") @db.VarChar(2048)
+  timezone       String             @default("Europe/Kyiv") @db.VarChar(64)
+  createdAt      DateTime           @default(now()) @map("created_at")
+  updatedAt      DateTime           @updatedAt @map("updated_at")
+  deletedAt      DateTime?          @map("deleted_at")
+  users          User[]
+  invitations    Invitation[]
+  groups         Group[]
+  students       Student[]
+  cars           Car[]
   drivingLessons DrivingLesson[]
 
   @@index([deletedAt])
@@ -94,34 +109,35 @@ model Organization {
 }
 
 model User {
-  id                  String               @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  email               String               @unique @db.VarChar(255)
-  passwordHash        String?              @map("password_hash") @db.VarChar(255)
-  firstName           String               @map("first_name") @db.VarChar(100)
-  lastName            String               @map("last_name") @db.VarChar(100)
-  phone               String?              @db.VarChar(20)
-  avatarUrl           String?              @map("avatar_url") @db.VarChar(2048)
-  role                UserRole
-  status              UserStatus           @default(ACTIVE)
-  organizationId      String               @map("organization_id") @db.Uuid
-  lastLoginAt         DateTime?            @map("last_login_at")
-  tokensInvalidBefore DateTime?            @map("tokens_invalid_before")
-  createdAt           DateTime             @default(now()) @map("created_at")
-  updatedAt           DateTime             @updatedAt @map("updated_at")
-  deletedAt           DateTime?            @map("deleted_at")
-  organization          Organization         @relation(fields: [organizationId], references: [id], onDelete: Cascade)
-  oauthAccounts         OAuthAccount[]
-  oauthAuthorizations   OAuthAuthorization[]
-  refreshToken          RefreshToken[]
-  passwordResetToken    PasswordResetToken[]
-  sentInvitations       Invitation[]         @relation("SentInvitations")
-  receivedInvitations   Invitation[]         @relation("ReceivedInvitations")
-  taughtGroups          Group[]              @relation("TeacherGroups")
-  enrollments           Enrollment[]         @relation("StudentEnrollments")
-  studentProfile        Student?             @relation("StudentProfile")
-  instructedStudents    Student[]            @relation("StudentInstructor")
-  instructorDrivingLessons DrivingLesson[]   @relation("InstructorDrivingLessons")
-  studentDrivingLessons    DrivingLesson[]   @relation("StudentDrivingLessons")
+  id                       String               @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  email                    String               @unique @db.VarChar(255)
+  passwordHash             String?              @map("password_hash") @db.VarChar(255)
+  firstName                String               @map("first_name") @db.VarChar(100)
+  lastName                 String               @map("last_name") @db.VarChar(100)
+  phone                    String?              @db.VarChar(20)
+  avatarUrl                String?              @map("avatar_url") @db.VarChar(2048)
+  role                     UserRole
+  status                   UserStatus           @default(ACTIVE)
+  organizationId           String               @map("organization_id") @db.Uuid
+  lastLoginAt              DateTime?            @map("last_login_at")
+  tokensInvalidBefore      DateTime?            @map("tokens_invalid_before")
+  createdAt                DateTime             @default(now()) @map("created_at")
+  updatedAt                DateTime             @updatedAt @map("updated_at")
+  deletedAt                DateTime?            @map("deleted_at")
+  organization             Organization         @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  oauthAccounts            OAuthAccount[]
+  oauthAuthorizations      OAuthAuthorization[]
+  refreshToken             RefreshToken[]
+  passwordResetToken       PasswordResetToken[]
+  sentInvitations          Invitation[]         @relation("SentInvitations")
+  receivedInvitations      Invitation[]         @relation("ReceivedInvitations")
+  taughtGroups             Group[]              @relation("TeacherGroups")
+  enrollments              Enrollment[]         @relation("StudentEnrollments")
+  studentProfile           Student?             @relation("StudentProfile")
+  instructedStudents       Student[]            @relation("StudentInstructor")
+  instructorCars           Car[]                @relation("InstructorCars")
+  instructorDrivingLessons DrivingLesson[]      @relation("InstructorDrivingLessons")
+  studentDrivingLessons    DrivingLesson[]      @relation("StudentDrivingLessons")
 
   @@index([deletedAt])
   @@index([organizationId])
@@ -236,25 +252,47 @@ model Group {
 }
 
 model Student {
-  id             String       @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  userId         String       @unique @map("user_id") @db.Uuid
-  user           User         @relation("StudentProfile", fields: [userId], references: [id], onDelete: Cascade)
-  organizationId String       @map("organization_id") @db.Uuid
-  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
-  groupId        String?      @map("group_id") @db.Uuid
-  group          Group?       @relation(fields: [groupId], references: [id], onDelete: SetNull)
-  instructorId   String?      @map("instructor_id") @db.Uuid
-  instructor     User?          @relation("StudentInstructor", fields: [instructorId], references: [id], onDelete: SetNull)
-  /// Довідника авто ще немає, тому поле без зовнішнього ключа і при створенні лишається null.
-  carId          String?        @map("car_id") @db.Uuid
-  trainingStatus TrainingStatus @default(INVITED) @map("training_status")
-  createdAt      DateTime     @default(now()) @map("created_at")
-  updatedAt      DateTime     @updatedAt @map("updated_at")
+  id             String           @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  userId         String           @unique @map("user_id") @db.Uuid
+  user           User             @relation("StudentProfile", fields: [userId], references: [id], onDelete: Cascade)
+  organizationId String           @map("organization_id") @db.Uuid
+  organization   Organization     @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  groupId        String?          @map("group_id") @db.Uuid
+  group          Group?           @relation(fields: [groupId], references: [id], onDelete: SetNull)
+  instructorId   String?          @map("instructor_id") @db.Uuid
+  instructor     User?            @relation("StudentInstructor", fields: [instructorId], references: [id], onDelete: SetNull)
+  carId          String?          @map("car_id") @db.Uuid
+  car            Car?             @relation(fields: [carId], references: [id], onDelete: SetNull)
+  category       LicenseCategory?
+  transmission   Transmission?
+  trainingStatus TrainingStatus   @default(INVITED) @map("training_status")
+  createdAt      DateTime         @default(now()) @map("created_at")
+  updatedAt      DateTime         @updatedAt @map("updated_at")
 
   @@index([organizationId])
   @@index([groupId])
   @@index([instructorId])
+  @@index([carId])
   @@map("students")
+}
+
+model Car {
+  id             String          @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  organizationId String          @map("organization_id") @db.Uuid
+  organization   Organization    @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  instructorId   String          @map("instructor_id") @db.Uuid
+  instructor     User            @relation("InstructorCars", fields: [instructorId], references: [id], onDelete: Cascade)
+  plateNumber    String          @map("plate_number") @db.VarChar(16)
+  category       LicenseCategory
+  transmission   Transmission
+  createdAt      DateTime        @default(now()) @map("created_at")
+  updatedAt      DateTime        @updatedAt @map("updated_at")
+  students       Student[]
+
+  @@unique([organizationId, plateNumber])
+  @@index([organizationId])
+  @@index([instructorId])
+  @@map("cars")
 }
 
 model Enrollment {
