@@ -197,6 +197,11 @@ describe('API (e2e)', () => {
     },
     student: {
       create: jest.fn(),
+      update: jest.fn(),
+    },
+    enrollment: {
+      findFirst: jest.fn(),
+      upsert: jest.fn(),
     },
     refreshToken: {
       create: jest.fn(),
@@ -255,6 +260,22 @@ describe('API (e2e)', () => {
     prismaMock.group.findUnique.mockReset();
     prismaMock.group.findUnique.mockResolvedValue(null);
     prismaMock.student.create.mockReset();
+    prismaMock.student.update.mockReset();
+    prismaMock.student.update.mockImplementation(
+      (args: { data: { groupId?: string | null } }) =>
+        Promise.resolve({
+          id: '12121212-1212-1212-1212-121212121212',
+          userId: '77777777-7777-7777-7777-777777777777',
+          organizationId: organization.id,
+          groupId: args.data.groupId ?? null,
+          instructorId: null,
+          carId: null,
+        }),
+    );
+    prismaMock.enrollment.findFirst.mockReset();
+    prismaMock.enrollment.findFirst.mockResolvedValue(null);
+    prismaMock.enrollment.upsert.mockReset();
+    prismaMock.enrollment.upsert.mockResolvedValue({});
     prismaMock.refreshToken.create.mockReset();
     prismaMock.refreshToken.create.mockResolvedValue({});
     prismaMock.refreshToken.updateMany.mockReset();
@@ -2290,6 +2311,7 @@ describe('API (e2e)', () => {
       organizationId?: string;
       deletedAt?: Date | null;
       status?: 'INVITED' | 'ACTIVE' | 'BLOCKED' | 'ARCHIVED';
+      groupId?: string | null;
     } = {},
   ) {
     const id = overrides.id ?? studentCardId;
@@ -2311,7 +2333,7 @@ describe('API (e2e)', () => {
         id: createdStudentProfileId,
         userId: id,
         organizationId,
-        groupId: null,
+        groupId: overrides.groupId ?? null,
         instructorId: null,
         carId: null,
       },
@@ -2624,5 +2646,254 @@ describe('API (e2e)', () => {
       message: 'Student not found',
     });
     expect(prismaMock.user.update).not.toHaveBeenCalled();
+  });
+
+  const assignableGroupId = 'dddddddd-dddd-4ddd-8ddd-dddddddddddd';
+  const currentGroupId = 'cdcdcdcd-cdcd-4cdc-8cdc-cdcdcdcdcdcd';
+
+  function mockAssignableGroup(
+    group: {
+      id: string;
+      organizationId: string;
+      status: 'PLANNED' | 'ACTIVE' | 'COMPLETED' | 'ARCHIVED';
+    } | null,
+  ) {
+    prismaMock.group.findUnique.mockImplementation(
+      (args: { where: { id: string } }) => {
+        if (!group || args.where.id !== group.id) {
+          if (args.where.id === currentGroupId) {
+            return Promise.resolve({
+              id: currentGroupId,
+              organizationId: organization.id,
+              status: 'ACTIVE',
+            });
+          }
+          return Promise.resolve(group);
+        }
+        return Promise.resolve(group);
+      },
+    );
+  }
+
+  it('PATCH /api/students/:id/group without token returns 401', () => {
+    return request(app.getHttpServer())
+      .patch(`/api/students/${studentCardId}/group`)
+      .send({ groupId: assignableGroupId })
+      .expect(401);
+  });
+
+  it.each(['TEACHER', 'INSTRUCTOR', 'STUDENT'] as const)(
+    'PATCH /api/students/:id/group is forbidden for %s',
+    async (role) => {
+      const actor =
+        role === 'TEACHER'
+          ? teacher
+          : role === 'INSTRUCTOR'
+            ? instructor
+            : pupil;
+      const token = signAccessToken(actor.id);
+      const response = await request(app.getHttpServer())
+        .patch(`/api/students/${studentCardId}/group`)
+        .set('Authorization', `Bearer ${token}`)
+        .send({ groupId: assignableGroupId })
+        .expect(403);
+
+      expect(response.body).toMatchObject({
+        statusCode: 403,
+        message: 'Insufficient permissions',
+      });
+      expect(prismaMock.student.update).not.toHaveBeenCalled();
+    },
+  );
+
+  it('PATCH /api/students/:id/group updates groupId for an admin', async () => {
+    mockStudentCard(studentCardRecord());
+    mockAssignableGroup({
+      id: assignableGroupId,
+      organizationId: organization.id,
+      status: 'ACTIVE',
+    });
+
+    const token = signAccessToken(admin.id);
+    const response = await request(app.getHttpServer())
+      .patch(`/api/students/${studentCardId}/group`)
+      .set('Authorization', `Bearer ${token}`)
+      .send({ groupId: assignableGroupId })
+      .expect(200);
+
+    expect(response.body.student).toMatchObject({
+      groupId: assignableGroupId,
+      organizationId: organization.id,
+    });
+    expect(response.body).not.toHaveProperty('passwordHash');
+    expect(prismaMock.student.update).toHaveBeenCalledWith({
+      where: { id: createdStudentProfileId },
+      data: { groupId: assignableGroupId },
+    });
+    expect(prismaMock.enrollment.upsert).toHaveBeenCalledWith({
+      where: {
+        groupId_studentId: {
+          groupId: assignableGroupId,
+          studentId: studentCardId,
+        },
+      },
+      create: {
+        groupId: assignableGroupId,
+        studentId: studentCardId,
+        status: 'ACTIVE',
+      },
+      update: { status: 'ACTIVE' },
+    });
+  });
+
+  it('PATCH /api/students/:id/group rejects a group from another organization', async () => {
+    mockStudentCard(studentCardRecord());
+    mockAssignableGroup({
+      id: assignableGroupId,
+      organizationId: otherOrganizationId,
+      status: 'ACTIVE',
+    });
+
+    const token = signAccessToken(owner.id);
+    const response = await request(app.getHttpServer())
+      .patch(`/api/students/${studentCardId}/group`)
+      .set('Authorization', `Bearer ${token}`)
+      .send({ groupId: assignableGroupId })
+      .expect(404);
+
+    expect(response.body).toMatchObject({
+      statusCode: 404,
+      message: 'Group not found',
+    });
+    expect(prismaMock.student.update).not.toHaveBeenCalled();
+  });
+
+  it('PATCH /api/students/:id/group does not assign a student of another organization', async () => {
+    prismaMock.user.findFirst.mockResolvedValue(null);
+
+    const token = signAccessToken(admin.id);
+    const response = await request(app.getHttpServer())
+      .patch(`/api/students/${foreignStudentId}/group`)
+      .set('Authorization', `Bearer ${token}`)
+      .send({ groupId: assignableGroupId })
+      .expect(404);
+
+    expect(response.body).toMatchObject({
+      statusCode: 404,
+      message: 'Student not found',
+    });
+    expect(prismaMock.student.update).not.toHaveBeenCalled();
+  });
+
+  it('PATCH /api/students/:id/group rejects an archived student', async () => {
+    mockStudentCard(studentCardRecord({ status: 'ARCHIVED' }));
+
+    const token = signAccessToken(admin.id);
+    const response = await request(app.getHttpServer())
+      .patch(`/api/students/${studentCardId}/group`)
+      .set('Authorization', `Bearer ${token}`)
+      .send({ groupId: assignableGroupId })
+      .expect(409);
+
+    expect(response.body).toMatchObject({
+      statusCode: 409,
+      message:
+        'Студента зі статусом ARCHIVED, DROPPED або GRADUATED не можна призначити до групи.',
+    });
+    expect(prismaMock.student.update).not.toHaveBeenCalled();
+  });
+
+  it.each(['ARCHIVED', 'COMPLETED'] as const)(
+    'PATCH /api/students/:id/group rejects a %s group',
+    async (status) => {
+      mockStudentCard(studentCardRecord());
+      mockAssignableGroup({
+        id: assignableGroupId,
+        organizationId: organization.id,
+        status,
+      });
+
+      const token = signAccessToken(admin.id);
+      const response = await request(app.getHttpServer())
+        .patch(`/api/students/${studentCardId}/group`)
+        .set('Authorization', `Bearer ${token}`)
+        .send({ groupId: assignableGroupId })
+        .expect(409);
+
+      expect(response.body).toMatchObject({
+        statusCode: 409,
+        message:
+          'Групу зі статусом ARCHIVED або COMPLETED не можна призначити.',
+      });
+      expect(prismaMock.student.update).not.toHaveBeenCalled();
+    },
+  );
+
+  it('PATCH /api/students/:id/group rejects a dropped or graduated student', async () => {
+    mockStudentCard(studentCardRecord());
+    prismaMock.enrollment.findFirst.mockResolvedValue({
+      id: 'enr-dropped',
+      status: 'DROPPED',
+      groupId: currentGroupId,
+      studentId: studentCardId,
+    });
+
+    const token = signAccessToken(admin.id);
+    const response = await request(app.getHttpServer())
+      .patch(`/api/students/${studentCardId}/group`)
+      .set('Authorization', `Bearer ${token}`)
+      .send({ groupId: assignableGroupId })
+      .expect(409);
+
+    expect(response.body.message).toContain('DROPPED');
+    expect(prismaMock.student.update).not.toHaveBeenCalled();
+  });
+
+  it('PATCH /api/students/:id/group rejects a student already in another active group', async () => {
+    mockStudentCard(studentCardRecord({ groupId: currentGroupId }));
+    mockAssignableGroup({
+      id: assignableGroupId,
+      organizationId: organization.id,
+      status: 'ACTIVE',
+    });
+
+    const token = signAccessToken(admin.id);
+    const response = await request(app.getHttpServer())
+      .patch(`/api/students/${studentCardId}/group`)
+      .set('Authorization', `Bearer ${token}`)
+      .send({ groupId: assignableGroupId })
+      .expect(409);
+
+    expect(response.body).toMatchObject({
+      statusCode: 409,
+      message: 'Студент уже перебуває в іншій активній групі.',
+    });
+    expect(prismaMock.student.update).not.toHaveBeenCalled();
+  });
+
+  it('PATCH /api/students/:id/group rejects an invalid groupId', async () => {
+    const token = signAccessToken(owner.id);
+    const response = await request(app.getHttpServer())
+      .patch(`/api/students/${studentCardId}/group`)
+      .set('Authorization', `Bearer ${token}`)
+      .send({ groupId: 'not-a-uuid' })
+      .expect(400);
+
+    expect(response.body).toMatchObject({
+      statusCode: 400,
+      errors: [{ field: 'groupId', message: 'groupId має бути UUID.' }],
+    });
+    expect(prismaMock.student.update).not.toHaveBeenCalled();
+  });
+
+  it('OpenAPI documents student group assignment', async () => {
+    const response = await request(app.getHttpServer())
+      .get('/api/docs-json')
+      .expect(200);
+
+    const paths = (response.body as { paths: Record<string, unknown> }).paths;
+    const assignment = (paths['/api/students/{id}/group'] ??
+      paths['/students/{id}/group']) as { patch?: unknown } | undefined;
+    expect(assignment?.patch).toBeDefined();
   });
 });

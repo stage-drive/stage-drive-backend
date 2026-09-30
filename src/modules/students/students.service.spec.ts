@@ -4,7 +4,14 @@ import {
   InternalServerErrorException,
   NotFoundException,
 } from '@nestjs/common';
-import { Prisma, User, UserRole, UserStatus } from '@prisma/client';
+import {
+  EnrollmentStatus,
+  GroupStatus,
+  Prisma,
+  User,
+  UserRole,
+  UserStatus,
+} from '@prisma/client';
 import { createHash } from 'crypto';
 import { PrismaService } from '../../prisma/prisma.service';
 import {
@@ -14,9 +21,12 @@ import {
 import { MailService } from '../mail/mail.service';
 import { ListStudentsQueryDto } from './students.dto';
 import {
+  GROUP_NOT_ASSIGNABLE_MESSAGE,
   GROUP_NOT_FOUND_MESSAGE,
   NO_STUDENT_FIELDS_MESSAGE,
+  STUDENT_ACTIVE_GROUP_MESSAGE,
   STUDENT_NOT_FOUND_MESSAGE,
+  STUDENT_TRAINING_STATUS_MESSAGE,
   StudentsService,
 } from './students.service';
 
@@ -78,7 +88,8 @@ describe('StudentsService', () => {
       delete: jest.fn(),
     },
     group: { findUnique: jest.fn() },
-    student: { create: jest.fn() },
+    student: { create: jest.fn(), update: jest.fn() },
+    enrollment: { findFirst: jest.fn(), upsert: jest.fn() },
     invitation: { create: jest.fn() },
     $transaction: jest.fn(),
   };
@@ -839,6 +850,346 @@ describe('StudentsService', () => {
         }),
       ).rejects.toMatchObject({ message: STUDENT_NOT_FOUND_MESSAGE });
       expect(prisma.user.update).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('assignGroup', () => {
+    const targetGroup = {
+      id: 'group-new',
+      organizationId: 'org-1',
+      status: GroupStatus.ACTIVE,
+    };
+
+    function assignRow(
+      overrides: {
+        status?: UserStatus;
+        organizationId?: string;
+        role?: UserRole;
+        deletedAt?: Date | null;
+        studentProfile?: {
+          id: string;
+          userId: string;
+          organizationId: string;
+          groupId: string | null;
+          instructorId: null;
+          carId: null;
+        } | null;
+      } = {},
+    ) {
+      const { studentProfile, ...userOverrides } = overrides;
+      return {
+        ...studentRow(),
+        updatedAt: new Date('2026-02-01T00:00:00.000Z'),
+        studentProfile: {
+          id: 'profile-1',
+          userId: 'student-1',
+          organizationId: 'org-1',
+          groupId: null as string | null,
+          instructorId: null,
+          carId: null,
+        },
+        ...userOverrides,
+        ...(studentProfile !== undefined ? { studentProfile } : {}),
+      };
+    }
+
+    beforeEach(() => {
+      prisma.user.findFirst.mockResolvedValue(assignRow());
+      prisma.group.findUnique.mockResolvedValue(targetGroup);
+      prisma.enrollment.findFirst.mockResolvedValue(null);
+      prisma.student.update.mockImplementation(
+        (args: { data: { groupId: string } }) =>
+          Promise.resolve({
+            id: 'profile-1',
+            userId: 'student-1',
+            organizationId: 'org-1',
+            groupId: args.data.groupId,
+            instructorId: null,
+            carId: null,
+          }),
+      );
+      prisma.enrollment.upsert.mockResolvedValue({});
+    });
+
+    it.each([UserRole.OWNER, UserRole.ADMIN] as const)(
+      'sets groupId and an active enrollment for %s',
+      async (role) => {
+        const result = await service.assignGroup(actor(role), 'student-1', {
+          groupId: 'group-new',
+        });
+
+        expect(result.student?.groupId).toBe('group-new');
+        expect(prisma.student.update).toHaveBeenCalledWith({
+          where: { id: 'profile-1' },
+          data: { groupId: 'group-new' },
+        });
+        expect(prisma.enrollment.upsert).toHaveBeenCalledWith({
+          where: {
+            groupId_studentId: {
+              groupId: 'group-new',
+              studentId: 'student-1',
+            },
+          },
+          create: {
+            groupId: 'group-new',
+            studentId: 'student-1',
+            status: EnrollmentStatus.ACTIVE,
+          },
+          update: { status: EnrollmentStatus.ACTIVE },
+        });
+      },
+    );
+
+    it('assigns a student to a planned group', async () => {
+      prisma.group.findUnique.mockResolvedValue({
+        ...targetGroup,
+        status: GroupStatus.PLANNED,
+      });
+
+      await expect(
+        service.assignGroup(actor(UserRole.ADMIN), 'student-1', {
+          groupId: 'group-new',
+        }),
+      ).resolves.toMatchObject({ student: { groupId: 'group-new' } });
+    });
+
+    it('assigns an invited student who is not in a group yet', async () => {
+      prisma.user.findFirst.mockResolvedValue(
+        assignRow({ status: UserStatus.INVITED }),
+      );
+
+      await expect(
+        service.assignGroup(actor(UserRole.ADMIN), 'student-1', {
+          groupId: 'group-new',
+        }),
+      ).resolves.toMatchObject({
+        status: UserStatus.INVITED,
+        student: { groupId: 'group-new' },
+      });
+    });
+
+    it('allows assigning the same open group again', async () => {
+      prisma.user.findFirst.mockResolvedValue(
+        assignRow({
+          studentProfile: {
+            id: 'profile-1',
+            userId: 'student-1',
+            organizationId: 'org-1',
+            groupId: 'group-new',
+            instructorId: null,
+            carId: null,
+          },
+        }),
+      );
+
+      await expect(
+        service.assignGroup(actor(UserRole.ADMIN), 'student-1', {
+          groupId: 'group-new',
+        }),
+      ).resolves.toMatchObject({ student: { groupId: 'group-new' } });
+      expect(prisma.student.update).toHaveBeenCalled();
+    });
+
+    it.each([UserRole.TEACHER, UserRole.INSTRUCTOR, UserRole.STUDENT] as const)(
+      'rejects %s before reading the student',
+      async (role) => {
+        await expect(
+          service.assignGroup(actor(role), 'student-1', {
+            groupId: 'group-new',
+          }),
+        ).rejects.toBeInstanceOf(ForbiddenException);
+        expect(prisma.organization.findUnique).not.toHaveBeenCalled();
+        expect(prisma.student.update).not.toHaveBeenCalled();
+      },
+    );
+
+    it('returns 404 when the student does not exist', async () => {
+      prisma.user.findFirst.mockResolvedValue(null);
+
+      await expect(
+        service.assignGroup(actor(UserRole.ADMIN), 'missing', {
+          groupId: 'group-new',
+        }),
+      ).rejects.toMatchObject({ message: STUDENT_NOT_FOUND_MESSAGE });
+      expect(prisma.student.update).not.toHaveBeenCalled();
+    });
+
+    it('returns 404 when the student belongs to another organization', async () => {
+      prisma.user.findFirst.mockResolvedValue(assignRow());
+
+      await expect(
+        service.assignGroup(actor(UserRole.ADMIN, 'org-2'), 'student-1', {
+          groupId: 'group-new',
+        }),
+      ).rejects.toBeInstanceOf(NotFoundException);
+      expect(prisma.student.update).not.toHaveBeenCalled();
+    });
+
+    it('returns 404 when the student profile is missing', async () => {
+      prisma.user.findFirst.mockResolvedValue(
+        assignRow({ studentProfile: null }),
+      );
+
+      await expect(
+        service.assignGroup(actor(UserRole.ADMIN), 'student-1', {
+          groupId: 'group-new',
+        }),
+      ).rejects.toMatchObject({ message: STUDENT_NOT_FOUND_MESSAGE });
+      expect(prisma.group.findUnique).not.toHaveBeenCalled();
+    });
+
+    it('returns 404 when the group is missing or belongs to another organization', async () => {
+      prisma.group.findUnique.mockResolvedValue({
+        id: 'group-new',
+        organizationId: 'org-2',
+        status: GroupStatus.ACTIVE,
+      });
+
+      await expect(
+        service.assignGroup(actor(UserRole.OWNER), 'student-1', {
+          groupId: 'group-new',
+        }),
+      ).rejects.toMatchObject({ message: GROUP_NOT_FOUND_MESSAGE });
+      expect(prisma.student.update).not.toHaveBeenCalled();
+    });
+
+    it.each([GroupStatus.ARCHIVED, GroupStatus.COMPLETED] as const)(
+      'rejects a %s group',
+      async (status) => {
+        prisma.group.findUnique.mockResolvedValue({
+          ...targetGroup,
+          status,
+        });
+
+        await expect(
+          service.assignGroup(actor(UserRole.ADMIN), 'student-1', {
+            groupId: 'group-new',
+          }),
+        ).rejects.toMatchObject({ message: GROUP_NOT_ASSIGNABLE_MESSAGE });
+        expect(prisma.student.update).not.toHaveBeenCalled();
+      },
+    );
+
+    it('rejects an archived student', async () => {
+      prisma.user.findFirst.mockResolvedValue(
+        assignRow({ status: UserStatus.ARCHIVED }),
+      );
+
+      await expect(
+        service.assignGroup(actor(UserRole.ADMIN), 'student-1', {
+          groupId: 'group-new',
+        }),
+      ).rejects.toMatchObject({ message: STUDENT_TRAINING_STATUS_MESSAGE });
+      expect(prisma.student.update).not.toHaveBeenCalled();
+    });
+
+    it.each([EnrollmentStatus.DROPPED, EnrollmentStatus.COMPLETED] as const)(
+      'rejects a student with a %s enrollment',
+      async (status) => {
+        prisma.enrollment.findFirst.mockResolvedValue({
+          id: 'enr-1',
+          status,
+          groupId: 'group-old',
+          studentId: 'student-1',
+        });
+
+        await expect(
+          service.assignGroup(actor(UserRole.ADMIN), 'student-1', {
+            groupId: 'group-new',
+          }),
+        ).rejects.toMatchObject({ message: STUDENT_TRAINING_STATUS_MESSAGE });
+        expect(prisma.student.update).not.toHaveBeenCalled();
+      },
+    );
+
+    it('rejects a student who is already in another open group', async () => {
+      prisma.user.findFirst.mockResolvedValue(
+        assignRow({
+          studentProfile: {
+            id: 'profile-1',
+            userId: 'student-1',
+            organizationId: 'org-1',
+            groupId: 'group-current',
+            instructorId: null,
+            carId: null,
+          },
+        }),
+      );
+      prisma.group.findUnique.mockImplementation(
+        (args: { where: { id: string } }) => {
+          if (args.where.id === 'group-current') {
+            return Promise.resolve({
+              id: 'group-current',
+              organizationId: 'org-1',
+              status: GroupStatus.ACTIVE,
+            });
+          }
+          return Promise.resolve(targetGroup);
+        },
+      );
+
+      await expect(
+        service.assignGroup(actor(UserRole.ADMIN), 'student-1', {
+          groupId: 'group-new',
+        }),
+      ).rejects.toMatchObject({ message: STUDENT_ACTIVE_GROUP_MESSAGE });
+      expect(prisma.student.update).not.toHaveBeenCalled();
+    });
+
+    it('rejects a student with an active enrollment in another group', async () => {
+      prisma.enrollment.findFirst.mockImplementation(
+        (args: { where: { status?: EnrollmentStatus | { in?: unknown } } }) => {
+          if (args.where.status === EnrollmentStatus.ACTIVE) {
+            return Promise.resolve({
+              id: 'enr-active',
+              status: EnrollmentStatus.ACTIVE,
+              groupId: 'group-current',
+              studentId: 'student-1',
+            });
+          }
+          return Promise.resolve(null);
+        },
+      );
+
+      await expect(
+        service.assignGroup(actor(UserRole.ADMIN), 'student-1', {
+          groupId: 'group-new',
+        }),
+      ).rejects.toMatchObject({ message: STUDENT_ACTIVE_GROUP_MESSAGE });
+      expect(prisma.student.update).not.toHaveBeenCalled();
+    });
+
+    it('moves a student whose current group is already completed', async () => {
+      prisma.user.findFirst.mockResolvedValue(
+        assignRow({
+          studentProfile: {
+            id: 'profile-1',
+            userId: 'student-1',
+            organizationId: 'org-1',
+            groupId: 'group-old',
+            instructorId: null,
+            carId: null,
+          },
+        }),
+      );
+      prisma.group.findUnique.mockImplementation(
+        (args: { where: { id: string } }) => {
+          if (args.where.id === 'group-old') {
+            return Promise.resolve({
+              id: 'group-old',
+              organizationId: 'org-1',
+              status: GroupStatus.COMPLETED,
+            });
+          }
+          return Promise.resolve(targetGroup);
+        },
+      );
+
+      await expect(
+        service.assignGroup(actor(UserRole.ADMIN), 'student-1', {
+          groupId: 'group-new',
+        }),
+      ).resolves.toMatchObject({ student: { groupId: 'group-new' } });
     });
   });
 });
