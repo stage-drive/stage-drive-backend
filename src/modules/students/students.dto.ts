@@ -1,16 +1,21 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
-import { UserRole, UserStatus } from '@prisma/client';
+import { InvitationStatus, UserRole, UserStatus } from '@prisma/client';
 import { Transform } from 'class-transformer';
 import {
+  IsEmail,
   IsEnum,
   IsIn,
   IsInt,
+  IsNotEmpty,
   IsOptional,
   IsString,
+  IsUUID,
+  Matches,
   Max,
   MaxLength,
   Min,
 } from 'class-validator';
+import { IsPlainText } from '../../common/validators/plain-text.decorator';
 
 export const STUDENT_SORT_FIELDS = [
   'firstName',
@@ -28,6 +33,9 @@ export const SORT_ORDERS = ['asc', 'desc'] as const;
 export type StudentSortOrder = (typeof SORT_ORDERS)[number];
 
 const SEARCH_MAX_LENGTH = 100;
+const PHONE_REGEX = /^\+?[0-9\s-]{7,20}$/;
+const REQUIRED_FIELD_MESSAGE = "Заповніть обов'язкове поле.";
+const INVALID_EMAIL_MESSAGE = 'Введіть коректний email.';
 const DEFAULT_PAGE = 1;
 const DEFAULT_LIMIT = 20;
 const MAX_PAGE = 10_000;
@@ -178,4 +186,135 @@ export class StudentListDto {
 
   @ApiProperty({ type: StudentListPaginationDto })
   pagination: StudentListPaginationDto;
+}
+
+export class CreateStudentDto {
+  @ApiProperty({ example: 'Олена' })
+  @MaxLength(60)
+  @IsPlainText()
+  @IsString()
+  @IsNotEmpty({ message: REQUIRED_FIELD_MESSAGE })
+  firstName: string;
+
+  @ApiProperty({ example: 'Коваль' })
+  @MaxLength(60)
+  @IsPlainText()
+  @IsString()
+  @IsNotEmpty({ message: REQUIRED_FIELD_MESSAGE })
+  lastName: string;
+
+  @ApiProperty({ example: 'student@example.com' })
+  @IsEmail({}, { message: INVALID_EMAIL_MESSAGE })
+  @IsNotEmpty({ message: REQUIRED_FIELD_MESSAGE })
+  email: string;
+
+  @ApiPropertyOptional({
+    example: '+380991234567',
+    nullable: true,
+  })
+  @Matches(PHONE_REGEX, { message: 'Введіть коректний номер телефону.' })
+  @IsString()
+  @IsOptional()
+  phone?: string;
+
+  @ApiPropertyOptional({
+    description:
+      'Група своєї автошколи. Якщо поле не передати, учень створюється без групи.',
+    example: 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',
+  })
+  @IsUUID('4', { message: 'groupId має бути UUID.' })
+  @IsOptional()
+  groupId?: string;
+}
+
+export class CreatedStudentUserDto {
+  @ApiProperty({ example: '77777777-7777-7777-7777-777777777777' })
+  id: string;
+
+  @ApiProperty({ example: 'Олена' })
+  firstName: string;
+
+  @ApiProperty({ example: 'Коваль' })
+  lastName: string;
+
+  @ApiProperty({ example: 'student@example.com' })
+  email: string;
+
+  @ApiPropertyOptional({ nullable: true, type: String })
+  phone: string | null;
+
+  @ApiProperty({ enum: UserRole, example: UserRole.STUDENT })
+  role: UserRole;
+
+  @ApiProperty({ enum: UserStatus, example: UserStatus.INVITED })
+  status: UserStatus;
+
+  @ApiProperty({ example: '11111111-1111-1111-1111-111111111111' })
+  organizationId: string;
+}
+
+export class StudentProfileDto {
+  @ApiProperty({ example: '12121212-1212-1212-1212-121212121212' })
+  id: string;
+
+  @ApiProperty({ example: '77777777-7777-7777-7777-777777777777' })
+  userId: string;
+
+  @ApiProperty({ example: '11111111-1111-1111-1111-111111111111' })
+  organizationId: string;
+
+  @ApiPropertyOptional({
+    nullable: true,
+    type: String,
+    example: 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',
+  })
+  groupId: string | null;
+
+  @ApiPropertyOptional({
+    nullable: true,
+    type: String,
+    description: 'При створенні завжди null.',
+  })
+  instructorId: string | null;
+
+  @ApiPropertyOptional({
+    nullable: true,
+    type: String,
+    description: 'При створенні завжди null.',
+  })
+  carId: string | null;
+}
+
+export class CreatedStudentInvitationDto {
+  @ApiProperty({ example: '44444444-4444-4444-4444-444444444444' })
+  id: string;
+
+  @ApiProperty({ example: 'student@example.com' })
+  email: string;
+
+  @ApiProperty({ enum: UserRole, example: UserRole.STUDENT })
+  role: UserRole;
+
+  @ApiProperty({ enum: InvitationStatus, example: InvitationStatus.PENDING })
+  status: InvitationStatus;
+
+  @ApiProperty()
+  expiresAt: Date;
+
+  @ApiProperty({ example: '77777777-7777-7777-7777-777777777777' })
+  userId: string;
+
+  @ApiProperty({ example: '11111111-1111-1111-1111-111111111111' })
+  organizationId: string;
+}
+
+export class CreateStudentResponseDto {
+  @ApiProperty({ type: CreatedStudentUserDto })
+  user: CreatedStudentUserDto;
+
+  @ApiProperty({ type: StudentProfileDto })
+  student: StudentProfileDto;
+
+  @ApiProperty({ type: CreatedStudentInvitationDto })
+  invitation: CreatedStudentInvitationDto;
 }

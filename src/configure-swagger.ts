@@ -9,7 +9,7 @@ export function configureSwagger(app: INestApplication) {
     .addTag('auth')
     .addTag('invitations', 'Запрошення та активація акаунта')
     .addTag('dashboard', 'Дані Owner і Admin Dashboard')
-    .addTag('students', 'Список студентів автошколи')
+    .addTag('students', 'Студенти автошколи')
     .addBearerAuth()
     .build();
 
