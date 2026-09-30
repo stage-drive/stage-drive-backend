@@ -202,6 +202,7 @@ describe('API (e2e)', () => {
     enrollment: {
       findFirst: jest.fn(),
       upsert: jest.fn(),
+      updateMany: jest.fn(),
     },
     refreshToken: {
       create: jest.fn(),
@@ -262,7 +263,9 @@ describe('API (e2e)', () => {
     prismaMock.student.create.mockReset();
     prismaMock.student.update.mockReset();
     prismaMock.student.update.mockImplementation(
-      (args: { data: { groupId?: string | null } }) =>
+      (args: {
+        data: { groupId?: string | null; trainingStatus?: string };
+      }) =>
         Promise.resolve({
           id: '12121212-1212-1212-1212-121212121212',
           userId: '77777777-7777-7777-7777-777777777777',
@@ -270,12 +273,15 @@ describe('API (e2e)', () => {
           groupId: args.data.groupId ?? null,
           instructorId: null,
           carId: null,
+          trainingStatus: args.data.trainingStatus ?? 'ACTIVE',
         }),
     );
     prismaMock.enrollment.findFirst.mockReset();
     prismaMock.enrollment.findFirst.mockResolvedValue(null);
     prismaMock.enrollment.upsert.mockReset();
     prismaMock.enrollment.upsert.mockResolvedValue({});
+    prismaMock.enrollment.updateMany.mockReset();
+    prismaMock.enrollment.updateMany.mockResolvedValue({ count: 0 });
     prismaMock.refreshToken.create.mockReset();
     prismaMock.refreshToken.create.mockResolvedValue({});
     prismaMock.refreshToken.updateMany.mockReset();
@@ -392,6 +398,7 @@ describe('API (e2e)', () => {
           groupId: string | null;
           instructorId: string | null;
           carId: string | null;
+          trainingStatus?: string;
         };
       }) =>
         Promise.resolve({
@@ -401,6 +408,7 @@ describe('API (e2e)', () => {
           groupId: args.data.groupId,
           instructorId: args.data.instructorId,
           carId: args.data.carId,
+          trainingStatus: args.data.trainingStatus ?? 'INVITED',
         }),
     );
     prismaMock.refreshToken.updateMany.mockResolvedValue({ count: 0 });
@@ -2166,6 +2174,7 @@ describe('API (e2e)', () => {
         groupId: null,
         instructorId: null,
         carId: null,
+        trainingStatus: 'INVITED',
       },
       invitation: {
         id: createdInvitation.id,
@@ -2194,6 +2203,7 @@ describe('API (e2e)', () => {
         groupId: null,
         instructorId: null,
         carId: null,
+        trainingStatus: 'INVITED',
       },
     });
     expect(mailServiceMock.sendEmail).toHaveBeenCalledWith(
@@ -2312,6 +2322,12 @@ describe('API (e2e)', () => {
       deletedAt?: Date | null;
       status?: 'INVITED' | 'ACTIVE' | 'BLOCKED' | 'ARCHIVED';
       groupId?: string | null;
+      trainingStatus?:
+        | 'INVITED'
+        | 'ACTIVE'
+        | 'GRADUATED'
+        | 'DROPPED'
+        | 'ARCHIVED';
     } = {},
   ) {
     const id = overrides.id ?? studentCardId;
@@ -2336,6 +2352,7 @@ describe('API (e2e)', () => {
         groupId: overrides.groupId ?? null,
         instructorId: null,
         carId: null,
+        trainingStatus: overrides.trainingStatus ?? 'ACTIVE',
       },
     };
   }
@@ -2433,6 +2450,7 @@ describe('API (e2e)', () => {
           groupId: null,
           instructorId: null,
           carId: null,
+          trainingStatus: 'ACTIVE',
         },
       });
       expect(response.body).not.toHaveProperty('passwordHash');
@@ -2895,5 +2913,147 @@ describe('API (e2e)', () => {
     const assignment = (paths['/api/students/{id}/group'] ??
       paths['/students/{id}/group']) as { patch?: unknown } | undefined;
     expect(assignment?.patch).toBeDefined();
+  });
+
+  it('PATCH /api/students/:id/status without token returns 401', () => {
+    return request(app.getHttpServer())
+      .patch(`/api/students/${studentCardId}/status`)
+      .send({ status: 'GRADUATED' })
+      .expect(401);
+  });
+
+  it.each(['OWNER', 'TEACHER', 'INSTRUCTOR', 'STUDENT'] as const)(
+    'PATCH /api/students/:id/status is forbidden for %s',
+    async (role) => {
+      const actor =
+        role === 'OWNER'
+          ? owner
+          : role === 'TEACHER'
+            ? teacher
+            : role === 'INSTRUCTOR'
+              ? instructor
+              : pupil;
+      const token = signAccessToken(actor.id);
+      const response = await request(app.getHttpServer())
+        .patch(`/api/students/${studentCardId}/status`)
+        .set('Authorization', `Bearer ${token}`)
+        .send({ status: 'GRADUATED' })
+        .expect(403);
+
+      expect(response.body).toMatchObject({
+        statusCode: 403,
+        message: 'Insufficient permissions',
+      });
+      expect(prismaMock.student.update).not.toHaveBeenCalled();
+    },
+  );
+
+  it('PATCH /api/students/:id/status stores an allowed transition for ADMIN', async () => {
+    mockStudentCard(studentCardRecord({ trainingStatus: 'ACTIVE' }));
+
+    const token = signAccessToken(admin.id);
+    const response = await request(app.getHttpServer())
+      .patch(`/api/students/${studentCardId}/status`)
+      .set('Authorization', `Bearer ${token}`)
+      .send({ status: 'GRADUATED' })
+      .expect(200);
+
+    expect(response.body).toMatchObject({
+      id: studentCardId,
+      role: 'STUDENT',
+      status: 'ACTIVE',
+      organizationId: organization.id,
+      student: {
+        id: createdStudentProfileId,
+        trainingStatus: 'GRADUATED',
+      },
+    });
+    expect(response.body).not.toHaveProperty('passwordHash');
+    expect(prismaMock.student.update).toHaveBeenCalledWith({
+      where: { id: createdStudentProfileId },
+      data: { trainingStatus: 'GRADUATED' },
+    });
+    expect(prismaMock.enrollment.updateMany).toHaveBeenCalledWith({
+      where: {
+        studentId: studentCardId,
+        status: 'ACTIVE',
+        group: { organizationId: organization.id },
+      },
+      data: { status: 'COMPLETED' },
+    });
+  });
+
+  it('PATCH /api/students/:id/status rejects a forbidden transition', async () => {
+    mockStudentCard(studentCardRecord({ trainingStatus: 'ARCHIVED' }));
+
+    const token = signAccessToken(admin.id);
+    const response = await request(app.getHttpServer())
+      .patch(`/api/students/${studentCardId}/status`)
+      .set('Authorization', `Bearer ${token}`)
+      .send({ status: 'ACTIVE' })
+      .expect(409);
+
+    expect(response.body.message).toContain('ARCHIVED → ACTIVE');
+    expect(prismaMock.student.update).not.toHaveBeenCalled();
+  });
+
+  it('PATCH /api/students/:id/status does not change a student of another organization', async () => {
+    prismaMock.user.findFirst.mockResolvedValue(null);
+
+    const token = signAccessToken(admin.id);
+    const response = await request(app.getHttpServer())
+      .patch(`/api/students/${foreignStudentId}/status`)
+      .set('Authorization', `Bearer ${token}`)
+      .send({ status: 'ARCHIVED' })
+      .expect(404);
+
+    expect(response.body).toMatchObject({
+      statusCode: 404,
+      message: 'Student not found',
+    });
+    expect(prismaMock.student.update).not.toHaveBeenCalled();
+  });
+
+  it('PATCH /api/students/:id/status returns 404 when the organization is deleted', async () => {
+    prismaMock.organization.findUnique.mockResolvedValue({
+      ...organization,
+      deletedAt: new Date(),
+    });
+
+    const token = signAccessToken(admin.id);
+    const response = await request(app.getHttpServer())
+      .patch(`/api/students/${studentCardId}/status`)
+      .set('Authorization', `Bearer ${token}`)
+      .send({ status: 'ARCHIVED' })
+      .expect(404);
+
+    expect(response.body).toMatchObject({
+      statusCode: 404,
+      message: 'Organization not found',
+    });
+    expect(prismaMock.user.findFirst).not.toHaveBeenCalled();
+  });
+
+  it('PATCH /api/students/:id/status rejects an unknown status', async () => {
+    const token = signAccessToken(admin.id);
+    const response = await request(app.getHttpServer())
+      .patch(`/api/students/${studentCardId}/status`)
+      .set('Authorization', `Bearer ${token}`)
+      .send({ status: 'BLOCKED' })
+      .expect(400);
+
+    expect(response.body).toMatchObject({ statusCode: 400 });
+    expect(prismaMock.student.update).not.toHaveBeenCalled();
+  });
+
+  it('OpenAPI documents student training status changes', async () => {
+    const response = await request(app.getHttpServer())
+      .get('/api/docs-json')
+      .expect(200);
+
+    const paths = (response.body as { paths: Record<string, unknown> }).paths;
+    const status = (paths['/api/students/{id}/status'] ??
+      paths['/students/{id}/status']) as { patch?: unknown } | undefined;
+    expect(status?.patch).toBeDefined();
   });
 });

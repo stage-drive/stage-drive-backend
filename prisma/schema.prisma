@@ -49,6 +49,15 @@ enum EnrollmentStatus {
   DROPPED
 }
 
+/// Навчальний статус учня. Не плутати з UserStatus (обліковий доступ).
+enum TrainingStatus {
+  INVITED
+  ACTIVE
+  GRADUATED
+  DROPPED
+  ARCHIVED
+}
+
 enum LessonStatus {
   SCHEDULED
   COMPLETED
@@ -235,9 +244,10 @@ model Student {
   groupId        String?      @map("group_id") @db.Uuid
   group          Group?       @relation(fields: [groupId], references: [id], onDelete: SetNull)
   instructorId   String?      @map("instructor_id") @db.Uuid
-  instructor     User?        @relation("StudentInstructor", fields: [instructorId], references: [id], onDelete: SetNull)
+  instructor     User?          @relation("StudentInstructor", fields: [instructorId], references: [id], onDelete: SetNull)
   /// Довідника авто ще немає, тому поле без зовнішнього ключа і при створенні лишається null.
-  carId          String?      @map("car_id") @db.Uuid
+  carId          String?        @map("car_id") @db.Uuid
+  trainingStatus TrainingStatus @default(INVITED) @map("training_status")
   createdAt      DateTime     @default(now()) @map("created_at")
   updatedAt      DateTime     @updatedAt @map("updated_at")
 

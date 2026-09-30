@@ -2,12 +2,14 @@ import {
   ConflictException,
   ForbiddenException,
   InternalServerErrorException,
+  Logger,
   NotFoundException,
 } from '@nestjs/common';
 import {
   EnrollmentStatus,
   GroupStatus,
   Prisma,
+  TrainingStatus,
   User,
   UserRole,
   UserStatus,
@@ -27,6 +29,7 @@ import {
   STUDENT_ACTIVE_GROUP_MESSAGE,
   STUDENT_NOT_FOUND_MESSAGE,
   STUDENT_TRAINING_STATUS_MESSAGE,
+  TRAINING_STATUS_TRANSITION_MESSAGE,
   StudentsService,
 } from './students.service';
 
@@ -89,7 +92,11 @@ describe('StudentsService', () => {
     },
     group: { findUnique: jest.fn() },
     student: { create: jest.fn(), update: jest.fn() },
-    enrollment: { findFirst: jest.fn(), upsert: jest.fn() },
+    enrollment: {
+      findFirst: jest.fn(),
+      upsert: jest.fn(),
+      updateMany: jest.fn(),
+    },
     invitation: { create: jest.fn() },
     $transaction: jest.fn(),
   };
@@ -361,6 +368,7 @@ describe('StudentsService', () => {
       groupId: null as string | null,
       instructorId: null,
       carId: null,
+      trainingStatus: TrainingStatus.INVITED,
     };
 
     const createdInvitation = {
@@ -409,6 +417,7 @@ describe('StudentsService', () => {
           groupId: null,
           instructorId: null,
           carId: null,
+          trainingStatus: TrainingStatus.INVITED,
         },
       });
       expect(prisma.invitation.create).toHaveBeenCalledWith({
@@ -439,6 +448,7 @@ describe('StudentsService', () => {
           groupId: null,
           instructorId: null,
           carId: null,
+          trainingStatus: TrainingStatus.INVITED,
         },
         invitation: {
           id: 'invite-1',
@@ -614,6 +624,7 @@ describe('StudentsService', () => {
       groupId: 'group-1' as string | null,
       instructorId: null,
       carId: null,
+      trainingStatus: TrainingStatus.ACTIVE,
     };
 
     function cardRow(
@@ -873,6 +884,7 @@ describe('StudentsService', () => {
           groupId: string | null;
           instructorId: null;
           carId: null;
+          trainingStatus?: TrainingStatus;
         } | null;
       } = {},
     ) {
@@ -887,6 +899,7 @@ describe('StudentsService', () => {
           groupId: null as string | null,
           instructorId: null,
           carId: null,
+          trainingStatus: TrainingStatus.ACTIVE,
         },
         ...userOverrides,
         ...(studentProfile !== undefined ? { studentProfile } : {}),
@@ -1190,6 +1203,169 @@ describe('StudentsService', () => {
           groupId: 'group-new',
         }),
       ).resolves.toMatchObject({ student: { groupId: 'group-new' } });
+    });
+
+    it('rejects a student whose training status is already terminal', async () => {
+      prisma.user.findFirst.mockResolvedValue(
+        assignRow({
+          studentProfile: {
+            id: 'profile-1',
+            userId: 'student-1',
+            organizationId: 'org-1',
+            groupId: null,
+            instructorId: null,
+            carId: null,
+            trainingStatus: TrainingStatus.DROPPED,
+          },
+        }),
+      );
+
+      await expect(
+        service.assignGroup(actor(UserRole.ADMIN), 'student-1', {
+          groupId: 'group-new',
+        }),
+      ).rejects.toMatchObject({ message: STUDENT_TRAINING_STATUS_MESSAGE });
+      expect(prisma.student.update).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('changeTrainingStatus', () => {
+    const profile = {
+      id: 'profile-1',
+      userId: 'student-1',
+      organizationId: 'org-1',
+      groupId: null as string | null,
+      instructorId: null,
+      carId: null,
+      trainingStatus: TrainingStatus.ACTIVE,
+    };
+
+    function statusRow(
+      trainingStatus: TrainingStatus = TrainingStatus.ACTIVE,
+    ) {
+      return {
+        ...studentRow(),
+        updatedAt: new Date('2026-02-01T00:00:00.000Z'),
+        studentProfile: { ...profile, trainingStatus },
+      };
+    }
+
+    beforeEach(() => {
+      prisma.user.findFirst.mockResolvedValue(statusRow());
+      prisma.student.update.mockImplementation(
+        (args: { data: { trainingStatus: TrainingStatus } }) =>
+          Promise.resolve({
+            ...profile,
+            trainingStatus: args.data.trainingStatus,
+          }),
+      );
+      prisma.enrollment.updateMany.mockResolvedValue({ count: 1 });
+      jest.spyOn(Logger.prototype, 'log').mockImplementation(() => undefined);
+    });
+
+    afterEach(() => {
+      jest.restoreAllMocks();
+    });
+
+    it('rejects roles other than ADMIN before reading the student', async () => {
+      await expect(
+        service.changeTrainingStatus(actor(UserRole.OWNER), 'student-1', {
+          status: TrainingStatus.GRADUATED,
+        }),
+      ).rejects.toBeInstanceOf(ForbiddenException);
+      expect(prisma.user.findFirst).not.toHaveBeenCalled();
+    });
+
+    it('stores an allowed transition and returns the current student', async () => {
+      const result = await service.changeTrainingStatus(
+        actor(UserRole.ADMIN),
+        'student-1',
+        { status: TrainingStatus.GRADUATED },
+      );
+
+      expect(prisma.student.update).toHaveBeenCalledWith({
+        where: { id: 'profile-1' },
+        data: { trainingStatus: TrainingStatus.GRADUATED },
+      });
+      expect(prisma.enrollment.updateMany).toHaveBeenCalledWith({
+        where: {
+          studentId: 'student-1',
+          status: EnrollmentStatus.ACTIVE,
+          group: { organizationId: 'org-1' },
+        },
+        data: { status: EnrollmentStatus.COMPLETED },
+      });
+      expect(result).toMatchObject({
+        id: 'student-1',
+        role: UserRole.STUDENT,
+        status: UserStatus.ACTIVE,
+        organizationId: 'org-1',
+        student: { trainingStatus: TrainingStatus.GRADUATED },
+      });
+      expect(Logger.prototype.log).toHaveBeenCalledWith(
+        'Student training status changed studentId=student-1 from=ACTIVE to=GRADUATED actorId=admin-1 organizationId=org-1',
+      );
+    });
+
+    it('closes active enrollments as DROPPED when the student is expelled', async () => {
+      await service.changeTrainingStatus(actor(UserRole.ADMIN), 'student-1', {
+        status: TrainingStatus.DROPPED,
+      });
+
+      expect(prisma.enrollment.updateMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: { status: EnrollmentStatus.DROPPED },
+        }),
+      );
+    });
+
+    it('does not touch enrollments when archiving an active student', async () => {
+      await service.changeTrainingStatus(actor(UserRole.ADMIN), 'student-1', {
+        status: TrainingStatus.ARCHIVED,
+      });
+
+      expect(prisma.enrollment.updateMany).not.toHaveBeenCalled();
+    });
+
+    it('rejects a transition that is not allowed', async () => {
+      prisma.user.findFirst.mockResolvedValue(
+        statusRow(TrainingStatus.GRADUATED),
+      );
+
+      await expect(
+        service.changeTrainingStatus(actor(UserRole.ADMIN), 'student-1', {
+          status: TrainingStatus.ACTIVE,
+        }),
+      ).rejects.toMatchObject({
+        message: `${TRAINING_STATUS_TRANSITION_MESSAGE} GRADUATED → ACTIVE.`,
+      });
+      expect(prisma.student.update).not.toHaveBeenCalled();
+      expect(Logger.prototype.log).not.toHaveBeenCalled();
+    });
+
+    it('does not change a student of another organization', async () => {
+      prisma.user.findFirst.mockResolvedValue(null);
+
+      await expect(
+        service.changeTrainingStatus(actor(UserRole.ADMIN, 'org-2'), 'student-1', {
+          status: TrainingStatus.ARCHIVED,
+        }),
+      ).rejects.toMatchObject({ message: STUDENT_NOT_FOUND_MESSAGE });
+      expect(prisma.student.update).not.toHaveBeenCalled();
+    });
+
+    it('returns 404 when the organization is deleted', async () => {
+      prisma.organization.findUnique.mockResolvedValue({
+        ...organization,
+        deletedAt: new Date('2026-03-01T00:00:00.000Z'),
+      });
+
+      await expect(
+        service.changeTrainingStatus(actor(UserRole.ADMIN), 'student-1', {
+          status: TrainingStatus.ARCHIVED,
+        }),
+      ).rejects.toBeInstanceOf(NotFoundException);
+      expect(prisma.user.findFirst).not.toHaveBeenCalled();
     });
   });
 });
