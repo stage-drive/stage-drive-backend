@@ -640,6 +640,9 @@ async function main() {
     'PATCH /api/students/{id}/practice-access — only ADMIN. Body: { "instructorId", "carId" }.',
   );
   console.log(
+    `DELETE /api/students/{id} — OWNER or ADMIN. Archives student ${DEMO_STUDENT_EMAIL} without deleting the row. id=${activeStudent.id}`,
+  );
+  console.log(
     `  eligible student (ACTIVE, category B, MANUAL): ${DEMO_STUDENT_EMAIL} id=${activeStudent.id}`,
   );
   console.log(

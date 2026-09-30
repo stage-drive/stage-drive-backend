@@ -34,6 +34,7 @@ import {
   INSTRUCTOR_ROLE_MESSAGE,
   NO_STUDENT_FIELDS_MESSAGE,
   STUDENT_ACTIVE_GROUP_MESSAGE,
+  ARCHIVED_STUDENT_BOOKING_MESSAGE,
   STUDENT_NOT_FOUND_MESSAGE,
   STUDENT_PRACTICE_ACCESS_MESSAGE,
   STUDENT_TRAINING_STATUS_MESSAGE,
@@ -99,12 +100,13 @@ describe('StudentsService', () => {
       delete: jest.fn(),
     },
     group: { findUnique: jest.fn() },
-    student: { create: jest.fn(), update: jest.fn() },
+    student: { create: jest.fn(), update: jest.fn(), delete: jest.fn() },
     car: { findUnique: jest.fn() },
     enrollment: {
       findFirst: jest.fn(),
       upsert: jest.fn(),
       updateMany: jest.fn(),
+      deleteMany: jest.fn(),
     },
     invitation: { create: jest.fn() },
     $transaction: jest.fn(),
@@ -1573,7 +1575,6 @@ describe('StudentsService', () => {
       TrainingStatus.INVITED,
       TrainingStatus.GRADUATED,
       TrainingStatus.DROPPED,
-      TrainingStatus.ARCHIVED,
     ])('rejects training status %s', async (trainingStatus) => {
       prisma.user.findFirst.mockResolvedValue(
         practiceRow({
@@ -1589,6 +1590,28 @@ describe('StudentsService', () => {
         ),
       ).rejects.toMatchObject({ message: STUDENT_PRACTICE_ACCESS_MESSAGE });
       expect(prisma.student.update).not.toHaveBeenCalled();
+    });
+
+    it('rejects a new practice booking for an archived student', async () => {
+      prisma.user.findFirst.mockResolvedValue(
+        practiceRow({
+          status: UserStatus.ARCHIVED,
+          studentProfile: {
+            ...profile,
+            trainingStatus: TrainingStatus.ARCHIVED,
+          },
+        }),
+      );
+
+      await expect(
+        service.grantPracticeAccess(
+          actor(UserRole.ADMIN),
+          'student-1',
+          payload,
+        ),
+      ).rejects.toMatchObject({ message: ARCHIVED_STUDENT_BOOKING_MESSAGE });
+      expect(prisma.student.update).not.toHaveBeenCalled();
+      expect(prisma.user.update).not.toHaveBeenCalled();
     });
 
     it('rejects a blocked account', async () => {
@@ -1710,6 +1733,112 @@ describe('StudentsService', () => {
         ),
       ).rejects.toMatchObject({ message: INSTRUCTOR_CAR_MISMATCH_MESSAGE });
       expect(prisma.student.update).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('archive', () => {
+    const profile = {
+      id: 'profile-1',
+      userId: 'student-1',
+      organizationId: 'org-1',
+      groupId: 'group-1' as string | null,
+      instructorId: 'instructor-1' as string | null,
+      carId: 'car-1' as string | null,
+      category: LicenseCategory.B as LicenseCategory | null,
+      transmission: Transmission.MANUAL as Transmission | null,
+      trainingStatus: TrainingStatus.PRACTICE as TrainingStatus,
+    };
+
+    function archiveRow() {
+      return {
+        ...studentRow(),
+        updatedAt: new Date('2026-02-01T00:00:00.000Z'),
+        studentProfile: { ...profile },
+      };
+    }
+
+    beforeEach(() => {
+      prisma.user.findFirst.mockResolvedValue(archiveRow());
+      prisma.student.update.mockImplementation(
+        (args: { data: { trainingStatus: TrainingStatus } }) =>
+          Promise.resolve({
+            ...profile,
+            trainingStatus: args.data.trainingStatus,
+          }),
+      );
+      jest.spyOn(Logger.prototype, 'log').mockImplementation(() => undefined);
+    });
+
+    afterEach(() => {
+      jest.restoreAllMocks();
+    });
+
+    it.each([
+      UserRole.TEACHER,
+      UserRole.INSTRUCTOR,
+      UserRole.STUDENT,
+    ] as const)('rejects %s before reading the student', async (role) => {
+      await expect(
+        service.archive(actor(role), 'student-1'),
+      ).rejects.toBeInstanceOf(ForbiddenException);
+      expect(prisma.user.findFirst).not.toHaveBeenCalled();
+      expect(prisma.user.update).not.toHaveBeenCalled();
+    });
+
+    it.each([UserRole.OWNER, UserRole.ADMIN] as const)(
+      'archives the student for %s without deleting history',
+      async (role) => {
+        const result = await service.archive(actor(role), 'student-1');
+
+        expect(prisma.user.update).toHaveBeenCalledWith({
+          where: { id: 'student-1' },
+          data: { status: UserStatus.ARCHIVED },
+        });
+        expect(prisma.student.update).toHaveBeenCalledWith({
+          where: { id: 'profile-1' },
+          data: { trainingStatus: TrainingStatus.ARCHIVED },
+        });
+        expect(prisma.user.delete).not.toHaveBeenCalled();
+        expect(prisma.student.delete).not.toHaveBeenCalled();
+        expect(prisma.enrollment.updateMany).not.toHaveBeenCalled();
+        expect(prisma.enrollment.deleteMany).not.toHaveBeenCalled();
+        expect(result).toMatchObject({
+          id: 'student-1',
+          status: UserStatus.ARCHIVED,
+          organizationId: 'org-1',
+          student: {
+            groupId: 'group-1',
+            instructorId: 'instructor-1',
+            carId: 'car-1',
+            trainingStatus: TrainingStatus.ARCHIVED,
+          },
+        });
+        expect(Logger.prototype.log).toHaveBeenCalledWith(
+          `Student archived studentId=student-1 actorId=${role.toLowerCase()}-1 organizationId=org-1`,
+        );
+      },
+    );
+
+    it('does not change a student of another organization', async () => {
+      prisma.user.findFirst.mockResolvedValue(null);
+
+      await expect(
+        service.archive(actor(UserRole.ADMIN, 'org-2'), 'student-1'),
+      ).rejects.toMatchObject({ message: STUDENT_NOT_FOUND_MESSAGE });
+      expect(prisma.user.update).not.toHaveBeenCalled();
+      expect(prisma.student.update).not.toHaveBeenCalled();
+    });
+
+    it('returns 404 when the organization is deleted', async () => {
+      prisma.organization.findUnique.mockResolvedValue({
+        ...organization,
+        deletedAt: new Date('2026-03-01T00:00:00.000Z'),
+      });
+
+      await expect(
+        service.archive(actor(UserRole.ADMIN), 'student-1'),
+      ).rejects.toBeInstanceOf(NotFoundException);
+      expect(prisma.user.findFirst).not.toHaveBeenCalled();
     });
   });
 });

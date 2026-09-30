@@ -63,6 +63,8 @@ export const STUDENT_STATUS_ROLES = [UserRole.ADMIN] as const;
 
 export const STUDENT_PRACTICE_ACCESS_ROLES = [UserRole.ADMIN] as const;
 
+export const STUDENT_ARCHIVE_ROLES = [UserRole.OWNER, UserRole.ADMIN] as const;
+
 export const GROUP_NOT_FOUND_MESSAGE = 'Group not found';
 export const STUDENT_NOT_FOUND_MESSAGE = 'Student not found';
 export const STUDENT_TRAINING_STATUS_MESSAGE =
@@ -82,6 +84,8 @@ export const INSTRUCTOR_CAR_MISMATCH_MESSAGE =
   'Некоректна комбінація інструктора та автомобіля.';
 export const STUDENT_PRACTICE_ACCESS_MESSAGE =
   'Студент не має права на допуск до практичного навчання.';
+export const ARCHIVED_STUDENT_BOOKING_MESSAGE =
+  'Архівованому студенту не можна створювати нове бронювання практики.';
 
 const TRAINING_STATUS_TRANSITIONS: Record<
   TrainingStatus,
@@ -222,6 +226,22 @@ function assertCanGrantPracticeAccess(actor: User): void {
   ) {
     throw new ForbiddenException('Insufficient permissions');
   }
+}
+
+function assertCanArchiveStudent(actor: User): void {
+  if (!(STUDENT_ARCHIVE_ROLES as readonly UserRole[]).includes(actor.role)) {
+    throw new ForbiddenException('Insufficient permissions');
+  }
+}
+
+function isArchivedStudent(student: {
+  status: UserStatus;
+  studentProfile: { trainingStatus: TrainingStatus };
+}): boolean {
+  return (
+    student.status === UserStatus.ARCHIVED ||
+    student.studentProfile.trainingStatus === TrainingStatus.ARCHIVED
+  );
 }
 
 function isEligibleForPractice(student: {
@@ -913,6 +933,10 @@ export class StudentsService {
         throw new NotFoundException(STUDENT_NOT_FOUND_MESSAGE);
       }
 
+      if (isArchivedStudent(student)) {
+        throw new ConflictException(ARCHIVED_STUDENT_BOOKING_MESSAGE);
+      }
+
       if (!isEligibleForPractice(student)) {
         throw new ConflictException(STUDENT_PRACTICE_ACCESS_MESSAGE);
       }
@@ -973,6 +997,53 @@ export class StudentsService {
     });
 
     return updated;
+  }
+
+  async archive(actor: User, studentId: string): Promise<StudentCardDto> {
+    assertCanArchiveStudent(actor);
+    await this.requireOrganization(actor.organizationId);
+
+    return this.prisma.$transaction(async (tx) => {
+      const student = await tx.user.findFirst({
+        where: {
+          id: studentId,
+          organizationId: actor.organizationId,
+          role: UserRole.STUDENT,
+          deletedAt: null,
+        },
+        select: studentCardSelect,
+      });
+
+      if (
+        !student ||
+        !belongsToOrganization(student, actor.organizationId) ||
+        !student.studentProfile
+      ) {
+        throw new NotFoundException(STUDENT_NOT_FOUND_MESSAGE);
+      }
+
+      await tx.user.update({
+        where: { id: student.id },
+        data: { status: UserStatus.ARCHIVED },
+      });
+      const profile = await tx.student.update({
+        where: { id: student.studentProfile.id },
+        data: { trainingStatus: TrainingStatus.ARCHIVED },
+      });
+
+      this.logger.log(
+        `Student archived studentId=${student.id} actorId=${actor.id} organizationId=${actor.organizationId}`,
+      );
+
+      return toStudentCard({
+        ...student,
+        status: UserStatus.ARCHIVED,
+        studentProfile: {
+          ...student.studentProfile,
+          trainingStatus: profile.trainingStatus,
+        },
+      });
+    });
   }
 
   private async findStudentCard(
