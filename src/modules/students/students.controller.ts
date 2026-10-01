@@ -114,7 +114,10 @@ export class StudentsController {
       'OWNER або ADMIN створює користувача з роллю STUDENT і статусом INVITED ' +
       'у своїй автошколі, профіль учня та запрошення. organizationId береться ' +
       'з авторизованого користувача. groupId записується, лише якщо група ' +
-      'належить тій самій автошколі. instructorId і carId лишаються null. ' +
+      'належить тій самій автошколі і має статус PLANNED або ACTIVE; разом із ' +
+      'групою створюється активне зарахування. Групи ARCHIVED і COMPLETED ' +
+      'відхиляються. instructorId і carId лишаються null. Необов’язкові ' +
+      'category і transmission зберігаються в профілі. ' +
       'Лист із посиланням запрошення передається на відправку.',
   })
   @ApiCreatedResponse({ type: CreateStudentResponseDto })
@@ -126,7 +129,8 @@ export class StudentsController {
       'Некоректне тіло запиту. Тіло містить errors: [{ field, message }].',
   })
   @ApiConflictResponse({
-    description: 'Користувач з таким email уже існує.',
+    description:
+      'Користувач з таким email уже існує, або група має статус ARCHIVED чи COMPLETED.',
   })
   @ApiNotFoundResponse({
     description:
@@ -334,9 +338,11 @@ export class StudentsController {
   @ApiOperation({
     summary: 'Редагувати дозволені дані картки студента',
     description:
-      'OWNER або ADMIN змінюють лише firstName, lastName і phone студента ' +
-      'своєї автошколи. role, organizationId і системний status користувача ' +
-      'цим запитом не змінюються і відхиляються, якщо їх передати в тілі.',
+      'OWNER або ADMIN змінюють firstName, lastName, phone, category і ' +
+      'transmission студента своєї автошколи. role, organizationId, ' +
+      'навчальний status, instructorId і carId цим запитом не змінюються ' +
+      'і відхиляються, якщо їх передати в тілі. category і transmission ' +
+      'потрібні для допуску до практики і мають збігатися з уже призначеним автомобілем.',
   })
   @ApiParam({
     name: 'id',
@@ -351,6 +357,10 @@ export class StudentsController {
   @ApiBadRequestResponse({
     description:
       'Некоректне тіло або поле поза дозволеним набором. Тіло містить errors: [{ field, message }].',
+  })
+  @ApiConflictResponse({
+    description:
+      'Нові category або transmission не збігаються з уже призначеним автомобілем.',
   })
   @ApiNotFoundResponse({
     description:
