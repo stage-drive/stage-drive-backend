@@ -4,7 +4,13 @@ import {
   InternalServerErrorException,
   NotFoundException,
 } from '@nestjs/common';
-import { InvitationStatus, Prisma, UserRole, UserStatus } from '@prisma/client';
+import {
+  InvitationStatus,
+  Prisma,
+  TrainingStatus,
+  UserRole,
+  UserStatus,
+} from '@prisma/client';
 import * as bcrypt from 'bcrypt';
 import { createHash } from 'crypto';
 import { PrismaService } from '../../prisma/prisma.service';
@@ -41,6 +47,7 @@ describe('InvitationsService', () => {
       update: jest.Mock;
     };
     invitation: { create: jest.Mock; findFirst: jest.Mock };
+    student: { findUnique: jest.Mock; create: jest.Mock };
   };
 
   const owner = {
@@ -148,6 +155,10 @@ describe('InvitationsService', () => {
         create: jest.fn().mockResolvedValue(createdInvitation),
         findFirst: jest.fn().mockResolvedValue(null),
       },
+      student: {
+        findUnique: jest.fn().mockResolvedValue(null),
+        create: jest.fn().mockResolvedValue({ id: 'profile-1' }),
+      },
     };
     prisma.$transaction.mockImplementation((cb: (client: unknown) => unknown) =>
       cb(tx),
@@ -219,6 +230,15 @@ describe('InvitationsService', () => {
 
     expect(tx.user.create).toHaveBeenCalledWith({
       data: expect.objectContaining({ role: UserRole.STUDENT }),
+    });
+    expect(tx.student.create).toHaveBeenCalledWith({
+      data: {
+        userId: 'admin-1',
+        organizationId: 'org-1',
+        instructorId: null,
+        carId: null,
+        trainingStatus: TrainingStatus.INVITED,
+      },
     });
     expect(result.user.role).toBe(UserRole.STUDENT);
   });
@@ -486,6 +506,17 @@ describe('InvitationsService', () => {
         });
         expect(result).not.toHaveProperty('token');
         expect(JSON.stringify(result)).not.toContain('tokenHash');
+        if (role === UserRole.STUDENT) {
+          expect(tx.student.create).toHaveBeenCalledWith({
+            data: expect.objectContaining({
+              userId: 'teacher-1',
+              organizationId: 'org-1',
+              trainingStatus: TrainingStatus.INVITED,
+            }),
+          });
+        } else {
+          expect(tx.student.create).not.toHaveBeenCalled();
+        }
 
         const html = mailService.sendEmail.mock.calls[0][0].html as string;
         const tokenMatch = html.match(/invite\?token=([^"&\s<]+)/);

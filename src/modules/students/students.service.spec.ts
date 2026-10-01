@@ -398,10 +398,18 @@ describe('StudentsService', () => {
       prisma.user.findUnique.mockResolvedValue(null);
       prisma.user.create.mockResolvedValue(createdUser);
       prisma.student.create.mockImplementation(
-        (args: { data: { groupId: string | null } }) =>
+        (args: {
+          data: {
+            groupId: string | null;
+            category?: LicenseCategory | null;
+            transmission?: Transmission | null;
+          };
+        }) =>
           Promise.resolve({
             ...createdStudent,
             groupId: args.data.groupId,
+            category: args.data.category ?? null,
+            transmission: args.data.transmission ?? null,
           }),
       );
       prisma.invitation.create.mockResolvedValue(createdInvitation);
@@ -430,6 +438,8 @@ describe('StudentsService', () => {
           groupId: null,
           instructorId: null,
           carId: null,
+          category: null,
+          transmission: null,
           trainingStatus: TrainingStatus.INVITED,
         },
       });
@@ -480,15 +490,18 @@ describe('StudentsService', () => {
       expect(JSON.stringify(result)).not.toContain('passwordHash');
     });
 
-    it('sets groupId when the selected group belongs to the same organization', async () => {
+    it('sets groupId and an active enrollment when the selected group belongs to the same organization', async () => {
       prisma.group.findUnique.mockResolvedValue({
         id: 'group-1',
         organizationId: 'org-1',
+        status: GroupStatus.ACTIVE,
       });
 
       const result = await service.create(actor(UserRole.OWNER), {
         ...payload,
         groupId: 'group-1',
+        category: LicenseCategory.B,
+        transmission: Transmission.MANUAL,
       });
 
       expect(prisma.student.create).toHaveBeenCalledWith({
@@ -497,12 +510,67 @@ describe('StudentsService', () => {
           groupId: 'group-1',
           instructorId: null,
           carId: null,
+          category: LicenseCategory.B,
+          transmission: Transmission.MANUAL,
         }),
       });
+      expect(prisma.enrollment.upsert).toHaveBeenCalledWith({
+        where: {
+          groupId_studentId: {
+            groupId: 'group-1',
+            studentId: 'student-1',
+          },
+        },
+        create: {
+          groupId: 'group-1',
+          studentId: 'student-1',
+          status: EnrollmentStatus.ACTIVE,
+        },
+        update: { status: EnrollmentStatus.ACTIVE },
+      });
       expect(result.student.groupId).toBe('group-1');
+      expect(result.student.category).toBe(LicenseCategory.B);
+      expect(result.student.transmission).toBe(Transmission.MANUAL);
       expect(result.student.instructorId).toBeNull();
       expect(result.student.carId).toBeNull();
       expect(result.user.organizationId).toBe('org-1');
+    });
+
+    it.each([GroupStatus.ARCHIVED, GroupStatus.COMPLETED] as const)(
+      'rejects a %s group before creating a user',
+      async (status) => {
+        prisma.group.findUnique.mockResolvedValue({
+          id: 'group-1',
+          organizationId: 'org-1',
+          status,
+        });
+
+        await expect(
+          service.create(actor(UserRole.ADMIN), {
+            ...payload,
+            groupId: 'group-1',
+          }),
+        ).rejects.toMatchObject({ message: GROUP_NOT_ASSIGNABLE_MESSAGE });
+        expect(prisma.user.create).not.toHaveBeenCalled();
+        expect(prisma.enrollment.upsert).not.toHaveBeenCalled();
+      },
+    );
+
+    it('rejects a blank name before creating a user', async () => {
+      await expect(
+        service.create(actor(UserRole.ADMIN), {
+          ...payload,
+          firstName: '   ',
+        }),
+      ).rejects.toMatchObject({
+        response: {
+          errors: [
+            { field: 'firstName', message: "Заповніть обов'язкове поле." },
+          ],
+        },
+      });
+      expect(prisma.user.create).not.toHaveBeenCalled();
+      expect(mailService.sendEmail).not.toHaveBeenCalled();
     });
 
     it('does not create a student in another organization when the group belongs elsewhere', async () => {
@@ -1002,6 +1070,62 @@ describe('StudentsService', () => {
       });
     });
 
+    it('stores category and transmission on the student profile', async () => {
+      const existing = cardRow();
+      prisma.user.findFirst.mockResolvedValue(existing);
+      prisma.student.update.mockResolvedValue({
+        ...profile,
+        category: LicenseCategory.B,
+        transmission: Transmission.MANUAL,
+      });
+
+      await expect(
+        service.update(actor(UserRole.ADMIN), 'student-1', {
+          category: LicenseCategory.B,
+          transmission: Transmission.MANUAL,
+        }),
+      ).resolves.toMatchObject({
+        student: {
+          category: LicenseCategory.B,
+          transmission: Transmission.MANUAL,
+        },
+      });
+      expect(prisma.student.update).toHaveBeenCalledWith({
+        where: { id: 'profile-1' },
+        data: {
+          category: LicenseCategory.B,
+          transmission: Transmission.MANUAL,
+        },
+      });
+      expect(prisma.user.update).not.toHaveBeenCalled();
+    });
+
+    it('rejects a category that no longer matches the assigned car', async () => {
+      prisma.user.findFirst.mockResolvedValue(
+        cardRow({
+          studentProfile: {
+            ...profile,
+            carId: 'car-1',
+            category: LicenseCategory.B,
+            transmission: Transmission.MANUAL,
+          },
+        }),
+      );
+      prisma.car.findUnique.mockResolvedValue({
+        id: 'car-1',
+        organizationId: 'org-1',
+        category: LicenseCategory.B,
+        transmission: Transmission.MANUAL,
+      });
+
+      await expect(
+        service.update(actor(UserRole.ADMIN), 'student-1', {
+          category: LicenseCategory.C,
+        }),
+      ).rejects.toMatchObject({ message: INSTRUCTOR_CAR_MISMATCH_MESSAGE });
+      expect(prisma.student.update).not.toHaveBeenCalled();
+    });
+
     it('clears the phone when null is sent', async () => {
       const existing = cardRow();
       prisma.user.findFirst.mockResolvedValue(existing);
@@ -1404,6 +1528,68 @@ describe('StudentsService', () => {
           groupId: 'group-new',
         }),
       ).resolves.toMatchObject({ student: { groupId: 'group-new' } });
+      expect(prisma.enrollment.updateMany).toHaveBeenCalledWith({
+        where: {
+          studentId: 'student-1',
+          groupId: 'group-old',
+          status: EnrollmentStatus.ACTIVE,
+        },
+        data: { status: EnrollmentStatus.COMPLETED },
+      });
+    });
+
+    it('does not treat an active enrollment in a completed group as another open group', async () => {
+      prisma.user.findFirst.mockResolvedValue(
+        assignRow({
+          studentProfile: {
+            id: 'profile-1',
+            userId: 'student-1',
+            organizationId: 'org-1',
+            groupId: 'group-old',
+            instructorId: null,
+            carId: null,
+          },
+        }),
+      );
+      prisma.group.findUnique.mockImplementation(
+        (args: { where: { id: string } }) => {
+          if (args.where.id === 'group-old') {
+            return Promise.resolve({
+              id: 'group-old',
+              organizationId: 'org-1',
+              status: GroupStatus.COMPLETED,
+            });
+          }
+          return Promise.resolve(targetGroup);
+        },
+      );
+      prisma.enrollment.findFirst.mockImplementation(
+        (args: {
+          where: {
+            status?: EnrollmentStatus;
+            group?: { status?: { in?: GroupStatus[] } };
+          };
+        }) => {
+          if (
+            args.where.status === EnrollmentStatus.ACTIVE &&
+            !args.where.group?.status?.in
+          ) {
+            return Promise.resolve({
+              id: 'enr-old',
+              status: EnrollmentStatus.ACTIVE,
+              groupId: 'group-old',
+              studentId: 'student-1',
+            });
+          }
+          return Promise.resolve(null);
+        },
+      );
+
+      await expect(
+        service.assignGroup(actor(UserRole.ADMIN), 'student-1', {
+          groupId: 'group-new',
+        }),
+      ).resolves.toMatchObject({ student: { groupId: 'group-new' } });
     });
 
     it('rejects a student whose training status is already terminal', async () => {
@@ -1449,6 +1635,8 @@ describe('StudentsService', () => {
       };
     }
 
+    let log: jest.SpyInstance;
+
     beforeEach(() => {
       prisma.user.findFirst.mockResolvedValue(statusRow());
       prisma.student.update.mockImplementation(
@@ -1459,7 +1647,9 @@ describe('StudentsService', () => {
           }),
       );
       prisma.enrollment.updateMany.mockResolvedValue({ count: 1 });
-      jest.spyOn(Logger.prototype, 'log').mockImplementation(() => undefined);
+      log = jest
+        .spyOn(Logger.prototype, 'log')
+        .mockImplementation(() => undefined);
     });
 
     afterEach(() => {
@@ -1501,7 +1691,7 @@ describe('StudentsService', () => {
         organizationId: 'org-1',
         student: { trainingStatus: TrainingStatus.GRADUATED },
       });
-      expect(Logger.prototype.log).toHaveBeenCalledWith(
+      expect(log).toHaveBeenCalledWith(
         'Student training status changed studentId=student-1 from=ACTIVE to=GRADUATED actorId=admin-1 organizationId=org-1',
       );
     });
@@ -1550,7 +1740,7 @@ describe('StudentsService', () => {
         message: `${TRAINING_STATUS_TRANSITION_MESSAGE} GRADUATED → ACTIVE.`,
       });
       expect(prisma.student.update).not.toHaveBeenCalled();
-      expect(Logger.prototype.log).not.toHaveBeenCalled();
+      expect(log).not.toHaveBeenCalled();
     });
 
     it('allows leaving PRACTICE toward graduation', async () => {
@@ -1641,6 +1831,8 @@ describe('StudentsService', () => {
       };
     }
 
+    let log: jest.SpyInstance;
+
     beforeEach(() => {
       prisma.user.findFirst.mockResolvedValue(practiceRow());
       prisma.user.findUnique.mockResolvedValue(instructor);
@@ -1660,7 +1852,9 @@ describe('StudentsService', () => {
             trainingStatus: args.data.trainingStatus,
           }),
       );
-      jest.spyOn(Logger.prototype, 'log').mockImplementation(() => undefined);
+      log = jest
+        .spyOn(Logger.prototype, 'log')
+        .mockImplementation(() => undefined);
     });
 
     afterEach(() => {
@@ -1689,7 +1883,7 @@ describe('StudentsService', () => {
         transmission: Transmission.MANUAL,
         trainingStatus: TrainingStatus.PRACTICE,
       });
-      expect(Logger.prototype.log).toHaveBeenCalledWith(
+      expect(log).toHaveBeenCalledWith(
         'Student practice access granted studentId=student-1 instructorId=instructor-1 carId=car-1 actorId=admin-1 organizationId=org-1',
       );
     });
@@ -1933,6 +2127,8 @@ describe('StudentsService', () => {
       trainingStatus: TrainingStatus.PRACTICE as TrainingStatus,
     };
 
+    let log: jest.SpyInstance;
+
     function archiveRow() {
       return {
         ...studentRow(),
@@ -1950,7 +2146,9 @@ describe('StudentsService', () => {
             trainingStatus: args.data.trainingStatus,
           }),
       );
-      jest.spyOn(Logger.prototype, 'log').mockImplementation(() => undefined);
+      log = jest
+        .spyOn(Logger.prototype, 'log')
+        .mockImplementation(() => undefined);
     });
 
     afterEach(() => {
@@ -1996,7 +2194,7 @@ describe('StudentsService', () => {
             trainingStatus: TrainingStatus.ARCHIVED,
           },
         });
-        expect(Logger.prototype.log).toHaveBeenCalledWith(
+        expect(log).toHaveBeenCalledWith(
           `Student archived studentId=student-1 actorId=${role.toLowerCase()}-1 organizationId=org-1`,
         );
       },

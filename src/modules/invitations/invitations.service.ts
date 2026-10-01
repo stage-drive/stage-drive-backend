@@ -8,6 +8,8 @@ import {
 import {
   Invitation,
   InvitationStatus,
+  Prisma,
+  TrainingStatus,
   User,
   UserRole,
   UserStatus,
@@ -413,6 +415,33 @@ export class InvitationsService {
     });
   }
 
+  private async ensureStudentProfile(
+    tx: Prisma.TransactionClient,
+    user: { id: string; role: UserRole; organizationId: string },
+  ): Promise<string | null> {
+    if (user.role !== UserRole.STUDENT) {
+      return null;
+    }
+
+    const existing = await tx.student.findUnique({
+      where: { userId: user.id },
+    });
+    if (existing) {
+      return null;
+    }
+
+    const profile = await tx.student.create({
+      data: {
+        userId: user.id,
+        organizationId: user.organizationId,
+        instructorId: null,
+        carId: null,
+        trainingStatus: TrainingStatus.INVITED,
+      },
+    });
+    return profile.id;
+  }
+
   private emailAlreadyExists() {
     return new ConflictException({
       statusCode: 409,
@@ -441,7 +470,11 @@ export class InvitationsService {
     const tokenHash = hashToken(token);
     const expiresAt = new Date(Date.now() + INVITATION_TTL_MS);
 
-    let created: { user: User; invitation: Invitation };
+    let created: {
+      user: User;
+      invitation: Invitation;
+      createdStudentProfileId: string | null;
+    };
     let replacedUser: User | null = null;
     try {
       created = await this.prisma.$transaction(async (tx) => {
@@ -479,6 +512,10 @@ export class InvitationsService {
               passwordHash: null,
             },
           });
+          const createdStudentProfileId = await this.ensureStudentProfile(
+            tx,
+            user,
+          );
           const invitation = await tx.invitation.create({
             data: {
               email,
@@ -491,7 +528,7 @@ export class InvitationsService {
               organizationId: inviter.organizationId,
             },
           });
-          return { user, invitation };
+          return { user, invitation, createdStudentProfileId };
         }
 
         const user = await tx.user.create({
@@ -506,6 +543,10 @@ export class InvitationsService {
             organizationId: inviter.organizationId,
           },
         });
+        const createdStudentProfileId = await this.ensureStudentProfile(
+          tx,
+          user,
+        );
 
         const invitation = await tx.invitation.create({
           data: {
@@ -520,7 +561,7 @@ export class InvitationsService {
           },
         });
 
-        return { user, invitation };
+        return { user, invitation, createdStudentProfileId };
       });
     } catch (error) {
       if (error instanceof ConflictException) {
@@ -552,6 +593,14 @@ export class InvitationsService {
         await this.prisma.invitation
           .delete({ where: { id: created.invitation.id } })
           .catch(() => undefined);
+        if (
+          created.createdStudentProfileId &&
+          replacedUser.role !== UserRole.STUDENT
+        ) {
+          await this.prisma.student
+            .delete({ where: { id: created.createdStudentProfileId } })
+            .catch(() => undefined);
+        }
         await this.prisma.user
           .update({
             where: { id: replacedUser.id },

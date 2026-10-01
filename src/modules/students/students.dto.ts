@@ -226,12 +226,40 @@ export class CreateStudentDto {
 
   @ApiPropertyOptional({
     description:
-      'Група своєї автошколи. Якщо поле не передати, учень створюється без групи.',
+      'Група своєї автошколи зі статусом PLANNED або ACTIVE. ' +
+      'Якщо поле не передати, учень створюється без групи. ' +
+      'Разом із groupId створюється активне зарахування.',
     example: 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',
   })
   @IsUUID('4', { message: 'groupId має бути UUID.' })
   @IsOptional()
   groupId?: string;
+
+  @ApiPropertyOptional({
+    enum: LicenseCategory,
+    nullable: true,
+    description:
+      'Категорія, на яку навчається студент. Потрібна разом із transmission для допуску до практики.',
+    example: LicenseCategory.B,
+  })
+  @IsEnum(LicenseCategory, {
+    message: 'category має бути A, B, C або D.',
+  })
+  @IsOptional()
+  category?: LicenseCategory | null;
+
+  @ApiPropertyOptional({
+    enum: Transmission,
+    nullable: true,
+    description:
+      'Коробка передач, на яку навчається студент. Має збігатися з автомобілем допуску.',
+    example: Transmission.MANUAL,
+  })
+  @IsEnum(Transmission, {
+    message: 'transmission має бути MANUAL або AUTOMATIC.',
+  })
+  @IsOptional()
+  transmission?: Transmission | null;
 }
 
 export class CreatedStudentUserDto {
@@ -436,6 +464,34 @@ export class UpdateStudentDto {
   @IsString({ message: 'phone має бути рядком або null.' })
   @IsOptional()
   phone?: string | null;
+
+  @ApiPropertyOptional({
+    enum: LicenseCategory,
+    nullable: true,
+    description:
+      'Категорія навчання. null очищує значення. ' +
+      'Якщо студенту вже призначено автомобіль, нова пара category/transmission має з ним збігатися.',
+    example: LicenseCategory.B,
+  })
+  @IsEnum(LicenseCategory, {
+    message: 'category має бути A, B, C або D.',
+  })
+  @IsOptional()
+  category?: LicenseCategory | null;
+
+  @ApiPropertyOptional({
+    enum: Transmission,
+    nullable: true,
+    description:
+      'Коробка передач. null очищує значення. ' +
+      'Має збігатися з уже призначеним автомобілем.',
+    example: Transmission.MANUAL,
+  })
+  @IsEnum(Transmission, {
+    message: 'transmission має бути MANUAL або AUTOMATIC.',
+  })
+  @IsOptional()
+  transmission?: Transmission | null;
 }
 
 export class StudentCardDto {

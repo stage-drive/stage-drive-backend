@@ -120,13 +120,8 @@ const TERMINAL_TRAINING_STATUSES = [
   TrainingStatus.GRADUATED,
 ] as const;
 
-/** DROPPED — відрахований студент, COMPLETED — випуск (GRADUATED). */
-const TERMINAL_ENROLLMENT_STATUSES = [
-  EnrollmentStatus.DROPPED,
-  EnrollmentStatus.COMPLETED,
-] as const;
 export const NO_STUDENT_FIELDS_MESSAGE =
-  'Немає дозволених полів для оновлення (firstName, lastName, phone).';
+  'Немає дозволених полів для оновлення (firstName, lastName, phone, category, transmission).';
 
 const EMPTY_FIELD_MESSAGE = "Заповніть обов'язкове поле.";
 
@@ -313,10 +308,9 @@ function escapeHtml(value: string): string {
 }
 
 /**
- * ADMIN бачить студентів своєї організації.
- * TEACHER і INSTRUCTOR мають той самий дозволений scope: лише студенти
- * їхньої організації. Групи та індивідуальні призначення ще не збережені,
- * тому вужчого зрізу в даних немає. Чужу організацію цей фільтр відсікає.
+ * ADMIN, TEACHER і INSTRUCTOR бачать студентів лише своєї організації.
+ * Чужу організацію, інші ролі та soft-delete цей фільтр відсікає.
+ * STUDENT список не відкриває: власні дані читаються через getOwn.
  */
 function allowedStudentScope(actor: User): Prisma.UserWhereInput {
   const organizationStudents: Prisma.UserWhereInput = {
@@ -492,7 +486,9 @@ function fieldError(field: string, message: string): BadRequestException {
   });
 }
 
-function profileUpdate(payload: UpdateStudentDto): Prisma.UserUpdateInput {
+function profileUpdate(
+  payload: UpdateStudentDto,
+): Prisma.UserUpdateInput | null {
   const data: Prisma.UserUpdateInput = {};
 
   if (payload.firstName !== undefined) {
@@ -515,8 +511,23 @@ function profileUpdate(payload: UpdateStudentDto): Prisma.UserUpdateInput {
     data.phone = payload.phone === null ? null : payload.phone.trim() || null;
   }
 
-  if (Object.keys(data).length === 0) {
-    throw fieldError('body', NO_STUDENT_FIELDS_MESSAGE);
+  return Object.keys(data).length > 0 ? data : null;
+}
+
+function trainingProfileUpdate(payload: UpdateStudentDto): {
+  category?: LicenseCategory | null;
+  transmission?: Transmission | null;
+} {
+  const data: {
+    category?: LicenseCategory | null;
+    transmission?: Transmission | null;
+  } = {};
+
+  if (payload.category !== undefined) {
+    data.category = payload.category;
+  }
+  if (payload.transmission !== undefined) {
+    data.transmission = payload.transmission;
   }
 
   return data;
@@ -577,9 +588,17 @@ export class StudentsService {
 
     const firstName = payload.firstName.trim();
     const lastName = payload.lastName.trim();
+    if (!firstName) {
+      throw fieldError('firstName', EMPTY_FIELD_MESSAGE);
+    }
+    if (!lastName) {
+      throw fieldError('lastName', EMPTY_FIELD_MESSAGE);
+    }
     const email = payload.email.trim().toLowerCase();
     const phone = payload.phone?.trim() || null;
     const groupId = payload.groupId ?? null;
+    const category = payload.category ?? null;
+    const transmission = payload.transmission ?? null;
 
     const token = randomBytes(48).toString('base64url');
     const tokenHash = hashToken(token);
@@ -621,6 +640,9 @@ export class StudentsService {
           if (!group || group.organizationId !== actor.organizationId) {
             throw new NotFoundException(GROUP_NOT_FOUND_MESSAGE);
           }
+          if (!isOpenGroup(group.status)) {
+            throw new ConflictException(GROUP_NOT_ASSIGNABLE_MESSAGE);
+          }
         }
 
         const user = await tx.user.create({
@@ -643,9 +665,28 @@ export class StudentsService {
             groupId,
             instructorId: null,
             carId: null,
+            category,
+            transmission,
             trainingStatus: TrainingStatus.INVITED,
           },
         });
+
+        if (groupId) {
+          await tx.enrollment.upsert({
+            where: {
+              groupId_studentId: {
+                groupId,
+                studentId: user.id,
+              },
+            },
+            create: {
+              groupId,
+              studentId: user.id,
+              status: EnrollmentStatus.ACTIVE,
+            },
+            update: { status: EnrollmentStatus.ACTIVE },
+          });
+        }
 
         const invitation = await tx.invitation.create({
           data: {
@@ -771,12 +812,79 @@ export class StudentsService {
     await this.requireOrganization(actor.organizationId);
 
     const data = profileUpdate(payload);
+    const trainingData = trainingProfileUpdate(payload);
+    if (!data && Object.keys(trainingData).length === 0) {
+      throw fieldError('body', NO_STUDENT_FIELDS_MESSAGE);
+    }
+
     const existing = await this.findStudentCard(actor, studentId);
-    const updated = await this.prisma.user.update({
-      where: { id: existing.id },
-      data,
-      select: studentCardSelect,
-    });
+    let updated = existing;
+
+    if (Object.keys(trainingData).length > 0) {
+      if (!existing.studentProfile) {
+        throw new NotFoundException(STUDENT_NOT_FOUND_MESSAGE);
+      }
+
+      const nextCategory =
+        trainingData.category !== undefined
+          ? trainingData.category
+          : existing.studentProfile.category;
+      const nextTransmission =
+        trainingData.transmission !== undefined
+          ? trainingData.transmission
+          : existing.studentProfile.transmission;
+
+      if (existing.studentProfile.carId) {
+        const car = await this.prisma.car.findUnique({
+          where: { id: existing.studentProfile.carId },
+        });
+        if (
+          !car ||
+          car.organizationId !== actor.organizationId ||
+          car.category !== nextCategory ||
+          car.transmission !== nextTransmission
+        ) {
+          throw new ConflictException(INSTRUCTOR_CAR_MISMATCH_MESSAGE);
+        }
+      }
+
+      const profile = await this.prisma.student.update({
+        where: { id: existing.studentProfile.id },
+        data: trainingData,
+      });
+      updated = {
+        ...updated,
+        studentProfile: {
+          ...existing.studentProfile,
+          category: profile.category,
+          transmission: profile.transmission,
+        },
+      };
+    }
+
+    if (data) {
+      updated = await this.prisma.user.update({
+        where: { id: existing.id },
+        data,
+        select: studentCardSelect,
+      });
+      if (updated.studentProfile && existing.studentProfile) {
+        updated = {
+          ...updated,
+          studentProfile: {
+            ...updated.studentProfile,
+            category:
+              trainingData.category !== undefined
+                ? trainingData.category
+                : updated.studentProfile.category,
+            transmission:
+              trainingData.transmission !== undefined
+                ? trainingData.transmission
+                : updated.studentProfile.transmission,
+          },
+        };
+      }
+    }
 
     if (!belongsToOrganization(updated, actor.organizationId)) {
       throw new NotFoundException(STUDENT_NOT_FOUND_MESSAGE);
@@ -822,8 +930,19 @@ export class StudentsService {
       const terminalEnrollment = await tx.enrollment.findFirst({
         where: {
           studentId: student.id,
-          status: { in: [...TERMINAL_ENROLLMENT_STATUSES] },
-          group: { organizationId: actor.organizationId },
+          OR: [
+            {
+              status: EnrollmentStatus.DROPPED,
+              group: { organizationId: actor.organizationId },
+            },
+            {
+              status: EnrollmentStatus.COMPLETED,
+              group: {
+                organizationId: actor.organizationId,
+                status: { in: [GroupStatus.PLANNED, GroupStatus.ACTIVE] },
+              },
+            },
+          ],
         },
       });
       if (terminalEnrollment) {
@@ -848,6 +967,16 @@ export class StudentsService {
         if (currentGroup && isOpenGroup(currentGroup.status)) {
           throw new ConflictException(STUDENT_ACTIVE_GROUP_MESSAGE);
         }
+        if (currentGroup) {
+          await tx.enrollment.updateMany({
+            where: {
+              studentId: student.id,
+              groupId: currentGroupId,
+              status: EnrollmentStatus.ACTIVE,
+            },
+            data: { status: EnrollmentStatus.COMPLETED },
+          });
+        }
       }
 
       const otherActiveEnrollment = await tx.enrollment.findFirst({
@@ -855,7 +984,10 @@ export class StudentsService {
           studentId: student.id,
           status: EnrollmentStatus.ACTIVE,
           groupId: { not: group.id },
-          group: { organizationId: actor.organizationId },
+          group: {
+            organizationId: actor.organizationId,
+            status: { in: [GroupStatus.PLANNED, GroupStatus.ACTIVE] },
+          },
         },
       });
       if (otherActiveEnrollment) {
