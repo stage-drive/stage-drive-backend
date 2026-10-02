@@ -36,6 +36,7 @@ services:
     container_name: stage_drive_backend
     environment:
       NODE_ENV: ${NODE_ENV:-production}
+      SEED_DEMO_USERS: ${SEED_DEMO_USERS:-}
       PORT: ${PORT:-3000}
       DATABASE_URL: ${DOCKER_DATABASE_URL:-postgresql://postgres:postgres_password@postgres:5432/stage_drive}
       AUTH_SECRET: ${AUTH_SECRET:-stage-drive-dev-secret}
