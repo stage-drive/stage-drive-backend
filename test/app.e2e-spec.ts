@@ -205,11 +205,15 @@ describe('API (e2e)', () => {
       create: jest.fn(),
       update: jest.fn(),
       findUnique: jest.fn(),
+      findFirst: jest.fn(),
     },
     car: {
       findUnique: jest.fn(),
+      findFirst: jest.fn(),
       findMany: jest.fn(),
       count: jest.fn(),
+      create: jest.fn(),
+      update: jest.fn(),
     },
     enrollment: {
       findFirst: jest.fn(),
@@ -302,10 +306,67 @@ describe('API (e2e)', () => {
     );
     prismaMock.car.findUnique.mockReset();
     prismaMock.car.findUnique.mockResolvedValue(null);
+    prismaMock.car.findFirst.mockReset();
+    prismaMock.car.findFirst.mockResolvedValue(null);
     prismaMock.car.findMany.mockReset();
     prismaMock.car.findMany.mockResolvedValue([]);
     prismaMock.car.count.mockReset();
     prismaMock.car.count.mockResolvedValue(0);
+    prismaMock.car.create.mockReset();
+    prismaMock.car.create.mockImplementation(
+      (args: {
+        data: {
+          organizationId: string;
+          instructorId: string;
+          plateNumber: string;
+          category: string;
+          transmission: string;
+        };
+      }) =>
+        Promise.resolve({
+          id: '37373737-3737-4373-8373-373737373737',
+          organizationId: args.data.organizationId,
+          instructorId: args.data.instructorId,
+          plateNumber: args.data.plateNumber,
+          category: args.data.category,
+          transmission: args.data.transmission,
+          createdAt: new Date('2026-04-01T00:00:00.000Z'),
+          updatedAt: new Date('2026-04-01T00:00:00.000Z'),
+          instructor: {
+            id: args.data.instructorId,
+            firstName: instructor.firstName,
+            lastName: instructor.lastName,
+          },
+        }),
+    );
+    prismaMock.car.update.mockReset();
+    prismaMock.car.update.mockImplementation(
+      (args: {
+        data: {
+          plateNumber?: string;
+          category?: string;
+          transmission?: string;
+          instructorId?: string;
+        };
+      }) =>
+        Promise.resolve({
+          id: '31313131-3131-4131-8131-313131313131',
+          organizationId: organization.id,
+          instructorId: args.data.instructorId ?? instructor.id,
+          plateNumber: args.data.plateNumber ?? 'AA0001BB',
+          category: args.data.category ?? 'B',
+          transmission: args.data.transmission ?? 'MANUAL',
+          createdAt: new Date('2026-01-02T00:00:00.000Z'),
+          updatedAt: new Date('2026-04-02T00:00:00.000Z'),
+          instructor: {
+            id: args.data.instructorId ?? instructor.id,
+            firstName: instructor.firstName,
+            lastName: instructor.lastName,
+          },
+        }),
+    );
+    prismaMock.student.findFirst.mockReset();
+    prismaMock.student.findFirst.mockResolvedValue(null);
     prismaMock.enrollment.findFirst.mockReset();
     prismaMock.enrollment.findFirst.mockResolvedValue(null);
     prismaMock.enrollment.upsert.mockReset();
@@ -335,6 +396,12 @@ describe('API (e2e)', () => {
           args.where.email === instructor.email
         ) {
           return Promise.resolve({ ...instructor });
+        }
+        if (args.where.id === '23232323-2323-4232-8232-232323232323') {
+          return Promise.resolve({
+            ...instructor,
+            id: '23232323-2323-4232-8232-232323232323',
+          });
         }
         if (args.where.id === admin.id || args.where.email === admin.email) {
           return Promise.resolve({ ...admin });
@@ -3987,7 +4054,416 @@ describe('API (e2e)', () => {
 
     const paths = (response.body as { paths: Record<string, unknown> }).paths;
     const cars = (paths['/api/cars'] ?? paths['/cars']) as
-      { get?: unknown } | undefined;
+      { get?: unknown; post?: unknown } | undefined;
+    const car = (paths['/api/cars/{id}'] ?? paths['/cars/{id}']) as
+      { patch?: unknown } | undefined;
     expect(cars?.get).toBeDefined();
+    expect(cars?.post).toBeDefined();
+    expect(car?.patch).toBeDefined();
   });
+
+  const createdCarId = '37373737-3737-4373-8373-373737373737';
+  const writableInstructorId = '23232323-2323-4232-8232-232323232323';
+
+  it('POST /api/cars without token returns 401', () => {
+    return request(app.getHttpServer())
+      .post('/api/cars')
+      .send({
+        plateNumber: 'AA0003BB',
+        category: 'B',
+        transmission: 'MANUAL',
+        instructorId: instructor.id,
+      })
+      .expect(401);
+  });
+
+  it.each(['TEACHER', 'INSTRUCTOR', 'STUDENT'] as const)(
+    'POST /api/cars is forbidden for %s',
+    async (role) => {
+      const actor =
+        role === 'TEACHER'
+          ? teacher
+          : role === 'INSTRUCTOR'
+            ? instructor
+            : pupil;
+      const token = signAccessToken(actor.id);
+      const response = await request(app.getHttpServer())
+        .post('/api/cars')
+        .set('Authorization', `Bearer ${token}`)
+        .send({
+          plateNumber: 'AA0003BB',
+          category: 'B',
+          transmission: 'MANUAL',
+          instructorId: instructor.id,
+        })
+        .expect(403);
+
+      expect(response.body).toMatchObject({
+        statusCode: 403,
+        message: 'Insufficient permissions',
+      });
+      expect(prismaMock.car.create).not.toHaveBeenCalled();
+    },
+  );
+
+  it('POST /api/cars rejects organizationId from the body', async () => {
+    const token = signAccessToken(admin.id);
+    const response = await request(app.getHttpServer())
+      .post('/api/cars')
+      .set('Authorization', `Bearer ${token}`)
+      .send({
+        plateNumber: 'AA0003BB',
+        category: 'B',
+        transmission: 'MANUAL',
+        instructorId: writableInstructorId,
+        organizationId: otherOrganizationId,
+      })
+      .expect(400);
+
+    expect(response.body).toMatchObject({
+      statusCode: 400,
+      errors: [
+        {
+          field: 'organizationId',
+          message: 'property organizationId should not exist',
+        },
+      ],
+    });
+    expect(prismaMock.car.create).not.toHaveBeenCalled();
+  });
+
+  it('POST /api/cars rejects a missing plate and an invalid category', async () => {
+    const token = signAccessToken(owner.id);
+    const missing = await request(app.getHttpServer())
+      .post('/api/cars')
+      .set('Authorization', `Bearer ${token}`)
+      .send({
+        category: 'B',
+        transmission: 'MANUAL',
+        instructorId: writableInstructorId,
+      })
+      .expect(400);
+
+    expect(missing.body).toMatchObject({
+      statusCode: 400,
+      errors: [
+        { field: 'plateNumber', message: "Заповніть обов'язкове поле." },
+      ],
+    });
+
+    const invalid = await request(app.getHttpServer())
+      .post('/api/cars')
+      .set('Authorization', `Bearer ${token}`)
+      .send({
+        plateNumber: 'AA0003BB',
+        category: 'Z',
+        transmission: 'MANUAL',
+        instructorId: writableInstructorId,
+      })
+      .expect(400);
+
+    expect(invalid.body).toMatchObject({
+      statusCode: 400,
+      errors: [
+        { field: 'category', message: 'category має бути A, B, C або D.' },
+      ],
+    });
+    expect(prismaMock.car.create).not.toHaveBeenCalled();
+  });
+
+  it('POST /api/cars creates a car in the caller organization', async () => {
+    const token = signAccessToken(admin.id);
+    const response = await request(app.getHttpServer())
+      .post('/api/cars')
+      .set('Authorization', `Bearer ${token}`)
+      .send({
+        plateNumber: ' aa-0003-bb ',
+        category: 'B',
+        transmission: 'MANUAL',
+        instructorId: writableInstructorId,
+      })
+      .expect(201);
+
+    expect(response.body).toEqual({
+      id: createdCarId,
+      organizationId: organization.id,
+      instructorId: writableInstructorId,
+      instructor: {
+        id: writableInstructorId,
+        firstName: instructor.firstName,
+        lastName: instructor.lastName,
+      },
+      plateNumber: 'AA0003BB',
+      category: 'B',
+      transmission: 'MANUAL',
+      createdAt: '2026-04-01T00:00:00.000Z',
+      updatedAt: '2026-04-01T00:00:00.000Z',
+    });
+    expect(response.body.instructor).not.toHaveProperty('email');
+    expect(prismaMock.car.create).toHaveBeenCalledWith({
+      data: {
+        organizationId: organization.id,
+        instructorId: writableInstructorId,
+        plateNumber: 'AA0003BB',
+        category: 'B',
+        transmission: 'MANUAL',
+      },
+      select: expect.any(Object),
+    });
+  });
+
+  it('POST /api/cars does not accept an instructor from another organization', async () => {
+    const foreignInstructorId = '24242424-2424-4242-8242-242424242424';
+    prismaMock.user.findUnique.mockImplementation(
+      (args: { where: { id?: string; email?: string } }) => {
+        if (args.where.id === foreignInstructorId) {
+          return Promise.resolve({
+            ...instructor,
+            id: foreignInstructorId,
+            organizationId: otherOrganizationId,
+          });
+        }
+        if (args.where.id === admin.id) {
+          return Promise.resolve({ ...admin });
+        }
+        return Promise.resolve(null);
+      },
+    );
+
+    const token = signAccessToken(admin.id);
+    const response = await request(app.getHttpServer())
+      .post('/api/cars')
+      .set('Authorization', `Bearer ${token}`)
+      .send({
+        plateNumber: 'AA0003BB',
+        category: 'B',
+        transmission: 'MANUAL',
+        instructorId: foreignInstructorId,
+      })
+      .expect(404);
+
+    expect(response.body).toMatchObject({
+      statusCode: 404,
+      message: 'Instructor not found',
+    });
+    expect(prismaMock.car.create).not.toHaveBeenCalled();
+  });
+
+  it('POST /api/cars returns 409 when the plate already exists', async () => {
+    prismaMock.car.findFirst.mockResolvedValue({ id: listedCar.id });
+
+    const token = signAccessToken(owner.id);
+    const response = await request(app.getHttpServer())
+      .post('/api/cars')
+      .set('Authorization', `Bearer ${token}`)
+      .send({
+        plateNumber: 'AA0001BB',
+        category: 'B',
+        transmission: 'MANUAL',
+        instructorId: writableInstructorId,
+      })
+      .expect(409);
+
+    expect(response.body).toMatchObject({
+      statusCode: 409,
+      errors: [
+        {
+          field: 'plateNumber',
+          message: 'Автомобіль з таким номером уже є в цій автошколі.',
+        },
+      ],
+    });
+    expect(prismaMock.car.create).not.toHaveBeenCalled();
+  });
+
+  it('POST /api/cars rejects an instructor who is not ACTIVE', async () => {
+    prismaMock.user.findUnique.mockImplementation(
+      (args: { where: { id?: string } }) => {
+        if (args.where.id === writableInstructorId) {
+          return Promise.resolve({
+            ...instructor,
+            id: writableInstructorId,
+            status: 'BLOCKED',
+          });
+        }
+        if (args.where.id === admin.id) {
+          return Promise.resolve({ ...admin });
+        }
+        return Promise.resolve(null);
+      },
+    );
+
+    const token = signAccessToken(admin.id);
+    const response = await request(app.getHttpServer())
+      .post('/api/cars')
+      .set('Authorization', `Bearer ${token}`)
+      .send({
+        plateNumber: 'AA0003BB',
+        category: 'B',
+        transmission: 'MANUAL',
+        instructorId: writableInstructorId,
+      })
+      .expect(409);
+
+    expect(response.body).toMatchObject({
+      statusCode: 409,
+      message: 'Інструктор має бути в статусі ACTIVE.',
+    });
+    expect(prismaMock.car.create).not.toHaveBeenCalled();
+  });
+
+  it('POST /api/cars returns 404 when the organization is deleted', async () => {
+    prismaMock.organization.findUnique.mockResolvedValue({
+      ...organization,
+      deletedAt: new Date(),
+    });
+
+    const token = signAccessToken(admin.id);
+    const response = await request(app.getHttpServer())
+      .post('/api/cars')
+      .set('Authorization', `Bearer ${token}`)
+      .send({
+        plateNumber: 'AA0003BB',
+        category: 'B',
+        transmission: 'MANUAL',
+        instructorId: writableInstructorId,
+      })
+      .expect(404);
+
+    expect(response.body).toMatchObject({
+      statusCode: 404,
+      message: 'Organization not found',
+    });
+    expect(prismaMock.car.create).not.toHaveBeenCalled();
+  });
+
+  it('PATCH /api/cars/:id updates a car of the caller organization', async () => {
+    prismaMock.car.findUnique.mockResolvedValue(listedCar);
+
+    const token = signAccessToken(owner.id);
+    const response = await request(app.getHttpServer())
+      .patch(`/api/cars/${listedCar.id}`)
+      .set('Authorization', `Bearer ${token}`)
+      .send({ plateNumber: 'aa 0099 bb' })
+      .expect(200);
+
+    expect(response.body).toMatchObject({
+      id: listedCar.id,
+      organizationId: organization.id,
+      plateNumber: 'AA0099BB',
+    });
+    expect(prismaMock.car.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { id: listedCar.id },
+        data: { plateNumber: 'AA0099BB' },
+      }),
+    );
+    expect(prismaMock.student.findFirst).not.toHaveBeenCalled();
+  });
+
+  it('PATCH /api/cars/:id does not edit a car from another organization', async () => {
+    prismaMock.car.findUnique.mockResolvedValue({
+      ...listedCar,
+      organizationId: otherOrganizationId,
+    });
+
+    const token = signAccessToken(admin.id);
+    const response = await request(app.getHttpServer())
+      .patch(`/api/cars/${listedCar.id}`)
+      .set('Authorization', `Bearer ${token}`)
+      .send({ plateNumber: 'AA0099BB' })
+      .expect(404);
+
+    expect(response.body).toMatchObject({
+      statusCode: 404,
+      message: 'Car not found',
+    });
+    expect(prismaMock.car.update).not.toHaveBeenCalled();
+  });
+
+  it('PATCH /api/cars/:id rejects an empty body', async () => {
+    const token = signAccessToken(admin.id);
+    const response = await request(app.getHttpServer())
+      .patch(`/api/cars/${listedCar.id}`)
+      .set('Authorization', `Bearer ${token}`)
+      .send({})
+      .expect(400);
+
+    expect(response.body).toMatchObject({
+      statusCode: 400,
+      errors: [
+        {
+          field: 'body',
+          message:
+            'Немає дозволених полів для оновлення (plateNumber, category, transmission, instructorId).',
+        },
+      ],
+    });
+    expect(prismaMock.car.findUnique).not.toHaveBeenCalled();
+  });
+
+  it('PATCH /api/cars/:id rejects a plate that is already used', async () => {
+    prismaMock.car.findUnique.mockResolvedValue(listedCar);
+    prismaMock.car.findFirst.mockResolvedValue({
+      id: '35353535-3535-4353-8353-353535353535',
+    });
+
+    const token = signAccessToken(admin.id);
+    const response = await request(app.getHttpServer())
+      .patch(`/api/cars/${listedCar.id}`)
+      .set('Authorization', `Bearer ${token}`)
+      .send({ plateNumber: 'AA0004BB' })
+      .expect(409);
+
+    expect(response.body.errors).toEqual([
+      {
+        field: 'plateNumber',
+        message: 'Автомобіль з таким номером уже є в цій автошколі.',
+      },
+    ]);
+    expect(prismaMock.car.update).not.toHaveBeenCalled();
+  });
+
+  it('PATCH /api/cars/:id rejects an assignment that no longer matches the student', async () => {
+    prismaMock.car.findUnique.mockResolvedValue(listedCar);
+    prismaMock.student.findFirst.mockResolvedValue({ id: pupil.id });
+
+    const token = signAccessToken(owner.id);
+    const response = await request(app.getHttpServer())
+      .patch(`/api/cars/${listedCar.id}`)
+      .set('Authorization', `Bearer ${token}`)
+      .send({ transmission: 'AUTOMATIC' })
+      .expect(409);
+
+    expect(response.body).toMatchObject({
+      statusCode: 409,
+      message:
+        'Автомобіль уже призначено студенту з іншою категорією, коробкою передач або інструктором.',
+    });
+    expect(prismaMock.car.update).not.toHaveBeenCalled();
+  });
+
+  it.each(['TEACHER', 'INSTRUCTOR', 'STUDENT'] as const)(
+    'PATCH /api/cars/:id is forbidden for %s',
+    async (role) => {
+      const actor =
+        role === 'TEACHER'
+          ? teacher
+          : role === 'INSTRUCTOR'
+            ? instructor
+            : pupil;
+      const token = signAccessToken(actor.id);
+      const response = await request(app.getHttpServer())
+        .patch(`/api/cars/${listedCar.id}`)
+        .set('Authorization', `Bearer ${token}`)
+        .send({ plateNumber: 'AA0099BB' })
+        .expect(403);
+
+      expect(response.body).toMatchObject({
+        statusCode: 403,
+        message: 'Insufficient permissions',
+      });
+      expect(prismaMock.car.update).not.toHaveBeenCalled();
+    },
+  );
 });
