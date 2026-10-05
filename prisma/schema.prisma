@@ -36,6 +36,14 @@ enum InvitationStatus {
   CANCELLED
 }
 
+enum InvitationEmailStatus {
+  QUEUED
+  PROCESSING
+  SENT
+  FAILED
+  SUPERSEDED
+}
+
 enum GroupStatus {
   PLANNED
   ACTIVE
@@ -222,12 +230,34 @@ model Invitation {
   organization   Organization     @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   createdAt      DateTime         @default(now()) @map("created_at")
   updatedAt      DateTime         @updatedAt @map("updated_at")
+  emailJobs      InvitationEmailJob[]
 
   @@index([userId])
   @@index([organizationId])
   @@index([invitedById])
   @@index([email])
   @@map("invitations")
+}
+
+/// Задача на відправку листа-запрошення. Сирий token тримається лише до завершення задачі.
+model InvitationEmailJob {
+  id                String                 @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  invitationId      String                 @map("invitation_id") @db.Uuid
+  invitation        Invitation             @relation(fields: [invitationId], references: [id], onDelete: Cascade)
+  token             String?                @db.VarChar(128)
+  tokenHash         String                 @map("token_hash") @db.VarChar(128)
+  status            InvitationEmailStatus  @default(QUEUED)
+  attempts          Int                    @default(0)
+  lastError         String?                @map("last_error") @db.VarChar(500)
+  providerMessageId String?                @map("provider_message_id") @db.VarChar(512)
+  nextAttemptAt     DateTime               @default(now()) @map("next_attempt_at")
+  sentAt            DateTime?              @map("sent_at")
+  createdAt         DateTime               @default(now()) @map("created_at")
+  updatedAt         DateTime               @updatedAt @map("updated_at")
+
+  @@index([status, nextAttemptAt])
+  @@index([invitationId, createdAt])
+  @@map("invitation_email_jobs")
 }
 
 model Group {

@@ -14,6 +14,10 @@ import { MailConfig } from './mail.config';
           host: mailConfig.host,
           port: mailConfig.port,
           secure: mailConfig.port === 465,
+          requireTLS: mailConfig.port === 587,
+          connectionTimeout: 10_000,
+          greetingTimeout: 10_000,
+          socketTimeout: 20_000,
           auth: {
             user: mailConfig.user,
             pass: mailConfig.password,

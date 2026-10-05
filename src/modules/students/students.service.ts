@@ -22,11 +22,13 @@ import { createHash, randomBytes } from 'crypto';
 import { isUniqueConstraintOn } from '../../common/prisma/unique-constraint';
 import { PrismaService } from '../../prisma/prisma.service';
 import {
+  InvitationEmailDelivery,
+  InvitationEmailQueue,
+} from '../invitations/invitation-email.queue';
+import {
   EMAIL_ALREADY_EXISTS_MESSAGE,
   INVITATION_TTL_MS,
-  invitationAcceptUrl,
 } from '../invitations/invitations.service';
-import { MailService } from '../mail/mail.service';
 import {
   AssignStudentGroupDto,
   CreateStudentDto,
@@ -299,14 +301,6 @@ function hashToken(token: string): string {
   return createHash('sha256').update(token).digest('hex');
 }
 
-function escapeHtml(value: string): string {
-  return value
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;');
-}
-
 /**
  * ADMIN, TEACHER і INSTRUCTOR бачать студентів лише своєї організації.
  * Чужу організацію, інші ролі та soft-delete цей фільтр відсікає.
@@ -539,7 +533,7 @@ export class StudentsService {
 
   constructor(
     private readonly prisma: PrismaService,
-    private readonly mailService: MailService,
+    private readonly emailQueue: InvitationEmailQueue,
   ) {}
 
   async list(
@@ -584,7 +578,7 @@ export class StudentsService {
     payload: CreateStudentDto,
   ): Promise<CreateStudentResponseDto> {
     assertCanCreateStudent(actor);
-    const organization = await this.requireOrganization(actor.organizationId);
+    await this.requireOrganization(actor.organizationId);
 
     const firstName = payload.firstName.trim();
     const lastName = payload.lastName.trim();
@@ -626,6 +620,7 @@ export class StudentsService {
         userId: string;
         organizationId: string;
       };
+      emailDelivery: InvitationEmailDelivery;
     };
 
     try {
@@ -700,8 +695,13 @@ export class StudentsService {
             organizationId: actor.organizationId,
           },
         });
+        const emailDelivery = await this.emailQueue.enqueue(tx, {
+          invitationId: invitation.id,
+          token,
+          tokenHash,
+        });
 
-        return { user, student, invitation };
+        return { user, student, invitation, emailDelivery };
       });
     } catch (error) {
       if (
@@ -716,24 +716,7 @@ export class StudentsService {
       throw error;
     }
 
-    try {
-      await this.mailService.sendEmail({
-        to: email,
-        subject: `Запрошення стати учнем — ${organization.name}`,
-        html: this.buildInvitationHtml({
-          firstName,
-          organizationName: organization.name,
-          inviterName: `${actor.firstName} ${actor.lastName}`.trim(),
-          acceptUrl: invitationAcceptUrl(token),
-          expiresAt,
-        }),
-      });
-    } catch (error) {
-      await this.prisma.user
-        .delete({ where: { id: created.user.id } })
-        .catch(() => undefined);
-      throw error;
-    }
+    this.emailQueue.kick();
 
     return {
       user: {
@@ -765,6 +748,7 @@ export class StudentsService {
         expiresAt: created.invitation.expiresAt,
         userId: created.invitation.userId,
         organizationId: created.invitation.organizationId,
+        emailDelivery: created.emailDelivery,
       },
     };
   }
@@ -1257,30 +1241,6 @@ export class StudentsService {
       statusCode: 409,
       errors: [{ field: 'email', message: EMAIL_ALREADY_EXISTS_MESSAGE }],
     });
-  }
-
-  private buildInvitationHtml(input: {
-    firstName: string;
-    organizationName: string;
-    inviterName: string;
-    acceptUrl: string;
-    expiresAt: Date;
-  }): string {
-    const firstName = escapeHtml(input.firstName);
-    const organizationName = escapeHtml(input.organizationName);
-    const inviterName = escapeHtml(input.inviterName);
-    const acceptUrl = escapeHtml(input.acceptUrl);
-    const expiresAt = escapeHtml(
-      input.expiresAt.toLocaleString('uk-UA', { timeZone: 'Europe/Kyiv' }),
-    );
-
-    return `
-<p>Вітаємо, ${firstName}!</p>
-<p>${inviterName} запрошує вас стати учнем автошколи «${organizationName}».</p>
-<p>Щоб прийняти запрошення, перейдіть за посиланням:<br />
-<a href="${acceptUrl}">${acceptUrl}</a></p>
-<p>Посилання дійсне до ${expiresAt}.</p>
-`.trim();
   }
 
   private async requireOrganization(organizationId: string) {

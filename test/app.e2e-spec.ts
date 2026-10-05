@@ -192,12 +192,19 @@ describe('API (e2e)', () => {
       count: jest.fn(),
       findMany: jest.fn(),
     },
+    invitationEmailJob: {
+      create: jest.fn(),
+      update: jest.fn(),
+      updateMany: jest.fn(),
+      findUnique: jest.fn(),
+    },
     group: {
       findUnique: jest.fn(),
     },
     student: {
       create: jest.fn(),
       update: jest.fn(),
+      findUnique: jest.fn(),
     },
     car: {
       findUnique: jest.fn(),
@@ -261,9 +268,16 @@ describe('API (e2e)', () => {
     prismaMock.invitation.findFirst.mockResolvedValue(null);
     prismaMock.invitation.updateMany.mockReset();
     prismaMock.invitation.delete.mockReset();
+    prismaMock.invitationEmailJob.create.mockReset();
+    prismaMock.invitationEmailJob.update.mockReset();
+    prismaMock.invitationEmailJob.updateMany.mockReset();
+    prismaMock.invitationEmailJob.updateMany.mockResolvedValue({ count: 0 });
+    prismaMock.invitationEmailJob.findUnique.mockReset();
     prismaMock.group.findUnique.mockReset();
     prismaMock.group.findUnique.mockResolvedValue(null);
     prismaMock.student.create.mockReset();
+    prismaMock.student.findUnique.mockReset();
+    prismaMock.student.findUnique.mockResolvedValue(null);
     prismaMock.student.update.mockReset();
     prismaMock.student.update.mockImplementation(
       (args: {
@@ -377,6 +391,27 @@ describe('API (e2e)', () => {
           role: args.data.role,
           status: args.data.status,
           organizationId: args.data.organizationId,
+        }),
+    );
+    prismaMock.invitationEmailJob.create.mockImplementation(
+      (args: {
+        data: {
+          invitationId: string;
+          token: string;
+          tokenHash: string;
+          status: string;
+        };
+      }) =>
+        Promise.resolve({
+          id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+          invitationId: args.data.invitationId,
+          token: args.data.token,
+          tokenHash: args.data.tokenHash,
+          status: args.data.status,
+          attempts: 0,
+          lastError: null,
+          sentAt: null,
+          createdAt: new Date('2026-10-05T10:00:00.000Z'),
         }),
     );
     prismaMock.invitation.create.mockImplementation(
@@ -1127,13 +1162,29 @@ describe('API (e2e)', () => {
         organizationId: organization.id,
       },
     });
+    expect(response.body.invitation.emailDelivery).toMatchObject({
+      status: 'QUEUED',
+      attempts: 0,
+      lastError: null,
+      sentAt: null,
+    });
     expect(response.body).not.toHaveProperty('token');
-    expect(mailServiceMock.sendEmail).toHaveBeenCalledWith(
-      expect.objectContaining({
-        to: 'admin@example.com',
-        subject: expect.stringContaining(organization.name),
+    expect(response.body.invitation).not.toHaveProperty('token');
+    const queuedToken = (
+      prismaMock.invitationEmailJob.create.mock.calls[0][0] as {
+        data: { token: string };
+      }
+    ).data.token;
+    expect(JSON.stringify(response.body)).not.toContain(queuedToken);
+    expect(prismaMock.invitationEmailJob.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        invitationId: createdInvitation.id,
+        status: 'QUEUED',
+        token: expect.any(String),
+        tokenHash: expect.any(String),
       }),
-    );
+    });
+    expect(mailServiceMock.sendEmail).not.toHaveBeenCalled();
   });
 
   it('POST /api/invitations creates an INVITED STUDENT when role is passed', async () => {
@@ -1213,6 +1264,13 @@ describe('API (e2e)', () => {
         expiresAt: createdInvitation.expiresAt.toISOString(),
         userId: createdAdmin.id,
         organizationId: organization.id,
+        emailDelivery: {
+          status: 'NONE',
+          attempts: 0,
+          lastError: null,
+          sentAt: null,
+          queuedAt: null,
+        },
       },
     ]);
   });
@@ -1276,6 +1334,80 @@ describe('API (e2e)', () => {
       status: 'CANCELLED',
       role: 'ADMIN',
     });
+  });
+
+  it('POST /api/invitations/:id/resend queues another email without returning the token', async () => {
+    prismaMock.invitation.findUnique.mockResolvedValue({
+      id: createdInvitation.id,
+      email: 'admin@example.com',
+      role: 'ADMIN',
+      status: 'PENDING',
+      expiresAt: createdInvitation.expiresAt,
+      acceptedAt: null,
+      userId: createdAdmin.id,
+      organizationId: organization.id,
+      tokenHash: 'old-hash',
+      user: { status: 'INVITED', deletedAt: null },
+    });
+    prismaMock.invitation.update.mockImplementation(
+      (args: { data: { expiresAt: Date; tokenHash: string } }) =>
+        Promise.resolve({
+          id: createdInvitation.id,
+          email: 'admin@example.com',
+          role: 'ADMIN',
+          status: 'PENDING',
+          expiresAt: args.data.expiresAt,
+          userId: createdAdmin.id,
+          organizationId: organization.id,
+        }),
+    );
+
+    const token = signAccessToken(owner.id);
+    const response = await request(app.getHttpServer())
+      .post(`/api/invitations/${createdInvitation.id}/resend`)
+      .set('Authorization', `Bearer ${token}`)
+      .expect(200);
+
+    expect(response.body).toMatchObject({
+      id: createdInvitation.id,
+      status: 'PENDING',
+      emailDelivery: { status: 'QUEUED', attempts: 0, lastError: null },
+    });
+    expect(response.body).not.toHaveProperty('token');
+    const queuedToken = (
+      prismaMock.invitationEmailJob.create.mock.calls[0][0] as {
+        data: { token: string };
+      }
+    ).data.token;
+    expect(JSON.stringify(response.body)).not.toContain(queuedToken);
+    expect(prismaMock.invitationEmailJob.updateMany).toHaveBeenCalled();
+    expect(mailServiceMock.sendEmail).not.toHaveBeenCalled();
+  });
+
+  it('POST /api/invitations/:id/resend rejects a cancelled invitation', async () => {
+    prismaMock.invitation.findUnique.mockResolvedValue({
+      id: createdInvitation.id,
+      email: 'admin@example.com',
+      role: 'ADMIN',
+      status: 'CANCELLED',
+      expiresAt: createdInvitation.expiresAt,
+      acceptedAt: null,
+      userId: createdAdmin.id,
+      organizationId: organization.id,
+      user: { status: 'INVITED', deletedAt: null },
+    });
+
+    const token = signAccessToken(owner.id);
+    const response = await request(app.getHttpServer())
+      .post(`/api/invitations/${createdInvitation.id}/resend`)
+      .set('Authorization', `Bearer ${token}`)
+      .expect(400);
+
+    expect(response.body).toMatchObject({
+      statusCode: 400,
+      message: 'Це запрошення вже скасовано.',
+    });
+    expect(prismaMock.invitationEmailJob.create).not.toHaveBeenCalled();
   });
 
   it('POST /api/invitations/:id/cancel is forbidden for ADMIN cancelling an ADMIN invitation', async () => {
@@ -1479,12 +1611,16 @@ describe('API (e2e)', () => {
         },
       });
       expect(response.body).not.toHaveProperty('token');
-      expect(mailServiceMock.sendEmail).toHaveBeenCalledWith(
-        expect.objectContaining({
-          to: `new-${role.toLowerCase()}@example.com`,
-          subject: expect.stringContaining(organization.name),
+      expect(response.body.invitation.emailDelivery).toMatchObject({
+        status: 'QUEUED',
+      });
+      expect(prismaMock.invitationEmailJob.create).toHaveBeenCalledWith({
+        data: expect.objectContaining({
+          status: 'QUEUED',
+          token: expect.any(String),
         }),
-      );
+      });
+      expect(mailServiceMock.sendEmail).not.toHaveBeenCalled();
     },
   );
 
@@ -2216,12 +2352,25 @@ describe('API (e2e)', () => {
         trainingStatus: 'INVITED',
       },
     });
-    expect(mailServiceMock.sendEmail).toHaveBeenCalledWith(
-      expect.objectContaining({
-        to: 'new-student@example.com',
-        subject: expect.stringContaining(organization.name),
+    expect(response.body.invitation.emailDelivery).toMatchObject({
+      status: 'QUEUED',
+      attempts: 0,
+      lastError: null,
+    });
+    expect(prismaMock.invitationEmailJob.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        status: 'QUEUED',
+        token: expect.any(String),
+        tokenHash: expect.any(String),
       }),
-    );
+    });
+    const queuedToken = (
+      prismaMock.invitationEmailJob.create.mock.calls[0][0] as {
+        data: { token: string };
+      }
+    ).data.token;
+    expect(JSON.stringify(response.body)).not.toContain(queuedToken);
+    expect(mailServiceMock.sendEmail).not.toHaveBeenCalled();
   });
 
   it('POST /api/students stores groupId when the group belongs to the same organization', async () => {
