@@ -93,7 +93,9 @@ export class InvitationsController {
     description:
       'Необов’язкове поле role: ADMIN, TEACHER, INSTRUCTOR або STUDENT. ' +
       'Якщо role не передати, запрошений стає ADMIN. OWNER запросити не можна. ' +
-      'Викликати може лише OWNER.',
+      'Викликати може лише OWNER. Лист ставиться в чергу; стан доставки — у invitation.emailDelivery. ' +
+      'Сирий token не повертається. Якщо для цього email уже є живе PENDING-запрошення тієї самої школи, ' +
+      'воно оновлюється і лист ставиться в чергу знову.',
   })
   @ApiUnauthorizedResponse({ description: 'Потрібен access token' })
   @ApiCreatedResponse({ type: InviteResponseDto })
@@ -186,5 +188,34 @@ export class InvitationsController {
   })
   cancel(@CurrentUser() user: User, @Param('id', ParseUUIDPipe) id: string) {
     return this.invitationsService.cancel(user, id);
+  }
+
+  @Post(':id/resend')
+  @UseGuards(AuthGuard, RolesGuard)
+  @Roles(UserRole.OWNER, UserRole.ADMIN)
+  @HttpCode(HttpStatus.OK)
+  @ApiBearerAuth()
+  @ApiOperation({
+    summary: 'Повторно поставити лист запрошення в чергу',
+    description:
+      'Для PENDING-запрошення своєї автошколи. Випускає новий token, подовжує строк дії ' +
+      'і ставить нову задачу в чергу. Попередні незавершені задачі скасовуються. ' +
+      'Сирий token не повертається: фронтенд дивиться invitation.emailDelivery ' +
+      '(GET /api/invitations/{id}, доки статус не стане SENT або FAILED). ' +
+      'OWNER надсилає повторно запрошення, які бачить у списку. ADMIN — лише TEACHER, ' +
+      'INSTRUCTOR і STUDENT.',
+  })
+  @ApiUnauthorizedResponse({ description: 'Потрібен access token' })
+  @ApiOkResponse({ type: CreatedInvitationDto })
+  @ApiForbiddenResponse({
+    description: 'Недостатньо прав, щоб надіслати це запрошення повторно.',
+  })
+  @ApiNotFoundResponse({ description: 'Запрошення не знайдено.' })
+  @ApiBadRequestResponse({
+    description:
+      'Запрошення вже скасоване або вже використане (користувач не в статусі INVITED).',
+  })
+  resend(@CurrentUser() user: User, @Param('id', ParseUUIDPipe) id: string) {
+    return this.invitationsService.resend(user, id);
   }
 }

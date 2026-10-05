@@ -123,6 +123,37 @@ export class InvitedUserDto {
   organizationId: string;
 }
 
+export const INVITATION_EMAIL_DELIVERY_STATUSES = [
+  'NONE',
+  'QUEUED',
+  'SENDING',
+  'SENT',
+  'FAILED',
+] as const;
+
+export class InvitationEmailDeliveryDto {
+  @ApiProperty({
+    enum: INVITATION_EMAIL_DELIVERY_STATUSES,
+    example: 'QUEUED',
+    description:
+      'NONE — задачі ще не було. QUEUED — лист у черзі. SENDING — іде SMTP-відправка. ' +
+      'SENT — SMTP-сервер прийняв лист. FAILED — доставка не вдалась, див. lastError.',
+  })
+  status: (typeof INVITATION_EMAIL_DELIVERY_STATUSES)[number];
+
+  @ApiProperty({ example: 0 })
+  attempts: number;
+
+  @ApiProperty({ nullable: true, type: String, example: null })
+  lastError: string | null;
+
+  @ApiProperty({ nullable: true, type: Date })
+  sentAt: Date | null;
+
+  @ApiProperty({ nullable: true, type: Date })
+  queuedAt: Date | null;
+}
+
 export class CreatedInvitationDto {
   @ApiProperty()
   id: string;
@@ -144,6 +175,14 @@ export class CreatedInvitationDto {
 
   @ApiProperty()
   organizationId: string;
+
+  @ApiProperty({
+    type: InvitationEmailDeliveryDto,
+    description:
+      'Стан доставки листа. Сирий token у відповідь не входить. ' +
+      'Повторна відправка: POST /api/invitations/{id}/resend.',
+  })
+  emailDelivery: InvitationEmailDeliveryDto;
 }
 
 export class InvitationListDto {

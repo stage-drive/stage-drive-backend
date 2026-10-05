@@ -1,7 +1,6 @@
 import {
   ConflictException,
   ForbiddenException,
-  InternalServerErrorException,
   Logger,
   NotFoundException,
 } from '@nestjs/common';
@@ -18,11 +17,8 @@ import {
 } from '@prisma/client';
 import { createHash } from 'crypto';
 import { PrismaService } from '../../prisma/prisma.service';
-import {
-  EMAIL_ALREADY_EXISTS_MESSAGE,
-  invitationAcceptUrl,
-} from '../invitations/invitations.service';
-import { MailService } from '../mail/mail.service';
+import { InvitationEmailQueue } from '../invitations/invitation-email.queue';
+import { EMAIL_ALREADY_EXISTS_MESSAGE } from '../invitations/invitations.service';
 import { ListStudentsQueryDto } from './students.dto';
 import {
   CAR_NOT_FOUND_MESSAGE,
@@ -112,8 +108,16 @@ describe('StudentsService', () => {
     $transaction: jest.fn(),
   };
 
-  const mailService = {
-    sendEmail: jest.fn(),
+  const queuedDelivery = {
+    status: 'QUEUED' as const,
+    attempts: 0,
+    lastError: null,
+    sentAt: null,
+    queuedAt: new Date('2026-10-05T10:00:00.000Z'),
+  };
+  const emailQueue = {
+    enqueue: jest.fn().mockResolvedValue(queuedDelivery),
+    kick: jest.fn(),
   };
 
   let service: StudentsService;
@@ -126,10 +130,10 @@ describe('StudentsService', () => {
     prisma.$transaction.mockImplementation(
       (callback: (tx: typeof prisma) => unknown) => callback(prisma),
     );
-    mailService.sendEmail.mockResolvedValue(undefined);
+    emailQueue.enqueue.mockResolvedValue(queuedDelivery);
     service = new StudentsService(
       prisma as unknown as PrismaService,
-      mailService as unknown as MailService,
+      emailQueue as unknown as InvitationEmailQueue,
     );
   });
 
@@ -483,6 +487,7 @@ describe('StudentsService', () => {
           expiresAt: createdInvitation.expiresAt,
           userId: 'student-1',
           organizationId: 'org-1',
+          emailDelivery: queuedDelivery,
         },
       });
       expect(result).not.toHaveProperty('token');
@@ -570,7 +575,7 @@ describe('StudentsService', () => {
         },
       });
       expect(prisma.user.create).not.toHaveBeenCalled();
-      expect(mailService.sendEmail).not.toHaveBeenCalled();
+      expect(emailQueue.enqueue).not.toHaveBeenCalled();
     });
 
     it('does not create a student in another organization when the group belongs elsewhere', async () => {
@@ -591,7 +596,7 @@ describe('StudentsService', () => {
       expect(prisma.user.create).not.toHaveBeenCalled();
       expect(prisma.student.create).not.toHaveBeenCalled();
       expect(prisma.invitation.create).not.toHaveBeenCalled();
-      expect(mailService.sendEmail).not.toHaveBeenCalled();
+      expect(emailQueue.enqueue).not.toHaveBeenCalled();
     });
 
     it('rejects a missing group before creating a user', async () => {
@@ -606,26 +611,24 @@ describe('StudentsService', () => {
       expect(prisma.user.create).not.toHaveBeenCalled();
     });
 
-    it('emails the invitation accept link and stores only the token hash', async () => {
-      await service.create(actor(UserRole.ADMIN), payload);
+    it('queues the invitation accept link and stores only the token hash', async () => {
+      const result = await service.create(actor(UserRole.ADMIN), payload);
 
-      const html = mailService.sendEmail.mock.calls[0][0].html as string;
-      const tokenMatch = html.match(/invite\?token=([^"&\s<]+)/);
-      if (!tokenMatch?.[1]) {
-        throw new Error('invitation email did not contain a token');
-      }
-      const token = decodeURIComponent(tokenMatch[1]);
-
+      const enqueued = emailQueue.enqueue.mock.calls[0][1] as {
+        token: string;
+        tokenHash: string;
+      };
+      expect(enqueued.tokenHash).toBe(
+        createHash('sha256').update(enqueued.token).digest('hex'),
+      );
       expect(prisma.invitation.create).toHaveBeenCalledWith({
         data: expect.objectContaining({
-          tokenHash: createHash('sha256').update(token).digest('hex'),
+          tokenHash: enqueued.tokenHash,
         }),
       });
-      expect(mailService.sendEmail).toHaveBeenCalledWith({
-        to: 'student@example.com',
-        subject: 'Запрошення стати учнем — Автошкола Drive',
-        html: expect.stringContaining(invitationAcceptUrl(token)),
-      });
+      expect(emailQueue.kick).toHaveBeenCalled();
+      expect(JSON.stringify(result)).not.toContain(enqueued.token);
+      expect(JSON.stringify(result)).not.toContain('tokenHash');
     });
 
     it('rejects a duplicate email', async () => {
@@ -643,7 +646,7 @@ describe('StudentsService', () => {
         },
       });
       expect(prisma.user.create).not.toHaveBeenCalled();
-      expect(mailService.sendEmail).not.toHaveBeenCalled();
+      expect(emailQueue.enqueue).not.toHaveBeenCalled();
     });
 
     it('maps a unique email constraint to the same conflict', async () => {
@@ -658,20 +661,15 @@ describe('StudentsService', () => {
       await expect(
         service.create(actor(UserRole.OWNER), payload),
       ).rejects.toBeInstanceOf(ConflictException);
-      expect(mailService.sendEmail).not.toHaveBeenCalled();
+      expect(emailQueue.enqueue).not.toHaveBeenCalled();
     });
 
-    it('removes the created user when the invitation email fails', async () => {
-      mailService.sendEmail.mockRejectedValue(
-        new InternalServerErrorException('Failed to send email'),
-      );
+    it('keeps the created user when the invitation email is queued', async () => {
+      const result = await service.create(actor(UserRole.ADMIN), payload);
 
-      await expect(
-        service.create(actor(UserRole.ADMIN), payload),
-      ).rejects.toBeInstanceOf(InternalServerErrorException);
-      expect(prisma.user.delete).toHaveBeenCalledWith({
-        where: { id: 'student-1' },
-      });
+      expect(emailQueue.enqueue).toHaveBeenCalled();
+      expect(prisma.user.delete).not.toHaveBeenCalled();
+      expect(result.invitation.emailDelivery).toEqual(queuedDelivery);
     });
 
     it.each([UserRole.TEACHER, UserRole.INSTRUCTOR, UserRole.STUDENT] as const)(
@@ -682,7 +680,7 @@ describe('StudentsService', () => {
         ).rejects.toBeInstanceOf(ForbiddenException);
         expect(prisma.organization.findUnique).not.toHaveBeenCalled();
         expect(prisma.user.create).not.toHaveBeenCalled();
-        expect(mailService.sendEmail).not.toHaveBeenCalled();
+        expect(emailQueue.enqueue).not.toHaveBeenCalled();
       },
     );
 

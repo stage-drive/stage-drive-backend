@@ -23,6 +23,7 @@ import {
   Min,
 } from 'class-validator';
 import { IsPlainText } from '../../common/validators/plain-text.decorator';
+import { InvitationEmailDeliveryDto } from '../invitations/invitations.dto';
 
 export const STUDENT_SORT_FIELDS = [
   'firstName',
@@ -373,6 +374,9 @@ export class CreatedStudentInvitationDto {
 
   @ApiProperty({ example: '11111111-1111-1111-1111-111111111111' })
   organizationId: string;
+
+  @ApiProperty({ type: InvitationEmailDeliveryDto })
+  emailDelivery: InvitationEmailDeliveryDto;
 }
 
 export class CreateStudentResponseDto {

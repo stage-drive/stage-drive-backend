@@ -7,6 +7,7 @@ import {
 } from '@nestjs/common';
 import {
   Invitation,
+  InvitationEmailStatus,
   InvitationStatus,
   Prisma,
   TrainingStatus,
@@ -18,7 +19,11 @@ import * as bcrypt from 'bcrypt';
 import { createHash, randomBytes } from 'crypto';
 import { isUniqueConstraintOn } from '../../common/prisma/unique-constraint';
 import { PrismaService } from '../../prisma/prisma.service';
-import { MailService } from '../mail/mail.service';
+import {
+  InvitationEmailDelivery,
+  InvitationEmailQueue,
+  toEmailDelivery,
+} from './invitation-email.queue';
 import {
   ADMIN_INVITABLE_ROLES,
   INVALID_OWNER_INVITE_ROLE_MESSAGE,
@@ -47,40 +52,23 @@ export const INVITATION_ALREADY_USED_MESSAGE = 'Це запрошення вже
 
 const BCRYPT_ROUNDS = 10;
 
-const DEFAULT_FRONTEND_URL = 'http://localhost:5173';
-
-const ROLE_TITLE_UK: Record<UserRole, string> = {
-  [UserRole.OWNER]: 'власником',
-  [UserRole.ADMIN]: 'адміністратором',
-  [UserRole.TEACHER]: 'викладачем',
-  [UserRole.INSTRUCTOR]: 'інструктором',
-  [UserRole.STUDENT]: 'учнем',
-};
+export { invitationAcceptUrl } from './invitation-email.content';
 
 function hashToken(token: string): string {
   return createHash('sha256').update(token).digest('hex');
 }
 
-function escapeHtml(value: string): string {
-  return value
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;');
-}
-
-function frontendBaseUrl(): string {
-  const fromEnv = (
-    process.env.FRONTEND_URL ??
-    process.env.GOOGLE_OAUTH_SUCCESS_REDIRECT ??
-    DEFAULT_FRONTEND_URL
-  ).trim();
-  return (fromEnv || DEFAULT_FRONTEND_URL).replace(/\/$/, '');
-}
-
-export function invitationAcceptUrl(token: string): string {
-  return `${frontendBaseUrl()}/invite?token=${encodeURIComponent(token)}`;
-}
+const invitationEmailPreview = {
+  orderBy: { createdAt: 'desc' as const },
+  take: 1,
+  select: {
+    status: true,
+    attempts: true,
+    lastError: true,
+    sentAt: true,
+    createdAt: true,
+  },
+};
 
 function isAdminInvitableRole(role: UserRole): boolean {
   return ADMIN_INVITABLE_ROLES.includes(role);
@@ -110,7 +98,16 @@ function canCancelRole(actor: User, role: UserRole): boolean {
   return actor.role === UserRole.ADMIN && isAdminInvitableRole(role);
 }
 
-function toInvitationView(invitation: Invitation) {
+function toInvitationView(
+  invitation: Invitation,
+  emailDelivery?: InvitationEmailDelivery,
+) {
+  const preview = (
+    invitation as Invitation & {
+      emailJobs?: Parameters<typeof toEmailDelivery>[0][];
+    }
+  ).emailJobs?.[0];
+
   return {
     id: invitation.id,
     email: invitation.email,
@@ -119,6 +116,7 @@ function toInvitationView(invitation: Invitation) {
     expiresAt: invitation.expiresAt,
     userId: invitation.userId,
     organizationId: invitation.organizationId,
+    emailDelivery: emailDelivery ?? toEmailDelivery(preview),
   };
 }
 
@@ -134,7 +132,7 @@ type InviteUserPayload = {
 export class InvitationsService {
   constructor(
     private readonly prisma: PrismaService,
-    private readonly mailService: MailService,
+    private readonly emailQueue: InvitationEmailQueue,
   ) {}
 
   async inviteAdmin(owner: User, payload: InviteByOwnerDto) {
@@ -170,9 +168,14 @@ export class InvitationsService {
         role: { in: visibleRoles(actor) },
       },
       orderBy: { createdAt: 'desc' },
+      include: { emailJobs: invitationEmailPreview },
     });
 
-    return { invitations: invitations.map(toInvitationView) };
+    return {
+      invitations: invitations.map((invitation) =>
+        toInvitationView(invitation),
+      ),
+    };
   }
 
   async getById(actor: User, invitationId: string) {
@@ -210,8 +213,51 @@ export class InvitationsService {
       where: { id: invitation.id },
       data: { status: InvitationStatus.CANCELLED },
     });
+    await this.prisma.invitationEmailJob.updateMany({
+      where: {
+        invitationId: invitation.id,
+        status: {
+          in: [
+            InvitationEmailStatus.QUEUED,
+            InvitationEmailStatus.PROCESSING,
+            InvitationEmailStatus.FAILED,
+          ],
+        },
+      },
+      data: { status: InvitationEmailStatus.SUPERSEDED, token: null },
+    });
 
     return toInvitationView(cancelled);
+  }
+
+  async resend(actor: User, invitationId: string) {
+    const invitation = await this.findInvitationForActor(actor, invitationId);
+    this.assertInvitationResendable(invitation);
+
+    const token = randomBytes(48).toString('base64url');
+    const tokenHash = hashToken(token);
+    const expiresAt = new Date(Date.now() + INVITATION_TTL_MS);
+
+    const updated = await this.prisma.$transaction(async (tx) => {
+      const next = await tx.invitation.update({
+        where: { id: invitation.id },
+        data: {
+          tokenHash,
+          expiresAt,
+          status: InvitationStatus.PENDING,
+          acceptedAt: null,
+        },
+      });
+      const emailDelivery = await this.emailQueue.replacePending(tx, {
+        invitationId: next.id,
+        token,
+        tokenHash,
+      });
+      return { invitation: next, emailDelivery };
+    });
+
+    this.emailQueue.kick();
+    return toInvitationView(updated.invitation, updated.emailDelivery);
   }
 
   async verifyToken(rawToken: string): Promise<VerifyInvitationResponseDto> {
@@ -317,7 +363,7 @@ export class InvitationsService {
   ) {
     const invitation = await this.prisma.invitation.findUnique({
       where: { id: invitationId },
-      include: { user: true },
+      include: { user: true, emailJobs: invitationEmailPreview },
     });
 
     if (!invitation || invitation.organizationId !== actor.organizationId) {
@@ -392,6 +438,32 @@ export class InvitationsService {
         InvitationTokenErrorCode.EXPIRED,
         EXPIRED_INVITATION_TOKEN_MESSAGE,
       );
+    }
+  }
+
+  private assertInvitationResendable(invitation: {
+    status: InvitationStatus;
+    acceptedAt: Date | null;
+    user: { status: UserStatus; deletedAt?: Date | null } | null;
+  }): void {
+    if (invitation.status === InvitationStatus.CANCELLED) {
+      throw new BadRequestException({
+        statusCode: 400,
+        message: INVITATION_ALREADY_CANCELLED_MESSAGE,
+      });
+    }
+
+    if (
+      invitation.status !== InvitationStatus.PENDING ||
+      invitation.acceptedAt ||
+      !invitation.user ||
+      invitation.user.deletedAt ||
+      invitation.user.status !== UserStatus.INVITED
+    ) {
+      throw new BadRequestException({
+        statusCode: 400,
+        message: INVITATION_ALREADY_USED_MESSAGE,
+      });
     }
   }
 
@@ -473,9 +545,8 @@ export class InvitationsService {
     let created: {
       user: User;
       invitation: Invitation;
-      createdStudentProfileId: string | null;
+      emailDelivery: InvitationEmailDelivery;
     };
-    let replacedUser: User | null = null;
     try {
       created = await this.prisma.$transaction(async (tx) => {
         const existing = await tx.user.findUnique({ where: { email } });
@@ -496,11 +567,7 @@ export class InvitationsService {
               expiresAt: { gt: new Date() },
             },
           });
-          if (liveInvitation) {
-            throw this.emailAlreadyExists();
-          }
 
-          replacedUser = existing;
           const user = await tx.user.update({
             where: { id: existing.id },
             data: {
@@ -512,10 +579,29 @@ export class InvitationsService {
               passwordHash: null,
             },
           });
-          const createdStudentProfileId = await this.ensureStudentProfile(
-            tx,
-            user,
-          );
+          await this.ensureStudentProfile(tx, user);
+
+          if (liveInvitation) {
+            const invitation = await tx.invitation.update({
+              where: { id: liveInvitation.id },
+              data: {
+                email,
+                role,
+                tokenHash,
+                status: InvitationStatus.PENDING,
+                expiresAt,
+                acceptedAt: null,
+                invitedById: inviter.id,
+              },
+            });
+            const emailDelivery = await this.emailQueue.replacePending(tx, {
+              invitationId: invitation.id,
+              token,
+              tokenHash,
+            });
+            return { user, invitation, emailDelivery };
+          }
+
           const invitation = await tx.invitation.create({
             data: {
               email,
@@ -528,7 +614,12 @@ export class InvitationsService {
               organizationId: inviter.organizationId,
             },
           });
-          return { user, invitation, createdStudentProfileId };
+          const emailDelivery = await this.emailQueue.enqueue(tx, {
+            invitationId: invitation.id,
+            token,
+            tokenHash,
+          });
+          return { user, invitation, emailDelivery };
         }
 
         const user = await tx.user.create({
@@ -543,10 +634,7 @@ export class InvitationsService {
             organizationId: inviter.organizationId,
           },
         });
-        const createdStudentProfileId = await this.ensureStudentProfile(
-          tx,
-          user,
-        );
+        await this.ensureStudentProfile(tx, user);
 
         const invitation = await tx.invitation.create({
           data: {
@@ -560,8 +648,13 @@ export class InvitationsService {
             organizationId: inviter.organizationId,
           },
         });
+        const emailDelivery = await this.emailQueue.enqueue(tx, {
+          invitationId: invitation.id,
+          token,
+          tokenHash,
+        });
 
-        return { user, invitation, createdStudentProfileId };
+        return { user, invitation, emailDelivery };
       });
     } catch (error) {
       if (error instanceof ConflictException) {
@@ -573,54 +666,7 @@ export class InvitationsService {
       throw error;
     }
 
-    const roleTitle = ROLE_TITLE_UK[role];
-
-    try {
-      await this.mailService.sendEmail({
-        to: email,
-        subject: `Запрошення стати ${roleTitle} — ${organization.name}`,
-        html: this.buildInvitationHtml({
-          firstName,
-          organizationName: organization.name,
-          inviterName: `${inviter.firstName} ${inviter.lastName}`.trim(),
-          roleTitle,
-          acceptUrl: invitationAcceptUrl(token),
-          expiresAt,
-        }),
-      });
-    } catch (error) {
-      if (replacedUser) {
-        await this.prisma.invitation
-          .delete({ where: { id: created.invitation.id } })
-          .catch(() => undefined);
-        if (
-          created.createdStudentProfileId &&
-          replacedUser.role !== UserRole.STUDENT
-        ) {
-          await this.prisma.student
-            .delete({ where: { id: created.createdStudentProfileId } })
-            .catch(() => undefined);
-        }
-        await this.prisma.user
-          .update({
-            where: { id: replacedUser.id },
-            data: {
-              firstName: replacedUser.firstName,
-              lastName: replacedUser.lastName,
-              phone: replacedUser.phone,
-              role: replacedUser.role,
-              status: replacedUser.status,
-              passwordHash: replacedUser.passwordHash,
-            },
-          })
-          .catch(() => undefined);
-      } else {
-        await this.prisma.user
-          .delete({ where: { id: created.user.id } })
-          .catch(() => undefined);
-      }
-      throw error;
-    }
+    this.emailQueue.kick();
 
     return {
       user: {
@@ -633,41 +679,7 @@ export class InvitationsService {
         status: created.user.status,
         organizationId: created.user.organizationId,
       },
-      invitation: {
-        id: created.invitation.id,
-        email: created.invitation.email,
-        role: created.invitation.role,
-        status: created.invitation.status,
-        expiresAt: created.invitation.expiresAt,
-        userId: created.invitation.userId,
-        organizationId: created.invitation.organizationId,
-      },
+      invitation: toInvitationView(created.invitation, created.emailDelivery),
     };
-  }
-
-  private buildInvitationHtml(input: {
-    firstName: string;
-    organizationName: string;
-    inviterName: string;
-    roleTitle: string;
-    acceptUrl: string;
-    expiresAt: Date;
-  }): string {
-    const firstName = escapeHtml(input.firstName);
-    const organizationName = escapeHtml(input.organizationName);
-    const inviterName = escapeHtml(input.inviterName);
-    const roleTitle = escapeHtml(input.roleTitle);
-    const acceptUrl = escapeHtml(input.acceptUrl);
-    const expiresAt = escapeHtml(
-      input.expiresAt.toLocaleString('uk-UA', { timeZone: 'Europe/Kyiv' }),
-    );
-
-    return `
-<p>Вітаємо, ${firstName}!</p>
-<p>${inviterName} запрошує вас стати ${roleTitle} автошколи «${organizationName}».</p>
-<p>Щоб прийняти запрошення, перейдіть за посиланням:<br />
-<a href="${acceptUrl}">${acceptUrl}</a></p>
-<p>Посилання дійсне до ${expiresAt}.</p>
-`.trim();
   }
 }
