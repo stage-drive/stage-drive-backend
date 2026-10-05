@@ -208,6 +208,8 @@ describe('API (e2e)', () => {
     },
     car: {
       findUnique: jest.fn(),
+      findMany: jest.fn(),
+      count: jest.fn(),
     },
     enrollment: {
       findFirst: jest.fn(),
@@ -300,6 +302,10 @@ describe('API (e2e)', () => {
     );
     prismaMock.car.findUnique.mockReset();
     prismaMock.car.findUnique.mockResolvedValue(null);
+    prismaMock.car.findMany.mockReset();
+    prismaMock.car.findMany.mockResolvedValue([]);
+    prismaMock.car.count.mockReset();
+    prismaMock.car.count.mockResolvedValue(0);
     prismaMock.enrollment.findFirst.mockReset();
     prismaMock.enrollment.findFirst.mockResolvedValue(null);
     prismaMock.enrollment.upsert.mockReset();
@@ -3716,5 +3722,272 @@ describe('API (e2e)', () => {
       paths['/students/{id}/practice-access']) as
       { patch?: unknown } | undefined;
     expect(access?.patch).toBeDefined();
+  });
+
+  const listedCar = {
+    id: '31313131-3131-4131-8131-313131313131',
+    organizationId: organization.id,
+    instructorId: instructor.id,
+    plateNumber: 'AA0001BB',
+    category: 'B' as const,
+    transmission: 'MANUAL' as const,
+    createdAt: new Date('2026-01-02T00:00:00.000Z'),
+    updatedAt: new Date('2026-01-03T00:00:00.000Z'),
+    instructor: {
+      id: instructor.id,
+      firstName: instructor.firstName,
+      lastName: instructor.lastName,
+    },
+  };
+
+  it('GET /api/cars without token returns 401', () => {
+    return request(app.getHttpServer()).get('/api/cars').expect(401);
+  });
+
+  it('GET /api/cars rejects an invalid access token', async () => {
+    const response = await request(app.getHttpServer())
+      .get('/api/cars')
+      .set('Authorization', 'Bearer not-a-token')
+      .expect(401);
+
+    expect(response.body).toMatchObject({
+      statusCode: 401,
+      message: 'Invalid access token',
+    });
+    expect(prismaMock.car.findMany).not.toHaveBeenCalled();
+  });
+
+  it.each(['TEACHER', 'STUDENT'] as const)(
+    'GET /api/cars is forbidden for %s',
+    async (role) => {
+      const actor = role === 'TEACHER' ? teacher : pupil;
+      const token = signAccessToken(actor.id);
+      const response = await request(app.getHttpServer())
+        .get('/api/cars')
+        .set('Authorization', `Bearer ${token}`)
+        .expect(403);
+
+      expect(response.body).toMatchObject({
+        statusCode: 403,
+        message: 'Insufficient permissions',
+      });
+      expect(prismaMock.car.findMany).not.toHaveBeenCalled();
+    },
+  );
+
+  it('GET /api/cars rejects a blocked caller', async () => {
+    prismaMock.user.findUnique.mockResolvedValue({
+      ...admin,
+      status: 'BLOCKED',
+    });
+
+    const token = signAccessToken(admin.id);
+    const response = await request(app.getHttpServer())
+      .get('/api/cars')
+      .set('Authorization', `Bearer ${token}`)
+      .expect(401);
+
+    expect(response.body).toMatchObject({
+      statusCode: 401,
+      message: ACCOUNT_NOT_ACTIVE_MESSAGE,
+    });
+    expect(prismaMock.car.findMany).not.toHaveBeenCalled();
+  });
+
+  it.each(['OWNER', 'ADMIN'] as const)(
+    'GET /api/cars returns only the %s organization scope',
+    async (role) => {
+      const actor = role === 'OWNER' ? owner : admin;
+      prismaMock.car.findMany.mockResolvedValue([
+        listedCar,
+        {
+          ...listedCar,
+          id: '36363636-3636-4363-8363-363636363636',
+          organizationId: '22222222-2222-2222-2222-222222222222',
+          plateNumber: 'AA0005BB',
+        },
+      ]);
+      prismaMock.car.count.mockResolvedValue(1);
+
+      const token = signAccessToken(actor.id);
+      const response = await request(app.getHttpServer())
+        .get('/api/cars')
+        .set('Authorization', `Bearer ${token}`)
+        .expect(200);
+
+      expect(response.body).toEqual({
+        cars: [
+          {
+            id: listedCar.id,
+            organizationId: organization.id,
+            instructorId: instructor.id,
+            instructor: listedCar.instructor,
+            plateNumber: 'AA0001BB',
+            category: 'B',
+            transmission: 'MANUAL',
+            createdAt: '2026-01-02T00:00:00.000Z',
+            updatedAt: '2026-01-03T00:00:00.000Z',
+          },
+        ],
+        pagination: { page: 1, limit: 20, total: 1, totalPages: 1 },
+      });
+      expect(response.body.cars[0].instructor).not.toHaveProperty('email');
+      expect(prismaMock.car.findMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: {
+            AND: [{ organizationId: organization.id }],
+          },
+          skip: 0,
+          take: 20,
+          orderBy: [{ plateNumber: 'asc' }, { id: 'asc' }],
+        }),
+      );
+    },
+  );
+
+  it('GET /api/cars limits an instructor to assigned cars', async () => {
+    prismaMock.car.findMany.mockResolvedValue([
+      listedCar,
+      {
+        ...listedCar,
+        id: '35353535-3535-4353-8353-353535353535',
+        instructorId: '24242424-2424-4242-8242-242424242424',
+        plateNumber: 'AA0004BB',
+        instructor: {
+          id: '24242424-2424-4242-8242-242424242424',
+          firstName: 'Bohdan',
+          lastName: 'Kovalenko',
+        },
+      },
+    ]);
+    prismaMock.car.count.mockResolvedValue(1);
+
+    const token = signAccessToken(instructor.id);
+    const response = await request(app.getHttpServer())
+      .get('/api/cars')
+      .set('Authorization', `Bearer ${token}`)
+      .expect(200);
+
+    expect(response.body.cars.map((car: { id: string }) => car.id)).toEqual([
+      listedCar.id,
+    ]);
+    expect(prismaMock.car.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: {
+          AND: [
+            {
+              organizationId: organization.id,
+              instructorId: instructor.id,
+            },
+          ],
+        },
+      }),
+    );
+  });
+
+  it('GET /api/cars applies search, filters, sort and pagination', async () => {
+    const token = signAccessToken(owner.id);
+    await request(app.getHttpServer())
+      .get('/api/cars')
+      .query({
+        search: 'AA0001',
+        category: 'B',
+        transmission: 'MANUAL',
+        instructorId: '23232323-2323-4232-8232-232323232323',
+        sortBy: 'createdAt',
+        sortOrder: 'desc',
+        page: 2,
+        limit: 5,
+      })
+      .set('Authorization', `Bearer ${token}`)
+      .expect(200);
+
+    expect(prismaMock.car.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: {
+          AND: [
+            { organizationId: organization.id },
+            { category: 'B' },
+            { transmission: 'MANUAL' },
+            { instructorId: '23232323-2323-4232-8232-232323232323' },
+            {
+              plateNumber: { contains: 'AA0001', mode: 'insensitive' },
+            },
+          ],
+        },
+        orderBy: [{ createdAt: 'desc' }, { id: 'asc' }],
+        skip: 5,
+        take: 5,
+      }),
+    );
+  });
+
+  it('GET /api/cars rejects an unknown query parameter', async () => {
+    const token = signAccessToken(admin.id);
+    const response = await request(app.getHttpServer())
+      .get('/api/cars')
+      .query({ organizationId: '22222222-2222-2222-2222-222222222222' })
+      .set('Authorization', `Bearer ${token}`)
+      .expect(400);
+
+    expect(response.body).toMatchObject({
+      statusCode: 400,
+      errors: [
+        {
+          field: 'organizationId',
+          message: 'property organizationId should not exist',
+        },
+      ],
+    });
+    expect(prismaMock.car.findMany).not.toHaveBeenCalled();
+  });
+
+  it('GET /api/cars rejects an invalid category filter', async () => {
+    const token = signAccessToken(owner.id);
+    const response = await request(app.getHttpServer())
+      .get('/api/cars')
+      .query({ category: 'Z' })
+      .set('Authorization', `Bearer ${token}`)
+      .expect(400);
+
+    expect(response.body).toMatchObject({
+      statusCode: 400,
+      errors: [
+        {
+          field: 'category',
+          message: 'category має бути A, B, C або D.',
+        },
+      ],
+    });
+  });
+
+  it('GET /api/cars returns 404 when the organization is deleted', async () => {
+    prismaMock.organization.findUnique.mockResolvedValue({
+      ...organization,
+      deletedAt: new Date(),
+    });
+
+    const token = signAccessToken(admin.id);
+    const response = await request(app.getHttpServer())
+      .get('/api/cars')
+      .set('Authorization', `Bearer ${token}`)
+      .expect(404);
+
+    expect(response.body).toMatchObject({
+      statusCode: 404,
+      message: 'Organization not found',
+    });
+    expect(prismaMock.car.findMany).not.toHaveBeenCalled();
+  });
+
+  it('OpenAPI documents the car collection', async () => {
+    const response = await request(app.getHttpServer())
+      .get('/api/docs-json')
+      .expect(200);
+
+    const paths = (response.body as { paths: Record<string, unknown> }).paths;
+    const cars = (paths['/api/cars'] ?? paths['/cars']) as
+      { get?: unknown } | undefined;
+    expect(cars?.get).toBeDefined();
   });
 });

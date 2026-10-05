@@ -17,6 +17,10 @@ const DEMO_ORG_SLUG = 'stage-drive-school';
 const DEMO_ORG_EMAIL = 'owner@example.com';
 const DEMO_ORG_NAME = 'Stage Drive School';
 
+const DEMO_INSTRUCTOR_ID = '23232323-2323-4232-8232-232323232323';
+const DEMO_CAR_MANUAL_ID = '31313131-3131-4131-8131-313131313131';
+const DEMO_CAR_AUTOMATIC_ID = '32323232-3232-4232-8232-323232323232';
+
 const DEMO_ACCOUNTS = [
   {
     id: '66666666-6666-6666-6666-666666666666',
@@ -33,7 +37,7 @@ const DEMO_ACCOUNTS = [
     role: UserRole.TEACHER,
   },
   {
-    id: '23232323-2323-4232-8232-232323232323',
+    id: DEMO_INSTRUCTOR_ID,
     email: 'instructor@example.com',
     firstName: 'Taras',
     lastName: 'Shevchenko',
@@ -135,6 +139,8 @@ export async function provisionDemoAccounts(
     });
   }
 
+  await ensureDemoCars(db, organization.id);
+
   return DEMO_ACCOUNTS.map((account) => account.email);
 }
 
@@ -173,4 +179,54 @@ async function ensureDemoOrganization(db: PrismaClient) {
   }
 
   return existing;
+}
+
+async function ensureDemoCars(db: PrismaClient, organizationId: string) {
+  const instructor = await db.user.findFirst({
+    where: {
+      id: DEMO_INSTRUCTOR_ID,
+      organizationId,
+      role: UserRole.INSTRUCTOR,
+      deletedAt: null,
+    },
+  });
+  if (!instructor) {
+    return;
+  }
+
+  const cars = [
+    {
+      id: DEMO_CAR_MANUAL_ID,
+      plateNumber: 'AA0001BB',
+      category: LicenseCategory.B,
+      transmission: Transmission.MANUAL,
+    },
+    {
+      id: DEMO_CAR_AUTOMATIC_ID,
+      plateNumber: 'AA0002BB',
+      category: LicenseCategory.B,
+      transmission: Transmission.AUTOMATIC,
+    },
+  ] as const;
+
+  for (const car of cars) {
+    await db.car.upsert({
+      where: { id: car.id },
+      update: {
+        organizationId,
+        instructorId: instructor.id,
+        plateNumber: car.plateNumber,
+        category: car.category,
+        transmission: car.transmission,
+      },
+      create: {
+        id: car.id,
+        organizationId,
+        instructorId: instructor.id,
+        plateNumber: car.plateNumber,
+        category: car.category,
+        transmission: car.transmission,
+      },
+    });
+  }
 }

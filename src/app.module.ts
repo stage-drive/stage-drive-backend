@@ -9,6 +9,7 @@ import { MailModule } from './modules/mail/mail.module';
 import { InvitationsModule } from './modules/invitations/invitations.module';
 import { DashboardModule } from './modules/dashboard/dashboard.module';
 import { StudentsModule } from './modules/students/students.module';
+import { CarsModule } from './modules/cars/cars.module';
 
 @Module({
   imports: [
@@ -20,6 +21,7 @@ import { StudentsModule } from './modules/students/students.module';
     InvitationsModule,
     DashboardModule,
     StudentsModule,
+    CarsModule,
   ],
   controllers: [AppController],
   providers: [AppService],

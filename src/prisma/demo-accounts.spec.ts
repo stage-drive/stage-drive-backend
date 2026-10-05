@@ -20,9 +20,7 @@ describe('shouldProvisionDemoAccounts', () => {
   });
 
   it('provisions in development by default', () => {
-    expect(shouldProvisionDemoAccounts({ NODE_ENV: 'development' })).toBe(
-      true,
-    );
+    expect(shouldProvisionDemoAccounts({ NODE_ENV: 'development' })).toBe(true);
   });
 
   it('stays off in development when SEED_DEMO_USERS is false', () => {
@@ -91,6 +89,12 @@ describe('provisionDemoAccounts', () => {
       'hashed-demo',
     );
     expect(db.student.create).toHaveBeenCalledTimes(1);
+    expect(db.car.upsert).toHaveBeenCalledTimes(2);
+    expect(db.car.upsert.mock.calls[0][0].create).toMatchObject({
+      plateNumber: 'AA0001BB',
+      instructorId: '23232323-2323-4232-8232-232323232323',
+      organizationId: '11111111-1111-1111-1111-111111111111',
+    });
   });
 
   it('reuses an existing school and does not duplicate the student profile', async () => {
@@ -131,10 +135,23 @@ function createDb() {
           role: create.role,
         }),
       ),
+      findFirst: jest.fn().mockImplementation(({ where }) => {
+        if (where.role !== UserRole.INSTRUCTOR) {
+          return Promise.resolve(null);
+        }
+        return Promise.resolve({
+          id: where.id,
+          organizationId: where.organizationId,
+          role: where.role,
+        });
+      }),
     },
     student: {
       findUnique: jest.fn().mockResolvedValue(null),
       create: jest.fn().mockResolvedValue({ id: 'profile' }),
+    },
+    car: {
+      upsert: jest.fn().mockResolvedValue({ id: 'car' }),
     },
   } as unknown as PrismaClient & {
     organization: {
@@ -142,7 +159,8 @@ function createDb() {
       create: jest.Mock;
       update: jest.Mock;
     };
-    user: { upsert: jest.Mock };
+    user: { upsert: jest.Mock; findFirst: jest.Mock };
     student: { findUnique: jest.Mock; create: jest.Mock };
+    car: { upsert: jest.Mock };
   };
 }
