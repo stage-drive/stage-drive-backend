@@ -2,15 +2,19 @@ import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import { LicenseCategory, Transmission } from '@prisma/client';
 import { Transform } from 'class-transformer';
 import {
+  IsDefined,
   IsEnum,
   IsIn,
   IsInt,
+  IsNotEmpty,
   IsOptional,
   IsString,
   IsUUID,
+  Matches,
   Max,
   MaxLength,
   Min,
+  ValidateIf,
 } from 'class-validator';
 
 export const CAR_SORT_FIELDS = [
@@ -32,6 +36,17 @@ const DEFAULT_LIMIT = 20;
 const MAX_PAGE = 10_000;
 const MAX_LIMIT = 100;
 
+export const PLATE_MAX_LENGTH = 16;
+export const REQUIRED_FIELD_MESSAGE = "Заповніть обов'язкове поле.";
+export const PLATE_FORMAT_MESSAGE =
+  'Номер має містити лише латинські літери та цифри.';
+export const PLATE_LENGTH_MESSAGE = `Номер має містити не більше ${PLATE_MAX_LENGTH} символів.`;
+export const PLATE_PATTERN = /^[A-Z0-9]+$/;
+
+export function normalizePlateNumber(value: string): string {
+  return value.replace(/[\s-]+/g, '').toUpperCase();
+}
+
 function optionalTrimmedString({ value }: { value: unknown }): unknown {
   if (typeof value !== 'string') {
     return value;
@@ -45,6 +60,13 @@ function optionalInteger({ value }: { value: unknown }): unknown {
     return undefined;
   }
   return typeof value === 'number' ? value : Number(value);
+}
+
+function normalizePlateInput({ value }: { value: unknown }): unknown {
+  if (typeof value !== 'string') {
+    return value;
+  }
+  return normalizePlateNumber(value);
 }
 
 export class ListCarsQueryDto {
@@ -201,4 +223,102 @@ export class CarListDto {
 
   @ApiProperty({ type: CarListPaginationDto })
   pagination: CarListPaginationDto;
+}
+
+export class CreateCarDto {
+  @ApiProperty({
+    example: 'AA0003BB',
+    maxLength: PLATE_MAX_LENGTH,
+    description:
+      'Державний номер. Пробіли і дефіси прибираються, літери переводяться у верхній регістр. Унікальний у межах автошколи.',
+  })
+  @Transform(normalizePlateInput)
+  @MaxLength(PLATE_MAX_LENGTH, { message: PLATE_LENGTH_MESSAGE })
+  @Matches(PLATE_PATTERN, { message: PLATE_FORMAT_MESSAGE })
+  @IsNotEmpty({ message: REQUIRED_FIELD_MESSAGE })
+  @IsString({ message: 'plateNumber має бути рядком.' })
+  @IsDefined({ message: REQUIRED_FIELD_MESSAGE })
+  plateNumber: string;
+
+  @ApiProperty({
+    enum: LicenseCategory,
+    example: LicenseCategory.B,
+    description: 'Категорія, для якої використовується автомобіль.',
+  })
+  @IsEnum(LicenseCategory, {
+    message: 'category має бути A, B, C або D.',
+  })
+  @IsDefined({ message: REQUIRED_FIELD_MESSAGE })
+  category: LicenseCategory;
+
+  @ApiProperty({
+    enum: Transmission,
+    example: Transmission.MANUAL,
+    description: 'Коробка передач.',
+  })
+  @IsEnum(Transmission, {
+    message: 'transmission має бути MANUAL або AUTOMATIC.',
+  })
+  @IsDefined({ message: REQUIRED_FIELD_MESSAGE })
+  transmission: Transmission;
+
+  @ApiProperty({
+    format: 'uuid',
+    example: '23232323-2323-4232-8232-232323232323',
+    description:
+      'Інструктор тієї самої автошколи з роллю INSTRUCTOR і статусом ACTIVE.',
+  })
+  @IsUUID('4', { message: 'instructorId має бути UUID.' })
+  @IsDefined({ message: REQUIRED_FIELD_MESSAGE })
+  instructorId: string;
+}
+
+export class UpdateCarDto {
+  @ApiPropertyOptional({
+    example: 'AA0009BB',
+    maxLength: PLATE_MAX_LENGTH,
+    description:
+      'Новий державний номер. Пробіли і дефіси прибираються, літери переводяться у верхній регістр.',
+  })
+  @Transform(normalizePlateInput)
+  @ValidateIf((_, value) => value !== undefined)
+  @MaxLength(PLATE_MAX_LENGTH, { message: PLATE_LENGTH_MESSAGE })
+  @Matches(PLATE_PATTERN, { message: PLATE_FORMAT_MESSAGE })
+  @IsNotEmpty({ message: REQUIRED_FIELD_MESSAGE })
+  @IsString({ message: 'plateNumber має бути рядком.' })
+  plateNumber?: string;
+
+  @ApiPropertyOptional({
+    enum: LicenseCategory,
+    example: LicenseCategory.B,
+    description:
+      'Нова категорія. Якщо автомобіль уже призначено студенту, значення має збігатися з його профілем.',
+  })
+  @ValidateIf((_, value) => value !== undefined)
+  @IsEnum(LicenseCategory, {
+    message: 'category має бути A, B, C або D.',
+  })
+  category?: LicenseCategory;
+
+  @ApiPropertyOptional({
+    enum: Transmission,
+    example: Transmission.AUTOMATIC,
+    description:
+      'Нова коробка передач. Має збігатися зі студентом, якому вже призначено цей автомобіль.',
+  })
+  @ValidateIf((_, value) => value !== undefined)
+  @IsEnum(Transmission, {
+    message: 'transmission має бути MANUAL або AUTOMATIC.',
+  })
+  transmission?: Transmission;
+
+  @ApiPropertyOptional({
+    format: 'uuid',
+    example: '23232323-2323-4232-8232-232323232323',
+    description:
+      'Новий інструктор тієї самої автошколи з роллю INSTRUCTOR і статусом ACTIVE.',
+  })
+  @ValidateIf((_, value) => value !== undefined)
+  @IsUUID('4', { message: 'instructorId має бути UUID.' })
+  instructorId?: string;
 }
