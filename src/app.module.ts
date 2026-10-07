@@ -10,6 +10,7 @@ import { InvitationsModule } from './modules/invitations/invitations.module';
 import { DashboardModule } from './modules/dashboard/dashboard.module';
 import { StudentsModule } from './modules/students/students.module';
 import { CarsModule } from './modules/cars/cars.module';
+import { GroupsModule } from './modules/groups/groups.module';
 
 @Module({
   imports: [
@@ -22,6 +23,7 @@ import { CarsModule } from './modules/cars/cars.module';
     DashboardModule,
     StudentsModule,
     CarsModule,
+    GroupsModule,
   ],
   controllers: [AppController],
   providers: [AppService],
