@@ -10,6 +10,7 @@ import {
   EnrollmentStatus,
   GroupStatus,
   InvitationStatus,
+  CarStatus,
   LicenseCategory,
   Prisma,
   TrainingStatus,
@@ -87,6 +88,8 @@ export const INSTRUCTOR_NOT_ACTIVE_MESSAGE =
   'Інструктор має бути в статусі ACTIVE.';
 export const INSTRUCTOR_CAR_MISMATCH_MESSAGE =
   'Некоректна комбінація інструктора та автомобіля.';
+export const CAR_NOT_AVAILABLE_MESSAGE =
+  'Автомобіль має бути в статусі AVAILABLE.';
 export const STUDENT_PRACTICE_ACCESS_MESSAGE =
   'Студент не має права на допуск до практичного навчання.';
 export const ARCHIVED_STUDENT_BOOKING_MESSAGE =
@@ -1139,6 +1142,9 @@ export class StudentsService {
         car.transmission !== student.studentProfile.transmission
       ) {
         throw new ConflictException(INSTRUCTOR_CAR_MISMATCH_MESSAGE);
+      }
+      if (car.status !== CarStatus.AVAILABLE) {
+        throw new ConflictException(CAR_NOT_AVAILABLE_MESSAGE);
       }
 
       const profile = await tx.student.update({

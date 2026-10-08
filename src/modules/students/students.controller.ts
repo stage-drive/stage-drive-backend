@@ -295,7 +295,7 @@ export class StudentsController {
       'Студент має існувати в цій автошколі, мати обліковий статус ACTIVE, ' +
       'навчальний статус ACTIVE або PRACTICE, а також заповнені category і transmission. ' +
       'Інструктор має роль INSTRUCTOR, статус ACTIVE і ту саму організацію. ' +
-      'Автомобіль належить вибраному інструктору, а його category і transmission ' +
+      'Автомобіль належить вибраному інструктору, має статус AVAILABLE, а його category і transmission ' +
       'збігаються зі студентом. Некоректна комбінація відхиляється. ' +
       'Після успіху встановлюються instructorId, carId і trainingStatus = PRACTICE.',
   })
@@ -318,7 +318,7 @@ export class StudentsController {
     description:
       'Студент не має права на допуск, інструктор не INSTRUCTOR або не ACTIVE, ' +
       'або комбінація інструктора й автомобіля некоректна ' +
-      '(авто не його, інша category або інша transmission).',
+      '(авто не його, інша category, інша transmission або статус не AVAILABLE).',
   })
   @ApiNotFoundResponse({
     description:

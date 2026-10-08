@@ -92,6 +92,14 @@ enum DrivingLessonStatus {
   CANCELLED
 }
 
+/// Експлуатаційний статус автомобіля автошколи.
+/// INACTIVE не переходить одразу в MAINTENANCE: спочатку AVAILABLE.
+enum CarStatus {
+  AVAILABLE
+  MAINTENANCE
+  INACTIVE
+}
+
 model Organization {
   id             String             @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   name           String             @db.VarChar(255)
@@ -315,6 +323,7 @@ model Car {
   plateNumber    String          @map("plate_number") @db.VarChar(16)
   category       LicenseCategory
   transmission   Transmission
+  status         CarStatus       @default(AVAILABLE)
   createdAt      DateTime        @default(now()) @map("created_at")
   updatedAt      DateTime        @updatedAt @map("updated_at")
   students       Student[]

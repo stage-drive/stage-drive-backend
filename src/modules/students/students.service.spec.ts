@@ -7,6 +7,7 @@ import {
 import {
   EnrollmentStatus,
   GroupStatus,
+  CarStatus,
   LicenseCategory,
   Prisma,
   TrainingStatus,
@@ -21,6 +22,7 @@ import { InvitationEmailQueue } from '../invitations/invitation-email.queue';
 import { EMAIL_ALREADY_EXISTS_MESSAGE } from '../invitations/invitations.service';
 import { ListStudentsQueryDto } from './students.dto';
 import {
+  CAR_NOT_AVAILABLE_MESSAGE,
   CAR_NOT_FOUND_MESSAGE,
   GROUP_NOT_ASSIGNABLE_MESSAGE,
   GROUP_NOT_FOUND_MESSAGE,
@@ -1799,6 +1801,7 @@ describe('StudentsService', () => {
       instructorId: 'instructor-1',
       category: LicenseCategory.B,
       transmission: Transmission.MANUAL,
+      status: CarStatus.AVAILABLE,
     };
     const payload = { instructorId: 'instructor-1', carId: 'car-1' };
     const profile = {
@@ -2108,6 +2111,22 @@ describe('StudentsService', () => {
           payload,
         ),
       ).rejects.toMatchObject({ message: INSTRUCTOR_CAR_MISMATCH_MESSAGE });
+      expect(prisma.student.update).not.toHaveBeenCalled();
+    });
+
+    it('rejects a car that is not AVAILABLE', async () => {
+      prisma.car.findUnique.mockResolvedValue({
+        ...car,
+        status: CarStatus.MAINTENANCE,
+      });
+
+      await expect(
+        service.grantPracticeAccess(
+          actor(UserRole.ADMIN),
+          'student-1',
+          payload,
+        ),
+      ).rejects.toMatchObject({ message: CAR_NOT_AVAILABLE_MESSAGE });
       expect(prisma.student.update).not.toHaveBeenCalled();
     });
   });

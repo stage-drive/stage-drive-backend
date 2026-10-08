@@ -7,8 +7,10 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import {
+  CarStatus,
   LicenseCategory,
   Prisma,
+  TrainingStatus,
   Transmission,
   User,
   UserRole,
@@ -29,6 +31,7 @@ import {
   PLATE_PATTERN,
   REQUIRED_FIELD_MESSAGE,
   UpdateCarDto,
+  UpdateCarStatusDto,
   normalizePlateNumber,
 } from './cars.dto';
 
@@ -51,6 +54,16 @@ export const CAR_ASSIGNED_STUDENT_MESSAGE =
   'Автомобіль уже призначено студенту з іншою категорією, коробкою передач або інструктором.';
 export const NO_CAR_FIELDS_MESSAGE =
   'Немає дозволених полів для оновлення (plateNumber, category, transmission, instructorId).';
+export const CAR_STATUS_TRANSITION_MESSAGE =
+  'Недозволений перехід статусу автомобіля.';
+export const CAR_STATUS_IN_PRACTICE_MESSAGE =
+  'Не можна змінити статус: автомобіль призначено студенту на практиці.';
+
+const CAR_STATUS_TRANSITIONS: Record<CarStatus, readonly CarStatus[]> = {
+  [CarStatus.AVAILABLE]: [CarStatus.MAINTENANCE, CarStatus.INACTIVE],
+  [CarStatus.MAINTENANCE]: [CarStatus.AVAILABLE, CarStatus.INACTIVE],
+  [CarStatus.INACTIVE]: [CarStatus.AVAILABLE],
+};
 
 const ORG_WIDE_CAR_ROLES = [UserRole.OWNER, UserRole.ADMIN] as const;
 
@@ -66,6 +79,7 @@ const carListSelect = {
   plateNumber: true,
   category: true,
   transmission: true,
+  status: true,
   createdAt: true,
   updatedAt: true,
   instructor: {
@@ -195,6 +209,7 @@ function toCarListItem(row: CarListRow): CarListItemDto {
     plateNumber: row.plateNumber,
     category: row.category,
     transmission: row.transmission,
+    status: row.status,
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
   };
@@ -254,6 +269,7 @@ export class CarsService {
             plateNumber,
             category: payload.category,
             transmission: payload.transmission,
+            status: CarStatus.AVAILABLE,
           },
           select: carListSelect,
         });
@@ -390,6 +406,62 @@ export class CarsService {
       }
       throw error;
     }
+  }
+
+  async changeStatus(
+    actor: User,
+    carId: string,
+    payload: UpdateCarStatusDto,
+  ): Promise<CarListItemDto> {
+    assertCanWriteCars(actor);
+    await this.requireOrganization(actor.organizationId);
+
+    const updated = await this.prisma.$transaction(async (tx) => {
+      const existing = await tx.car.findUnique({
+        where: { id: carId },
+        select: carListSelect,
+      });
+      if (!existing || existing.organizationId !== actor.organizationId) {
+        throw new NotFoundException(CAR_NOT_FOUND_MESSAGE);
+      }
+
+      const next = payload.status;
+      if (!CAR_STATUS_TRANSITIONS[existing.status].includes(next)) {
+        throw new ConflictException(
+          `${CAR_STATUS_TRANSITION_MESSAGE} ${existing.status} → ${next}.`,
+        );
+      }
+
+      if (next !== CarStatus.AVAILABLE) {
+        const inPractice = await tx.student.findFirst({
+          where: {
+            carId: existing.id,
+            organizationId: actor.organizationId,
+            trainingStatus: TrainingStatus.PRACTICE,
+          },
+          select: { id: true },
+        });
+        if (inPractice) {
+          throw new ConflictException(CAR_STATUS_IN_PRACTICE_MESSAGE);
+        }
+      }
+
+      const saved = await tx.car.update({
+        where: { id: existing.id },
+        data: { status: next },
+        select: carListSelect,
+      });
+      if (saved.organizationId !== actor.organizationId) {
+        throw new NotFoundException(CAR_NOT_FOUND_MESSAGE);
+      }
+
+      this.logger.log(
+        `Car status changed carId=${saved.id} from=${existing.status} to=${saved.status} actorId=${actor.id} organizationId=${actor.organizationId}`,
+      );
+      return saved;
+    });
+
+    return toCarListItem(updated);
   }
 
   private async requireInstructor(

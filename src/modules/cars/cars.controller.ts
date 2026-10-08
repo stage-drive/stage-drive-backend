@@ -38,6 +38,7 @@ import {
   CreateCarDto,
   ListCarsQueryDto,
   UpdateCarDto,
+  UpdateCarStatusDto,
 } from './cars.dto';
 import { CAR_LIST_ROLES, CAR_WRITE_ROLES, CarsService } from './cars.service';
 
@@ -109,7 +110,8 @@ export class CarsController {
       'organizationId береться з access token і не приймається в тілі. ' +
       'instructorId має вказувати на активного інструктора тієї самої автошколи. ' +
       'Державний номер унікальний у межах організації: той самий номер в іншій автошколі дозволений. ' +
-      'Пробіли і дефіси в номері прибираються, літери зберігаються у верхньому регістрі.',
+      'Пробіли і дефіси в номері прибираються, літери зберігаються у верхньому регістрі. ' +
+      'Статус нового автомобіля завжди AVAILABLE. Його змінює окремий запит.',
   })
   @ApiCreatedResponse({ type: CarListItemDto })
   @ApiForbiddenResponse({
@@ -140,7 +142,8 @@ export class CarsController {
       'автомобіля своєї організації. organizationId з тіла не приймається. ' +
       'Автомобіль іншої автошколи повертає 404. Новий номер має бути унікальним у цій організації. ' +
       'Якщо автомобіль уже призначено студенту, нові category, transmission і instructorId ' +
-      'мають збігатися з цим призначенням. Сам номер можна змінити.',
+      'мають збігатися з цим призначенням. Сам номер можна змінити. ' +
+      'Поле status цим запитом не змінюється.',
   })
   @ApiParam({
     name: 'id',
@@ -172,5 +175,51 @@ export class CarsController {
     @Body() body: UpdateCarDto,
   ) {
     return this.carsService.update(user, id, body);
+  }
+
+  @Patch(':id/status')
+  @Roles(...CAR_WRITE_ROLES)
+  @ApiOperation({
+    summary: 'Змінити статус автомобіля своєї автошколи',
+    description:
+      'OWNER або ADMIN змінюють експлуатаційний статус автомобіля своєї організації. ' +
+      'organizationId береться з access token. Автомобіль іншої автошколи повертає 404. ' +
+      'Дозволені лише статуси AVAILABLE, MAINTENANCE і INACTIVE. ' +
+      'Переходи: AVAILABLE → MAINTENANCE | INACTIVE; ' +
+      'MAINTENANCE → AVAILABLE | INACTIVE; INACTIVE → AVAILABLE. ' +
+      'Повтор того самого статусу і перехід INACTIVE → MAINTENANCE відхиляються. ' +
+      'Не можна вивести з AVAILABLE автомобіль, призначений студенту зі статусом навчання PRACTICE. ' +
+      'Відповідь містить збережений статус.',
+  })
+  @ApiParam({
+    name: 'id',
+    format: 'uuid',
+    description: 'Id автомобіля своєї автошколи.',
+    example: '31313131-3131-4131-8131-313131313131',
+  })
+  @ApiOkResponse({ type: CarListItemDto })
+  @ApiForbiddenResponse({
+    description: 'Змінювати статус автомобіля можуть лише OWNER або ADMIN.',
+  })
+  @ApiBadRequestResponse({
+    description:
+      'Некоректне тіло запиту. status має бути AVAILABLE, MAINTENANCE або INACTIVE. ' +
+      'Тіло містить errors: [{ field, message }].',
+  })
+  @ApiConflictResponse({
+    description:
+      'Недозволений перехід статусу, або автомобіль призначено студенту на практиці.',
+  })
+  @ApiNotFoundResponse({
+    description:
+      'Автомобіль не знайдено, його видалено, або він належить іншій автошколі. ' +
+      'Також якщо автошколу видалено.',
+  })
+  changeStatus(
+    @CurrentUser() user: User,
+    @Param('id', new ParseUUIDPipe({ version: '4' })) id: string,
+    @Body() body: UpdateCarStatusDto,
+  ) {
+    return this.carsService.changeStatus(user, id, body);
   }
 }
