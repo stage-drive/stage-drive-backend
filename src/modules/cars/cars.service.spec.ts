@@ -1,11 +1,14 @@
 import {
   ConflictException,
   ForbiddenException,
+  Logger,
   NotFoundException,
 } from '@nestjs/common';
 import {
+  CarStatus,
   LicenseCategory,
   Prisma,
+  TrainingStatus,
   Transmission,
   User,
   UserRole,
@@ -16,6 +19,8 @@ import { CreateCarDto, ListCarsQueryDto, UpdateCarDto } from './cars.dto';
 import {
   CAR_ASSIGNED_STUDENT_MESSAGE,
   CAR_NOT_FOUND_MESSAGE,
+  CAR_STATUS_IN_PRACTICE_MESSAGE,
+  CAR_STATUS_TRANSITION_MESSAGE,
   CarsService,
   INSTRUCTOR_NOT_ACTIVE_MESSAGE,
   INSTRUCTOR_NOT_FOUND_MESSAGE,
@@ -40,6 +45,7 @@ function carRow(
     plateNumber: string;
     category: LicenseCategory;
     transmission: Transmission;
+    status: CarStatus;
     createdAt: Date;
     updatedAt: Date;
     instructor: { id: string; firstName: string; lastName: string };
@@ -53,6 +59,7 @@ function carRow(
     plateNumber: 'AA0001BB',
     category: LicenseCategory.B,
     transmission: Transmission.MANUAL,
+    status: CarStatus.AVAILABLE,
     createdAt: new Date('2026-01-02T00:00:00.000Z'),
     updatedAt: new Date('2026-01-03T00:00:00.000Z'),
     instructor: {
@@ -196,6 +203,7 @@ describe('CarsService', () => {
           plateNumber: 'AA0001BB',
           category: LicenseCategory.B,
           transmission: Transmission.MANUAL,
+          status: CarStatus.AVAILABLE,
           createdAt: row.createdAt,
           updatedAt: row.updatedAt,
         },
@@ -396,6 +404,7 @@ describe('CarsService', () => {
           plateNumber: 'AA0003BB',
           category: LicenseCategory.B,
           transmission: Transmission.MANUAL,
+          status: CarStatus.AVAILABLE,
         },
         select: expect.any(Object),
       });
@@ -665,4 +674,149 @@ describe('CarsService', () => {
       expect(prisma.car.update).not.toHaveBeenCalled();
     },
   );
+
+  describe('changeStatus', () => {
+    let log: jest.SpyInstance;
+
+    beforeEach(() => {
+      prisma.car.findUnique.mockResolvedValue(carRow());
+      log = jest
+        .spyOn(Logger.prototype, 'log')
+        .mockImplementation(() => undefined);
+    });
+
+    afterEach(() => {
+      log.mockRestore();
+    });
+
+    it.each([UserRole.OWNER, UserRole.ADMIN] as const)(
+      'stores an allowed transition for %s and returns the saved status',
+      async (role) => {
+        const result = await service.changeStatus(actor(role), 'car-1', {
+          status: CarStatus.MAINTENANCE,
+        });
+
+        expect(prisma.car.update).toHaveBeenCalledWith({
+          where: { id: 'car-1' },
+          data: { status: CarStatus.MAINTENANCE },
+          select: expect.any(Object),
+        });
+        expect(result).toMatchObject({
+          id: 'car-1',
+          organizationId: 'org-1',
+          status: CarStatus.MAINTENANCE,
+        });
+        expect(log).toHaveBeenCalledWith(
+          `Car status changed carId=car-1 from=AVAILABLE to=MAINTENANCE actorId=${role.toLowerCase()}-1 organizationId=org-1`,
+        );
+      },
+    );
+
+    it('allows returning an inactive car to AVAILABLE', async () => {
+      prisma.car.findUnique.mockResolvedValue(
+        carRow({ status: CarStatus.INACTIVE }),
+      );
+
+      await expect(
+        service.changeStatus(actor(UserRole.ADMIN), 'car-1', {
+          status: CarStatus.AVAILABLE,
+        }),
+      ).resolves.toMatchObject({ status: CarStatus.AVAILABLE });
+      expect(prisma.student.findFirst).not.toHaveBeenCalled();
+    });
+
+    it.each([UserRole.INSTRUCTOR, UserRole.TEACHER, UserRole.STUDENT] as const)(
+      'rejects %s before reading the car',
+      async (role) => {
+        await expect(
+          service.changeStatus(actor(role), 'car-1', {
+            status: CarStatus.INACTIVE,
+          }),
+        ).rejects.toBeInstanceOf(ForbiddenException);
+        expect(prisma.car.findUnique).not.toHaveBeenCalled();
+        expect(prisma.car.update).not.toHaveBeenCalled();
+      },
+    );
+
+    it('rejects a transition that is not allowed', async () => {
+      prisma.car.findUnique.mockResolvedValue(
+        carRow({ status: CarStatus.INACTIVE }),
+      );
+
+      await expect(
+        service.changeStatus(actor(UserRole.ADMIN), 'car-1', {
+          status: CarStatus.MAINTENANCE,
+        }),
+      ).rejects.toMatchObject({
+        message: `${CAR_STATUS_TRANSITION_MESSAGE} INACTIVE → MAINTENANCE.`,
+      });
+      expect(prisma.car.update).not.toHaveBeenCalled();
+    });
+
+    it('rejects repeating the current status', async () => {
+      await expect(
+        service.changeStatus(actor(UserRole.OWNER), 'car-1', {
+          status: CarStatus.AVAILABLE,
+        }),
+      ).rejects.toBeInstanceOf(ConflictException);
+      expect(prisma.car.update).not.toHaveBeenCalled();
+    });
+
+    it('does not take a practice car out of service', async () => {
+      prisma.student.findFirst.mockResolvedValue({ id: 'student-1' });
+
+      await expect(
+        service.changeStatus(actor(UserRole.ADMIN), 'car-1', {
+          status: CarStatus.MAINTENANCE,
+        }),
+      ).rejects.toMatchObject({ message: CAR_STATUS_IN_PRACTICE_MESSAGE });
+      expect(prisma.student.findFirst).toHaveBeenCalledWith({
+        where: {
+          carId: 'car-1',
+          organizationId: 'org-1',
+          trainingStatus: TrainingStatus.PRACTICE,
+        },
+        select: { id: true },
+      });
+      expect(prisma.car.update).not.toHaveBeenCalled();
+    });
+
+    it('does not change a car of another organization', async () => {
+      prisma.car.findUnique.mockResolvedValue(
+        carRow({ organizationId: 'org-2' }),
+      );
+
+      await expect(
+        service.changeStatus(actor(UserRole.ADMIN), 'car-1', {
+          status: CarStatus.INACTIVE,
+        }),
+      ).rejects.toMatchObject({ message: CAR_NOT_FOUND_MESSAGE });
+      expect(prisma.car.update).not.toHaveBeenCalled();
+    });
+
+    it('returns 404 when the car does not exist', async () => {
+      prisma.car.findUnique.mockResolvedValue(null);
+
+      await expect(
+        service.changeStatus(actor(UserRole.ADMIN), 'missing', {
+          status: CarStatus.INACTIVE,
+        }),
+      ).rejects.toBeInstanceOf(NotFoundException);
+      expect(prisma.car.update).not.toHaveBeenCalled();
+    });
+
+    it('returns 404 when the organization is deleted', async () => {
+      prisma.organization.findUnique.mockResolvedValue({
+        ...organization,
+        deletedAt: new Date('2026-03-01T00:00:00.000Z'),
+      });
+
+      await expect(
+        service.changeStatus(actor(UserRole.ADMIN), 'car-1', {
+          status: CarStatus.MAINTENANCE,
+        }),
+      ).rejects.toBeInstanceOf(NotFoundException);
+      expect(prisma.car.findUnique).not.toHaveBeenCalled();
+    });
+  });
 });

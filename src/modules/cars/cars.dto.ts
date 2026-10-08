@@ -1,5 +1,5 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
-import { LicenseCategory, Transmission } from '@prisma/client';
+import { CarStatus, LicenseCategory, Transmission } from '@prisma/client';
 import { Transform } from 'class-transformer';
 import {
   IsDefined,
@@ -196,6 +196,15 @@ export class CarListItemDto {
   @ApiProperty({ enum: Transmission, example: Transmission.MANUAL })
   transmission: Transmission;
 
+  @ApiProperty({
+    enum: CarStatus,
+    example: CarStatus.AVAILABLE,
+    description:
+      'Експлуатаційний статус. Новий автомобіль створюється як AVAILABLE. ' +
+      'Зміна — лише через PATCH /cars/:id/status.',
+  })
+  status: CarStatus;
+
   @ApiProperty({ example: '2026-01-02T00:00:00.000Z' })
   createdAt: Date;
 
@@ -321,4 +330,22 @@ export class UpdateCarDto {
   @ValidateIf((_, value) => value !== undefined)
   @IsUUID('4', { message: 'instructorId має бути UUID.' })
   instructorId?: string;
+}
+
+export class UpdateCarStatusDto {
+  @ApiProperty({
+    enum: CarStatus,
+    example: CarStatus.MAINTENANCE,
+    description:
+      'Новий експлуатаційний статус. Дозволені переходи: ' +
+      'AVAILABLE → MAINTENANCE, INACTIVE; ' +
+      'MAINTENANCE → AVAILABLE, INACTIVE; ' +
+      'INACTIVE → AVAILABLE. ' +
+      'INACTIVE не переходить одразу в MAINTENANCE.',
+  })
+  @IsEnum(CarStatus, {
+    message: 'status має бути AVAILABLE, MAINTENANCE або INACTIVE.',
+  })
+  @IsDefined({ message: REQUIRED_FIELD_MESSAGE })
+  status: CarStatus;
 }

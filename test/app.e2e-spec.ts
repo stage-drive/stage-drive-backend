@@ -321,6 +321,7 @@ describe('API (e2e)', () => {
           plateNumber: string;
           category: string;
           transmission: string;
+          status?: string;
         };
       }) =>
         Promise.resolve({
@@ -330,6 +331,7 @@ describe('API (e2e)', () => {
           plateNumber: args.data.plateNumber,
           category: args.data.category,
           transmission: args.data.transmission,
+          status: args.data.status ?? 'AVAILABLE',
           createdAt: new Date('2026-04-01T00:00:00.000Z'),
           updatedAt: new Date('2026-04-01T00:00:00.000Z'),
           instructor: {
@@ -347,6 +349,7 @@ describe('API (e2e)', () => {
           category?: string;
           transmission?: string;
           instructorId?: string;
+          status?: string;
         };
       }) =>
         Promise.resolve({
@@ -356,6 +359,7 @@ describe('API (e2e)', () => {
           plateNumber: args.data.plateNumber ?? 'AA0001BB',
           category: args.data.category ?? 'B',
           transmission: args.data.transmission ?? 'MANUAL',
+          status: args.data.status ?? 'AVAILABLE',
           createdAt: new Date('2026-01-02T00:00:00.000Z'),
           updatedAt: new Date('2026-04-02T00:00:00.000Z'),
           instructor: {
@@ -3552,6 +3556,7 @@ describe('API (e2e)', () => {
       instructorId: practiceInstructorId,
       category: 'B',
       transmission: 'MANUAL',
+      status: 'AVAILABLE',
     });
 
     const token = signAccessToken(admin.id);
@@ -3798,6 +3803,7 @@ describe('API (e2e)', () => {
     plateNumber: 'AA0001BB',
     category: 'B' as const,
     transmission: 'MANUAL' as const,
+    status: 'AVAILABLE' as const,
     createdAt: new Date('2026-01-02T00:00:00.000Z'),
     updatedAt: new Date('2026-01-03T00:00:00.000Z'),
     instructor: {
@@ -3892,6 +3898,7 @@ describe('API (e2e)', () => {
             plateNumber: 'AA0001BB',
             category: 'B',
             transmission: 'MANUAL',
+            status: 'AVAILABLE',
             createdAt: '2026-01-02T00:00:00.000Z',
             updatedAt: '2026-01-03T00:00:00.000Z',
           },
@@ -4057,9 +4064,12 @@ describe('API (e2e)', () => {
       { get?: unknown; post?: unknown } | undefined;
     const car = (paths['/api/cars/{id}'] ?? paths['/cars/{id}']) as
       { patch?: unknown } | undefined;
+    const status = (paths['/api/cars/{id}/status'] ??
+      paths['/cars/{id}/status']) as { patch?: unknown } | undefined;
     expect(cars?.get).toBeDefined();
     expect(cars?.post).toBeDefined();
     expect(car?.patch).toBeDefined();
+    expect(status?.patch).toBeDefined();
   });
 
   const createdCarId = '37373737-3737-4373-8373-373737373737';
@@ -4196,6 +4206,7 @@ describe('API (e2e)', () => {
       plateNumber: 'AA0003BB',
       category: 'B',
       transmission: 'MANUAL',
+      status: 'AVAILABLE',
       createdAt: '2026-04-01T00:00:00.000Z',
       updatedAt: '2026-04-01T00:00:00.000Z',
     });
@@ -4207,6 +4218,7 @@ describe('API (e2e)', () => {
         plateNumber: 'AA0003BB',
         category: 'B',
         transmission: 'MANUAL',
+        status: 'AVAILABLE',
       },
       select: expect.any(Object),
     });
@@ -4466,4 +4478,143 @@ describe('API (e2e)', () => {
       expect(prismaMock.car.update).not.toHaveBeenCalled();
     },
   );
+
+  it('PATCH /api/cars/:id/status without token returns 401', () => {
+    return request(app.getHttpServer())
+      .patch(`/api/cars/${listedCar.id}/status`)
+      .send({ status: 'MAINTENANCE' })
+      .expect(401);
+  });
+
+  it.each(['TEACHER', 'INSTRUCTOR', 'STUDENT'] as const)(
+    'PATCH /api/cars/:id/status is forbidden for %s',
+    async (role) => {
+      const actor =
+        role === 'TEACHER'
+          ? teacher
+          : role === 'INSTRUCTOR'
+            ? instructor
+            : pupil;
+      const token = signAccessToken(actor.id);
+      const response = await request(app.getHttpServer())
+        .patch(`/api/cars/${listedCar.id}/status`)
+        .set('Authorization', `Bearer ${token}`)
+        .send({ status: 'MAINTENANCE' })
+        .expect(403);
+
+      expect(response.body).toMatchObject({
+        statusCode: 403,
+        message: 'Insufficient permissions',
+      });
+      expect(prismaMock.car.update).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(['OWNER', 'ADMIN'] as const)(
+    'PATCH /api/cars/:id/status stores the new status for %s',
+    async (role) => {
+      const actor = role === 'OWNER' ? owner : admin;
+      prismaMock.car.findUnique.mockResolvedValue(listedCar);
+
+      const token = signAccessToken(actor.id);
+      const response = await request(app.getHttpServer())
+        .patch(`/api/cars/${listedCar.id}/status`)
+        .set('Authorization', `Bearer ${token}`)
+        .send({ status: 'MAINTENANCE' })
+        .expect(200);
+
+      expect(response.body).toMatchObject({
+        id: listedCar.id,
+        organizationId: organization.id,
+        plateNumber: 'AA0001BB',
+        status: 'MAINTENANCE',
+      });
+      expect(prismaMock.car.update).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: { id: listedCar.id },
+          data: { status: 'MAINTENANCE' },
+        }),
+      );
+    },
+  );
+
+  it('PATCH /api/cars/:id/status rejects an unknown status', async () => {
+    const token = signAccessToken(admin.id);
+    const response = await request(app.getHttpServer())
+      .patch(`/api/cars/${listedCar.id}/status`)
+      .set('Authorization', `Bearer ${token}`)
+      .send({ status: 'BROKEN' })
+      .expect(400);
+
+    expect(response.body).toMatchObject({
+      statusCode: 400,
+      errors: [
+        {
+          field: 'status',
+          message: 'status має бути AVAILABLE, MAINTENANCE або INACTIVE.',
+        },
+      ],
+    });
+    expect(prismaMock.car.findUnique).not.toHaveBeenCalled();
+  });
+
+  it('PATCH /api/cars/:id/status rejects a transition that is not allowed', async () => {
+    prismaMock.car.findUnique.mockResolvedValue({
+      ...listedCar,
+      status: 'INACTIVE',
+    });
+
+    const token = signAccessToken(owner.id);
+    const response = await request(app.getHttpServer())
+      .patch(`/api/cars/${listedCar.id}/status`)
+      .set('Authorization', `Bearer ${token}`)
+      .send({ status: 'MAINTENANCE' })
+      .expect(409);
+
+    expect(response.body).toMatchObject({
+      statusCode: 409,
+      message:
+        'Недозволений перехід статусу автомобіля. INACTIVE → MAINTENANCE.',
+    });
+    expect(prismaMock.car.update).not.toHaveBeenCalled();
+  });
+
+  it('PATCH /api/cars/:id/status does not change a car of another organization', async () => {
+    prismaMock.car.findUnique.mockResolvedValue({
+      ...listedCar,
+      organizationId: otherOrganizationId,
+    });
+
+    const token = signAccessToken(admin.id);
+    const response = await request(app.getHttpServer())
+      .patch(`/api/cars/${listedCar.id}/status`)
+      .set('Authorization', `Bearer ${token}`)
+      .send({ status: 'INACTIVE' })
+      .expect(404);
+
+    expect(response.body).toMatchObject({
+      statusCode: 404,
+      message: 'Car not found',
+    });
+    expect(prismaMock.car.update).not.toHaveBeenCalled();
+  });
+
+  it('PATCH /api/cars/:id/status rejects a car assigned to practice', async () => {
+    prismaMock.car.findUnique.mockResolvedValue(listedCar);
+    prismaMock.student.findFirst.mockResolvedValue({ id: pupil.id });
+
+    const token = signAccessToken(admin.id);
+    const response = await request(app.getHttpServer())
+      .patch(`/api/cars/${listedCar.id}/status`)
+      .set('Authorization', `Bearer ${token}`)
+      .send({ status: 'INACTIVE' })
+      .expect(409);
+
+    expect(response.body).toMatchObject({
+      statusCode: 409,
+      message:
+        'Не можна змінити статус: автомобіль призначено студенту на практиці.',
+    });
+    expect(prismaMock.car.update).not.toHaveBeenCalled();
+  });
 });
