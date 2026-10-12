@@ -22,6 +22,7 @@ import { InvitationEmailQueue } from '../invitations/invitation-email.queue';
 import { EMAIL_ALREADY_EXISTS_MESSAGE } from '../invitations/invitations.service';
 import { ListStudentsQueryDto } from './students.dto';
 import {
+  CAR_NOT_ASSIGNED_MESSAGE,
   CAR_NOT_AVAILABLE_MESSAGE,
   CAR_NOT_FOUND_MESSAGE,
   GROUP_NOT_ASSIGNABLE_MESSAGE,
@@ -477,6 +478,7 @@ describe('StudentsService', () => {
           groupId: null,
           instructorId: null,
           carId: null,
+          car: null,
           category: null,
           transmission: null,
           trainingStatus: TrainingStatus.INVITED,
@@ -707,6 +709,7 @@ describe('StudentsService', () => {
       groupId: 'group-1' as string | null,
       instructorId: null as string | null,
       carId: null as string | null,
+      car: null,
       category: null,
       transmission: null,
       trainingStatus: TrainingStatus.ACTIVE,
@@ -889,11 +892,20 @@ describe('StudentsService', () => {
       userId: 'student-1',
       organizationId: 'org-1',
       groupId: 'group-1' as string | null,
-      instructorId: null,
-      carId: null,
-      category: null,
-      transmission: null,
-      trainingStatus: TrainingStatus.ACTIVE,
+      instructorId: null as string | null,
+      carId: null as string | null,
+      car: null as {
+        id: string;
+        organizationId: string;
+        instructorId: string | null;
+        plateNumber: string;
+        category: LicenseCategory;
+        transmission: Transmission;
+        status: CarStatus;
+      } | null,
+      category: null as LicenseCategory | null,
+      transmission: null as Transmission | null,
+      trainingStatus: TrainingStatus.ACTIVE as TrainingStatus,
     };
 
     function cardRow(
@@ -957,6 +969,56 @@ describe('StudentsService', () => {
         },
         select: expect.not.objectContaining({ passwordHash: true }),
       });
+    });
+
+    it('returns the current practice car and hides a car from another organization', async () => {
+      const practiceCar = {
+        id: 'car-1',
+        organizationId: 'org-1',
+        instructorId: 'instructor-1',
+        plateNumber: 'AA0001BB',
+        category: LicenseCategory.B,
+        transmission: Transmission.MANUAL,
+        status: CarStatus.AVAILABLE,
+      };
+      prisma.user.findFirst.mockResolvedValue(
+        cardRow({
+          studentProfile: {
+            ...profile,
+            instructorId: 'instructor-1',
+            carId: 'car-1',
+            trainingStatus: TrainingStatus.PRACTICE,
+            car: practiceCar,
+          },
+        }),
+      );
+
+      const visible = await service.getById(actor(UserRole.ADMIN), 'student-1');
+      expect(visible.student?.car).toEqual({
+        id: 'car-1',
+        plateNumber: 'AA0001BB',
+        category: LicenseCategory.B,
+        transmission: Transmission.MANUAL,
+        status: CarStatus.AVAILABLE,
+        instructorId: 'instructor-1',
+      });
+
+      prisma.user.findFirst.mockResolvedValue(
+        cardRow({
+          studentProfile: {
+            ...profile,
+            carId: 'car-1',
+            car: { ...practiceCar, organizationId: 'org-2' },
+          },
+        }),
+      );
+
+      const hidden = await service.getById(
+        actor(UserRole.INSTRUCTOR),
+        'student-1',
+      );
+      expect(hidden.student?.carId).toBe('car-1');
+      expect(hidden.student?.car).toBeNull();
     });
 
     it('returns the card when the student profile row is missing', async () => {
@@ -1798,7 +1860,8 @@ describe('StudentsService', () => {
     const car = {
       id: 'car-1',
       organizationId: 'org-1',
-      instructorId: 'instructor-1',
+      instructorId: 'instructor-1' as string | null,
+      plateNumber: 'AA0001BB',
       category: LicenseCategory.B,
       transmission: Transmission.MANUAL,
       status: CarStatus.AVAILABLE,
@@ -1883,6 +1946,14 @@ describe('StudentsService', () => {
         category: LicenseCategory.B,
         transmission: Transmission.MANUAL,
         trainingStatus: TrainingStatus.PRACTICE,
+        car: {
+          id: 'car-1',
+          plateNumber: 'AA0001BB',
+          category: LicenseCategory.B,
+          transmission: Transmission.MANUAL,
+          status: CarStatus.AVAILABLE,
+          instructorId: 'instructor-1',
+        },
       });
       expect(log).toHaveBeenCalledWith(
         'Student practice access granted studentId=student-1 instructorId=instructor-1 carId=car-1 actorId=admin-1 organizationId=org-1',
@@ -2114,10 +2185,29 @@ describe('StudentsService', () => {
       expect(prisma.student.update).not.toHaveBeenCalled();
     });
 
-    it('rejects a car that is not AVAILABLE', async () => {
+    it.each([CarStatus.MAINTENANCE, CarStatus.INACTIVE])(
+      'rejects a car in status %s',
+      async (status) => {
+        prisma.car.findUnique.mockResolvedValue({
+          ...car,
+          status,
+        });
+
+        await expect(
+          service.grantPracticeAccess(
+            actor(UserRole.ADMIN),
+            'student-1',
+            payload,
+          ),
+        ).rejects.toMatchObject({ message: CAR_NOT_AVAILABLE_MESSAGE });
+        expect(prisma.student.update).not.toHaveBeenCalled();
+      },
+    );
+
+    it('rejects a car that is not assigned to an instructor', async () => {
       prisma.car.findUnique.mockResolvedValue({
         ...car,
-        status: CarStatus.MAINTENANCE,
+        instructorId: null,
       });
 
       await expect(
@@ -2126,7 +2216,7 @@ describe('StudentsService', () => {
           'student-1',
           payload,
         ),
-      ).rejects.toMatchObject({ message: CAR_NOT_AVAILABLE_MESSAGE });
+      ).rejects.toMatchObject({ message: CAR_NOT_ASSIGNED_MESSAGE });
       expect(prisma.student.update).not.toHaveBeenCalled();
     });
   });

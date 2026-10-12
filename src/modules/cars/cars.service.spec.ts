@@ -18,10 +18,13 @@ import { PrismaService } from '../../prisma/prisma.service';
 import { CreateCarDto, ListCarsQueryDto, UpdateCarDto } from './cars.dto';
 import {
   CAR_ASSIGNED_STUDENT_MESSAGE,
+  CAR_ASSIGNMENT_IN_USE_MESSAGE,
+  CAR_NOT_ASSIGNABLE_MESSAGE,
   CAR_NOT_FOUND_MESSAGE,
   CAR_STATUS_IN_PRACTICE_MESSAGE,
   CAR_STATUS_TRANSITION_MESSAGE,
   CarsService,
+  INSTRUCTOR_ASSIGNMENT_FIELD_MESSAGE,
   INSTRUCTOR_NOT_ACTIVE_MESSAGE,
   INSTRUCTOR_NOT_FOUND_MESSAGE,
   INSTRUCTOR_ROLE_MESSAGE,
@@ -41,17 +44,18 @@ function carRow(
   overrides: Partial<{
     id: string;
     organizationId: string;
-    instructorId: string;
+    instructorId: string | null;
     plateNumber: string;
     category: LicenseCategory;
     transmission: Transmission;
     status: CarStatus;
     createdAt: Date;
     updatedAt: Date;
-    instructor: { id: string; firstName: string; lastName: string };
+    instructor: { id: string; firstName: string; lastName: string } | null;
   }> = {},
 ) {
-  const instructorId = overrides.instructorId ?? 'instructor-1';
+  const instructorId =
+    overrides.instructorId === undefined ? 'instructor-1' : overrides.instructorId;
   return {
     id: 'car-1',
     organizationId: 'org-1',
@@ -62,11 +66,14 @@ function carRow(
     status: CarStatus.AVAILABLE,
     createdAt: new Date('2026-01-02T00:00:00.000Z'),
     updatedAt: new Date('2026-01-03T00:00:00.000Z'),
-    instructor: {
-      id: instructorId,
-      firstName: 'Тарас',
-      lastName: 'Шевченко',
-    },
+    instructor:
+      instructorId === null
+        ? null
+        : {
+            id: instructorId,
+            firstName: 'Тарас',
+            lastName: 'Шевченко',
+          },
     ...overrides,
   };
 }
@@ -165,18 +172,27 @@ describe('CarsService', () => {
           plateNumber?: string;
           category?: LicenseCategory;
           transmission?: Transmission;
-          instructorId?: string;
+          instructorId?: string | null;
+          status?: CarStatus;
         };
-      }) =>
-        Promise.resolve({
+      }) => {
+        const instructorId =
+          args.data.instructorId !== undefined
+            ? args.data.instructorId
+            : 'instructor-1';
+        return Promise.resolve({
           ...carRow(),
           ...args.data,
-          instructor: {
-            id: args.data.instructorId ?? 'instructor-1',
-            firstName: 'Тарас',
-            lastName: 'Шевченко',
-          },
-        }),
+          instructorId,
+          instructor: instructorId
+            ? {
+                id: instructorId,
+                firstName: 'Тарас',
+                lastName: 'Шевченко',
+              }
+            : null,
+        });
+      },
     );
     prisma.$transaction.mockImplementation(
       (callback: (tx: typeof prisma) => Promise<unknown>) => callback(prisma),
@@ -817,6 +833,224 @@ describe('CarsService', () => {
         }),
       ).rejects.toBeInstanceOf(NotFoundException);
       expect(prisma.car.findUnique).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('assignInstructor', () => {
+    beforeEach(() => {
+      prisma.car.findUnique.mockResolvedValue(carRow());
+      prisma.user.findUnique.mockResolvedValue(
+        instructorUser({ id: 'instructor-2' }),
+      );
+    });
+
+    it.each([UserRole.OWNER, UserRole.ADMIN] as const)(
+      'assigns an available car to an active instructor for %s',
+      async (role) => {
+        const result = await service.assignInstructor(
+          actor(role),
+          'car-1',
+          { instructorId: 'instructor-2' },
+        );
+
+        expect(prisma.car.update).toHaveBeenCalledWith({
+          where: { id: 'car-1' },
+          data: { instructorId: 'instructor-2' },
+          select: expect.any(Object),
+        });
+        expect(result).toMatchObject({
+          id: 'car-1',
+          instructorId: 'instructor-2',
+          instructor: { id: 'instructor-2' },
+          status: CarStatus.AVAILABLE,
+        });
+      },
+    );
+
+    it('cancels the assignment when instructorId is null', async () => {
+      const result = await service.assignInstructor(
+        actor(UserRole.ADMIN),
+        'car-1',
+        { instructorId: null },
+      );
+
+      expect(prisma.car.update).toHaveBeenCalledWith({
+        where: { id: 'car-1' },
+        data: { instructorId: null },
+        select: expect.any(Object),
+      });
+      expect(result).toMatchObject({
+        instructorId: null,
+        instructor: null,
+      });
+    });
+
+    it.each([CarStatus.MAINTENANCE, CarStatus.INACTIVE])(
+      'rejects the same instructor when the car is %s',
+      async (status) => {
+        prisma.car.findUnique.mockResolvedValue(carRow({ status }));
+
+        await expect(
+          service.assignInstructor(actor(UserRole.ADMIN), 'car-1', {
+            instructorId: 'instructor-1',
+          }),
+        ).rejects.toMatchObject({ message: CAR_NOT_ASSIGNABLE_MESSAGE });
+        expect(prisma.car.update).not.toHaveBeenCalled();
+      },
+    );
+
+    it.each([CarStatus.MAINTENANCE, CarStatus.INACTIVE])(
+      'rejects cancellation when the car is %s',
+      async (status) => {
+        prisma.car.findUnique.mockResolvedValue(carRow({ status }));
+
+        await expect(
+          service.assignInstructor(actor(UserRole.ADMIN), 'car-1', {
+            instructorId: null,
+          }),
+        ).rejects.toMatchObject({ message: CAR_NOT_ASSIGNABLE_MESSAGE });
+        expect(prisma.student.findFirst).not.toHaveBeenCalled();
+        expect(prisma.car.update).not.toHaveBeenCalled();
+      },
+    );
+
+    it('does not write when the instructor stays the same', async () => {
+      await expect(
+        service.assignInstructor(actor(UserRole.ADMIN), 'car-1', {
+          instructorId: 'instructor-1',
+        }),
+      ).resolves.toMatchObject({ instructorId: 'instructor-1' });
+      expect(prisma.car.update).not.toHaveBeenCalled();
+    });
+
+    it.each([UserRole.INSTRUCTOR, UserRole.TEACHER, UserRole.STUDENT] as const)(
+      'rejects %s before reading the car',
+      async (role) => {
+        await expect(
+          service.assignInstructor(actor(role), 'car-1', {
+            instructorId: 'instructor-2',
+          }),
+        ).rejects.toBeInstanceOf(ForbiddenException);
+        expect(prisma.car.findUnique).not.toHaveBeenCalled();
+      },
+    );
+
+    it('rejects a missing instructorId', async () => {
+      await expect(
+        service.assignInstructor(actor(UserRole.ADMIN), 'car-1', {
+          instructorId: undefined as unknown as string,
+        }),
+      ).rejects.toMatchObject({
+        response: {
+          errors: [
+            { field: 'instructorId', message: INSTRUCTOR_ASSIGNMENT_FIELD_MESSAGE },
+          ],
+        },
+      });
+      expect(prisma.car.findUnique).not.toHaveBeenCalled();
+    });
+
+    it('returns 404 for a car of another organization', async () => {
+      prisma.car.findUnique.mockResolvedValue(
+        carRow({ organizationId: 'org-2' }),
+      );
+
+      await expect(
+        service.assignInstructor(actor(UserRole.ADMIN), 'car-1', {
+          instructorId: 'instructor-2',
+        }),
+      ).rejects.toMatchObject({ message: CAR_NOT_FOUND_MESSAGE });
+      expect(prisma.car.update).not.toHaveBeenCalled();
+    });
+
+    it.each([CarStatus.MAINTENANCE, CarStatus.INACTIVE])(
+      'does not assign a car in status %s',
+      async (status) => {
+        prisma.car.findUnique.mockResolvedValue(carRow({ status }));
+
+        await expect(
+          service.assignInstructor(actor(UserRole.ADMIN), 'car-1', {
+            instructorId: 'instructor-2',
+          }),
+        ).rejects.toMatchObject({ message: CAR_NOT_ASSIGNABLE_MESSAGE });
+        expect(prisma.user.findUnique).not.toHaveBeenCalled();
+        expect(prisma.car.update).not.toHaveBeenCalled();
+      },
+    );
+
+    it('does not cancel an assignment that a student already uses', async () => {
+      prisma.student.findFirst.mockResolvedValue({ id: 'student-1' });
+
+      await expect(
+        service.assignInstructor(actor(UserRole.ADMIN), 'car-1', {
+          instructorId: null,
+        }),
+      ).rejects.toMatchObject({ message: CAR_ASSIGNMENT_IN_USE_MESSAGE });
+      expect(prisma.car.update).not.toHaveBeenCalled();
+    });
+
+    it('does not move a car away from the student who already has it', async () => {
+      prisma.student.findFirst.mockResolvedValue({ id: 'student-1' });
+
+      await expect(
+        service.assignInstructor(actor(UserRole.OWNER), 'car-1', {
+          instructorId: 'instructor-2',
+        }),
+      ).rejects.toMatchObject({ message: CAR_ASSIGNED_STUDENT_MESSAGE });
+      expect(prisma.car.update).not.toHaveBeenCalled();
+    });
+
+    it('returns 404 when the instructor belongs to another organization', async () => {
+      prisma.user.findUnique.mockResolvedValue(
+        instructorUser({ id: 'instructor-2', organizationId: 'org-2' }),
+      );
+
+      await expect(
+        service.assignInstructor(actor(UserRole.ADMIN), 'car-1', {
+          instructorId: 'instructor-2',
+        }),
+      ).rejects.toMatchObject({ message: INSTRUCTOR_NOT_FOUND_MESSAGE });
+    });
+
+    it('rejects an instructor who is not ACTIVE', async () => {
+      prisma.user.findUnique.mockResolvedValue(
+        instructorUser({ id: 'instructor-2', status: UserStatus.BLOCKED }),
+      );
+
+      await expect(
+        service.assignInstructor(actor(UserRole.ADMIN), 'car-1', {
+          instructorId: 'instructor-2',
+        }),
+      ).rejects.toMatchObject({ message: INSTRUCTOR_NOT_ACTIVE_MESSAGE });
+    });
+
+    it('lets an admin see an unassigned car and filters practice cars by status', async () => {
+      prisma.car.findMany.mockResolvedValue([
+        carRow({ instructorId: null, instructor: null }),
+      ]);
+      prisma.car.count.mockResolvedValue(1);
+
+      const result = await service.list(actor(UserRole.ADMIN), {
+        status: CarStatus.AVAILABLE,
+      });
+
+      expect(result.cars).toEqual([
+        expect.objectContaining({
+          id: 'car-1',
+          instructorId: null,
+          instructor: null,
+        }),
+      ]);
+      expect(prisma.car.findMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: {
+            AND: [
+              { organizationId: 'org-1' },
+              { status: CarStatus.AVAILABLE },
+            ],
+          },
+        }),
+      );
     });
   });
 });

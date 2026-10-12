@@ -1,5 +1,6 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import {
+  CarStatus,
   InvitationStatus,
   LicenseCategory,
   TrainingStatus,
@@ -289,6 +290,36 @@ export class CreatedStudentUserDto {
   organizationId: string;
 }
 
+export class PracticeCarDto {
+  @ApiProperty({ example: '31313131-3131-4131-8131-313131313131' })
+  id: string;
+
+  @ApiProperty({ example: 'AA0001BB' })
+  plateNumber: string;
+
+  @ApiProperty({ enum: LicenseCategory, example: LicenseCategory.B })
+  category: LicenseCategory;
+
+  @ApiProperty({ enum: Transmission, example: Transmission.MANUAL })
+  transmission: Transmission;
+
+  @ApiProperty({
+    enum: CarStatus,
+    example: CarStatus.AVAILABLE,
+    description:
+      'Актуальний експлуатаційний статус. Для нового допуску до практики потрібен AVAILABLE.',
+  })
+  status: CarStatus;
+
+  @ApiProperty({
+    nullable: true,
+    type: String,
+    example: '23232323-2323-4232-8232-232323232323',
+    description: 'Інструктор, якому автомобіль призначено зараз.',
+  })
+  instructorId: string | null;
+}
+
 export class StudentProfileDto {
   @ApiProperty({ example: '12121212-1212-1212-1212-121212121212' })
   id: string;
@@ -321,6 +352,15 @@ export class StudentProfileDto {
       'null, доки ADMIN не надасть допуск до практики через PATCH /api/students/{id}/practice-access.',
   })
   carId: string | null;
+
+  @ApiProperty({
+    nullable: true,
+    type: PracticeCarDto,
+    description:
+      'Актуальні дані призначеного автомобіля. null, якщо допуск до практики ще не надано ' +
+      'або автомобіль належить іншій автошколі. Статус і номер читаються з автомобіля, а не з копії.',
+  })
+  car: PracticeCarDto | null;
 
   @ApiProperty({
     enum: LicenseCategory,
