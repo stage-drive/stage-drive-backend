@@ -89,7 +89,7 @@ describe('provisionDemoAccounts', () => {
       'hashed-demo',
     );
     expect(db.student.create).toHaveBeenCalledTimes(1);
-    expect(db.car.upsert).toHaveBeenCalledTimes(2);
+    expect(db.car.upsert).toHaveBeenCalledTimes(5);
     expect(db.car.upsert.mock.calls[0][0].create).toMatchObject({
       plateNumber: 'AA0001BB',
       instructorId: '23232323-2323-4232-8232-232323232323',

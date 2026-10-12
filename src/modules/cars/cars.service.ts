@@ -23,6 +23,7 @@ import {
   CarListItemDto,
   CarSortField,
   CarSortOrder,
+  AssignCarInstructorDto,
   CreateCarDto,
   ListCarsQueryDto,
   PLATE_FORMAT_MESSAGE,
@@ -58,6 +59,12 @@ export const CAR_STATUS_TRANSITION_MESSAGE =
   'Недозволений перехід статусу автомобіля.';
 export const CAR_STATUS_IN_PRACTICE_MESSAGE =
   'Не можна змінити статус: автомобіль призначено студенту на практиці.';
+export const CAR_NOT_ASSIGNABLE_MESSAGE =
+  'Автомобіль недоступний. Призначити, змінити або скасувати інструктора можна лише в статусі AVAILABLE.';
+export const CAR_ASSIGNMENT_IN_USE_MESSAGE =
+  'Не можна скасувати призначення: автомобіль уже призначено студенту.';
+export const INSTRUCTOR_ASSIGNMENT_FIELD_MESSAGE =
+  'Передайте instructorId: UUID інструктора або null, щоб скасувати призначення.';
 
 const CAR_STATUS_TRANSITIONS: Record<CarStatus, readonly CarStatus[]> = {
   [CarStatus.AVAILABLE]: [CarStatus.MAINTENANCE, CarStatus.INACTIVE],
@@ -157,6 +164,9 @@ function buildCarWhere(
   if (query.instructorId) {
     filters.push({ instructorId: query.instructorId });
   }
+  if (query.status) {
+    filters.push({ status: query.status });
+  }
 
   const search = query.search?.trim();
   if (search) {
@@ -187,10 +197,16 @@ function isVisibleCar(row: CarListRow, actor: User): boolean {
   if (row.organizationId !== actor.organizationId) {
     return false;
   }
-  if (row.instructor.id !== row.instructorId) {
+  const orgWide = (ORG_WIDE_CAR_ROLES as readonly UserRole[]).includes(
+    actor.role,
+  );
+  if (row.instructorId === null) {
+    return orgWide;
+  }
+  if (!row.instructor || row.instructor.id !== row.instructorId) {
     return false;
   }
-  if ((ORG_WIDE_CAR_ROLES as readonly UserRole[]).includes(actor.role)) {
+  if (orgWide) {
     return true;
   }
   return row.instructorId === actor.id;
@@ -201,11 +217,13 @@ function toCarListItem(row: CarListRow): CarListItemDto {
     id: row.id,
     organizationId: row.organizationId,
     instructorId: row.instructorId,
-    instructor: {
-      id: row.instructor.id,
-      firstName: row.instructor.firstName,
-      lastName: row.instructor.lastName,
-    },
+    instructor: row.instructor
+      ? {
+          id: row.instructor.id,
+          firstName: row.instructor.firstName,
+          lastName: row.instructor.lastName,
+        }
+      : null,
     plateNumber: row.plateNumber,
     category: row.category,
     transmission: row.transmission,
@@ -464,6 +482,90 @@ export class CarsService {
     return toCarListItem(updated);
   }
 
+  async assignInstructor(
+    actor: User,
+    carId: string,
+    payload: AssignCarInstructorDto,
+  ): Promise<CarListItemDto> {
+    assertCanWriteCars(actor);
+    await this.requireOrganization(actor.organizationId);
+    if (payload.instructorId === undefined) {
+      throw fieldError('instructorId', INSTRUCTOR_ASSIGNMENT_FIELD_MESSAGE);
+    }
+
+    const updated = await this.prisma.$transaction(async (tx) => {
+      const existing = await tx.car.findUnique({
+        where: { id: carId },
+        select: carListSelect,
+      });
+      if (!existing || existing.organizationId !== actor.organizationId) {
+        throw new NotFoundException(CAR_NOT_FOUND_MESSAGE);
+      }
+
+      const nextInstructorId = payload.instructorId;
+      if (existing.status !== CarStatus.AVAILABLE) {
+        throw new ConflictException(CAR_NOT_ASSIGNABLE_MESSAGE);
+      }
+
+      if (nextInstructorId === existing.instructorId) {
+        return existing;
+      }
+
+      if (nextInstructorId === null) {
+        const inUse = await tx.student.findFirst({
+          where: {
+            carId: existing.id,
+            organizationId: actor.organizationId,
+          },
+          select: { id: true },
+        });
+        if (inUse) {
+          throw new ConflictException(CAR_ASSIGNMENT_IN_USE_MESSAGE);
+        }
+
+        const saved = await tx.car.update({
+          where: { id: existing.id },
+          data: { instructorId: null },
+          select: carListSelect,
+        });
+        if (saved.organizationId !== actor.organizationId) {
+          throw new NotFoundException(CAR_NOT_FOUND_MESSAGE);
+        }
+        this.logger.log(
+          `Car instructor unassigned carId=${saved.id} from=${existing.instructorId} actorId=${actor.id} organizationId=${actor.organizationId}`,
+        );
+        return saved;
+      }
+
+      await this.requireInstructor(tx, actor, nextInstructorId);
+      await this.assertStudentsStillMatch(
+        tx,
+        existing.id,
+        actor.organizationId,
+        {
+          instructorId: nextInstructorId,
+          category: existing.category,
+          transmission: existing.transmission,
+        },
+      );
+
+      const saved = await tx.car.update({
+        where: { id: existing.id },
+        data: { instructorId: nextInstructorId },
+        select: carListSelect,
+      });
+      if (saved.organizationId !== actor.organizationId) {
+        throw new NotFoundException(CAR_NOT_FOUND_MESSAGE);
+      }
+      this.logger.log(
+        `Car instructor assigned carId=${saved.id} from=${existing.instructorId ?? 'none'} to=${nextInstructorId} actorId=${actor.id} organizationId=${actor.organizationId}`,
+      );
+      return saved;
+    });
+
+    return toCarListItem(updated);
+  }
+
   private async requireInstructor(
     tx: Prisma.TransactionClient,
     actor: User,
@@ -511,7 +613,7 @@ export class CarsService {
     carId: string,
     organizationId: string,
     next: {
-      instructorId: string;
+      instructorId: string | null;
       category: LicenseCategory;
       transmission: Transmission;
     },

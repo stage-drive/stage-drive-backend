@@ -90,6 +90,8 @@ export const INSTRUCTOR_CAR_MISMATCH_MESSAGE =
   'Некоректна комбінація інструктора та автомобіля.';
 export const CAR_NOT_AVAILABLE_MESSAGE =
   'Автомобіль має бути в статусі AVAILABLE.';
+export const CAR_NOT_ASSIGNED_MESSAGE =
+  'Автомобіль не призначено інструктору.';
 export const STUDENT_PRACTICE_ACCESS_MESSAGE =
   'Студент не має права на допуск до практичного навчання.';
 export const ARCHIVED_STUDENT_BOOKING_MESSAGE =
@@ -175,6 +177,17 @@ const studentCardSelect = {
       category: true,
       transmission: true,
       trainingStatus: true,
+      car: {
+        select: {
+          id: true,
+          organizationId: true,
+          instructorId: true,
+          plateNumber: true,
+          category: true,
+          transmission: true,
+          status: true,
+        },
+      },
     },
   },
 } satisfies Prisma.UserSelect;
@@ -447,6 +460,26 @@ function isOwnStudentProfile(row: StudentCardRow, actor: User): boolean {
   );
 }
 
+function toPracticeCar(
+  car: NonNullable<
+    NonNullable<StudentCardRow['studentProfile']>['car']
+  > | null | undefined,
+  organizationId: string,
+) {
+  if (!car || car.organizationId !== organizationId) {
+    return null;
+  }
+
+  return {
+    id: car.id,
+    plateNumber: car.plateNumber,
+    category: car.category,
+    transmission: car.transmission,
+    status: car.status,
+    instructorId: car.instructorId,
+  };
+}
+
 function toStudentCard(row: StudentCardRow): StudentCardDto {
   return {
     id: row.id,
@@ -468,6 +501,10 @@ function toStudentCard(row: StudentCardRow): StudentCardDto {
           groupId: row.studentProfile.groupId,
           instructorId: row.studentProfile.instructorId,
           carId: row.studentProfile.carId,
+          car: toPracticeCar(
+            row.studentProfile.car,
+            row.studentProfile.organizationId,
+          ),
           category: row.studentProfile.category ?? null,
           transmission: row.studentProfile.transmission ?? null,
           trainingStatus: row.studentProfile.trainingStatus,
@@ -739,6 +776,7 @@ export class StudentsService {
         groupId: created.student.groupId,
         instructorId: created.student.instructorId,
         carId: created.student.carId,
+        car: null,
         category: created.student.category ?? null,
         transmission: created.student.transmission ?? null,
         trainingStatus: created.student.trainingStatus,
@@ -1136,6 +1174,9 @@ export class StudentsService {
       if (!car || car.organizationId !== actor.organizationId) {
         throw new NotFoundException(CAR_NOT_FOUND_MESSAGE);
       }
+      if (!car.instructorId) {
+        throw new ConflictException(CAR_NOT_ASSIGNED_MESSAGE);
+      }
       if (
         car.instructorId !== instructor.id ||
         car.category !== student.studentProfile.category ||
@@ -1167,6 +1208,15 @@ export class StudentsService {
           instructorId: profile.instructorId,
           carId: profile.carId,
           trainingStatus: profile.trainingStatus,
+          car: {
+            id: car.id,
+            organizationId: car.organizationId,
+            instructorId: car.instructorId,
+            plateNumber: car.plateNumber,
+            category: car.category,
+            transmission: car.transmission,
+            status: car.status,
+          },
         },
       });
     });

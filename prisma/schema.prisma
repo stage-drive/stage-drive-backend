@@ -318,8 +318,8 @@ model Car {
   id             String          @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   organizationId String          @map("organization_id") @db.Uuid
   organization   Organization    @relation(fields: [organizationId], references: [id], onDelete: Cascade)
-  instructorId   String          @map("instructor_id") @db.Uuid
-  instructor     User            @relation("InstructorCars", fields: [instructorId], references: [id], onDelete: Cascade)
+  instructorId   String?         @map("instructor_id") @db.Uuid
+  instructor     User?           @relation("InstructorCars", fields: [instructorId], references: [id], onDelete: Cascade)
   plateNumber    String          @map("plate_number") @db.VarChar(16)
   category       LicenseCategory
   transmission   Transmission

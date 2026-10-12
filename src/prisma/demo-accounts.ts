@@ -1,4 +1,5 @@
 import {
+  CarStatus,
   LicenseCategory,
   OrganizationStatus,
   PrismaClient,
@@ -20,6 +21,9 @@ const DEMO_ORG_NAME = 'Stage Drive School';
 const DEMO_INSTRUCTOR_ID = '23232323-2323-4232-8232-232323232323';
 const DEMO_CAR_MANUAL_ID = '31313131-3131-4131-8131-313131313131';
 const DEMO_CAR_AUTOMATIC_ID = '32323232-3232-4232-8232-323232323232';
+const DEMO_CAR_MAINTENANCE_ID = '38383838-3838-4383-8383-383838383838';
+const DEMO_CAR_INACTIVE_ID = '39393939-3939-4393-8393-393939393939';
+const DEMO_CAR_UNASSIGNED_ID = '3a3a3a3a-3a3a-43a3-83a3-3a3a3a3a3a3a';
 
 const DEMO_ACCOUNTS = [
   {
@@ -200,12 +204,40 @@ async function ensureDemoCars(db: PrismaClient, organizationId: string) {
       plateNumber: 'AA0001BB',
       category: LicenseCategory.B,
       transmission: Transmission.MANUAL,
+      instructorId: instructor.id,
+      status: CarStatus.AVAILABLE,
     },
     {
       id: DEMO_CAR_AUTOMATIC_ID,
       plateNumber: 'AA0002BB',
       category: LicenseCategory.B,
       transmission: Transmission.AUTOMATIC,
+      instructorId: instructor.id,
+      status: CarStatus.AVAILABLE,
+    },
+    {
+      id: DEMO_CAR_MAINTENANCE_ID,
+      plateNumber: 'AA0006BB',
+      category: LicenseCategory.B,
+      transmission: Transmission.MANUAL,
+      instructorId: instructor.id,
+      status: CarStatus.MAINTENANCE,
+    },
+    {
+      id: DEMO_CAR_INACTIVE_ID,
+      plateNumber: 'AA0009BB',
+      category: LicenseCategory.B,
+      transmission: Transmission.MANUAL,
+      instructorId: instructor.id,
+      status: CarStatus.INACTIVE,
+    },
+    {
+      id: DEMO_CAR_UNASSIGNED_ID,
+      plateNumber: 'AA0008BB',
+      category: LicenseCategory.B,
+      transmission: Transmission.MANUAL,
+      instructorId: null,
+      status: CarStatus.AVAILABLE,
     },
   ] as const;
 
@@ -214,18 +246,20 @@ async function ensureDemoCars(db: PrismaClient, organizationId: string) {
       where: { id: car.id },
       update: {
         organizationId,
-        instructorId: instructor.id,
+        instructorId: car.instructorId,
         plateNumber: car.plateNumber,
         category: car.category,
         transmission: car.transmission,
+        status: car.status,
       },
       create: {
         id: car.id,
         organizationId,
-        instructorId: instructor.id,
+        instructorId: car.instructorId,
         plateNumber: car.plateNumber,
         category: car.category,
         transmission: car.transmission,
+        status: car.status,
       },
     });
   }

@@ -116,6 +116,18 @@ export class ListCarsQueryDto {
   instructorId?: string;
 
   @ApiPropertyOptional({
+    enum: CarStatus,
+    description:
+      'Фільтр за експлуатаційним статусом. Для допуску до практики потрібен AVAILABLE.',
+    example: CarStatus.AVAILABLE,
+  })
+  @IsOptional()
+  @IsEnum(CarStatus, {
+    message: 'status має бути AVAILABLE, MAINTENANCE або INACTIVE.',
+  })
+  status?: CarStatus;
+
+  @ApiPropertyOptional({
     enum: CAR_SORT_FIELDS,
     default: 'plateNumber',
     description: 'Поле сортування. За замовчуванням plateNumber.',
@@ -181,11 +193,21 @@ export class CarListItemDto {
   @ApiProperty({ example: '11111111-1111-1111-1111-111111111111' })
   organizationId: string;
 
-  @ApiProperty({ example: '23232323-2323-4232-8232-232323232323' })
-  instructorId: string;
+  @ApiProperty({
+    nullable: true,
+    type: String,
+    example: '23232323-2323-4232-8232-232323232323',
+    description:
+      'null, якщо призначення інструктору скасовано через PATCH /cars/{id}/instructor.',
+  })
+  instructorId: string | null;
 
-  @ApiProperty({ type: CarInstructorDto })
-  instructor: CarInstructorDto;
+  @ApiProperty({
+    nullable: true,
+    type: CarInstructorDto,
+    description: 'null, якщо автомобіль зараз нікому не призначено.',
+  })
+  instructor: CarInstructorDto | null;
 
   @ApiProperty({ example: 'AA0001BB' })
   plateNumber: string;
@@ -348,4 +370,17 @@ export class UpdateCarStatusDto {
   })
   @IsDefined({ message: REQUIRED_FIELD_MESSAGE })
   status: CarStatus;
+}
+
+export class AssignCarInstructorDto {
+  @ApiProperty({
+    nullable: true,
+    type: String,
+    example: '23232323-2323-4232-8232-232323232323',
+    description:
+      'Активний інструктор тієї самої автошколи. null скасовує призначення.',
+  })
+  @ValidateIf((_, value) => value !== null && value !== undefined)
+  @IsUUID('4', { message: 'instructorId має бути UUID або null.' })
+  instructorId!: string | null;
 }

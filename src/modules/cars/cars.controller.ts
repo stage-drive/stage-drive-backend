@@ -25,7 +25,7 @@ import {
   ApiTags,
   ApiUnauthorizedResponse,
 } from '@nestjs/swagger';
-import { LicenseCategory, Transmission, User } from '@prisma/client';
+import { CarStatus, LicenseCategory, Transmission, User } from '@prisma/client';
 import { AuthGuard } from '../auth/auth.guard';
 import { CurrentUser } from '../auth/current-user.decorator';
 import { Roles } from '../auth/roles.decorator';
@@ -33,6 +33,7 @@ import { RolesGuard } from '../auth/roles.guard';
 import {
   CAR_SORT_FIELDS,
   CAR_SORT_ORDERS,
+  AssignCarInstructorDto,
   CarListDto,
   CarListItemDto,
   CreateCarDto,
@@ -59,8 +60,9 @@ export class CarsController {
       'INSTRUCTOR отримує лише автомобілі, призначені йому. ' +
       'TEACHER і STUDENT доступу не мають. Автомобіль іншої автошколи у відповідь не потрапляє. ' +
       'organizationId береться з access token, а не з query. ' +
-      'Підтримуються search за номером, фільтри category, transmission і instructorId, ' +
-      'sortBy/sortOrder і пагінація page/limit.',
+      'Підтримуються search за номером, фільтри category, transmission, instructorId і status, ' +
+      'sortBy/sortOrder і пагінація page/limit. ' +
+      'Автомобіль без інструктора бачать лише OWNER і ADMIN.',
   })
   @ApiQuery({ name: 'search', required: false, example: 'AA0001' })
   @ApiQuery({ name: 'category', required: false, enum: LicenseCategory })
@@ -81,6 +83,12 @@ export class CarsController {
     required: false,
     enum: CAR_SORT_ORDERS,
     example: 'asc',
+  })
+  @ApiQuery({
+    name: 'status',
+    required: false,
+    enum: CarStatus,
+    description: 'Для вибору авто в Practice передайте AVAILABLE.',
   })
   @ApiQuery({ name: 'page', required: false, example: 1 })
   @ApiQuery({ name: 'limit', required: false, example: 20 })
@@ -221,5 +229,56 @@ export class CarsController {
     @Body() body: UpdateCarStatusDto,
   ) {
     return this.carsService.changeStatus(user, id, body);
+  }
+
+  @Patch(':id/instructor')
+  @Roles(...CAR_WRITE_ROLES)
+  @ApiOperation({
+    summary: 'Призначити, змінити або скасувати інструктора автомобіля',
+    description:
+      'OWNER або ADMIN своєї автошколи. organizationId береться з access token. ' +
+      'Автомобіль іншої автошколи повертає 404. ' +
+      'instructorId — активний INSTRUCTOR тієї самої організації: це призначення або зміна. ' +
+      'Призначити, змінити або скасувати інструктора можна лише в статусі AVAILABLE. ' +
+      'MAINTENANCE і INACTIVE відхиляються і для призначення, і для скасування, ' +
+      'навіть якщо інструктор уже той самий. ' +
+      'null скасовує призначення доступного автомобіля. Скасування також заборонене, ' +
+      'якщо автомобіль уже стоїть у профілі студента. ' +
+      'Якщо студенти вже прив’язані до цього авто, новий інструктор має збігатися з їхнім призначенням. ' +
+      'Повтор того самого інструктора нічого не змінює.',
+  })
+  @ApiParam({
+    name: 'id',
+    format: 'uuid',
+    description: 'Id автомобіля своєї автошколи.',
+    example: '31313131-3131-4131-8131-313131313131',
+  })
+  @ApiOkResponse({ type: CarListItemDto })
+  @ApiForbiddenResponse({
+    description: 'Призначати автомобіль інструктору можуть лише OWNER або ADMIN.',
+  })
+  @ApiBadRequestResponse({
+    description:
+      'Некоректне тіло. instructorId має бути UUID або null. ' +
+      'Тіло містить errors: [{ field, message }].',
+  })
+  @ApiConflictResponse({
+    description:
+      'Автомобіль не AVAILABLE (і для призначення, і для скасування), ' +
+      'інструктор не INSTRUCTOR або не ACTIVE, ' +
+      'скасування заблоковане через студента, ' +
+      'або новий інструктор не збігається зі студентом, якому вже призначено автомобіль.',
+  })
+  @ApiNotFoundResponse({
+    description:
+      'Автомобіль або інструктор не знайдено, їх видалено, або вони належать іншій автошколі. ' +
+      'Також якщо автошколу видалено.',
+  })
+  assignInstructor(
+    @CurrentUser() user: User,
+    @Param('id', new ParseUUIDPipe({ version: '4' })) id: string,
+    @Body() body: AssignCarInstructorDto,
+  ) {
+    return this.carsService.assignInstructor(user, id, body);
   }
 }

@@ -2,6 +2,7 @@ import { createHash } from 'crypto';
 import 'dotenv/config';
 import { PrismaPg } from '@prisma/adapter-pg';
 import {
+  CarStatus,
   EnrollmentStatus,
   GroupStatus,
   InvitationStatus,
@@ -58,6 +59,9 @@ const DEMO_CAR_AUTO_ID = '32323232-3232-4232-8232-323232323232';
 const DEMO_CAR_CATEGORY_ID = '34343434-3434-4343-8343-343434343434';
 const DEMO_CAR_OTHER_INSTRUCTOR_ID = '35353535-3535-4353-8353-353535353535';
 const DEMO_CAR_OTHER_ORG_ID = '36363636-3636-4363-8363-363636363636';
+const DEMO_CAR_MAINTENANCE_ID = '38383838-3838-4383-8383-383838383838';
+const DEMO_CAR_INACTIVE_ID = '39393939-3939-4393-8393-393939393939';
+const DEMO_CAR_UNASSIGNED_ID = '3a3a3a3a-3a3a-43a3-83a3-3a3a3a3a3a3a';
 
 const DEMO_EMAIL = 'owner@example.com';
 const DEMO_ADMIN_EMAIL = 'admin@example.com';
@@ -241,11 +245,13 @@ async function upsertGroup(input: {
 async function upsertCar(input: {
   id: string;
   organizationId: string;
-  instructorId: string;
+  instructorId: string | null;
   plateNumber: string;
   category: LicenseCategory;
   transmission: Transmission;
+  status?: CarStatus;
 }) {
+  const status = input.status ?? CarStatus.AVAILABLE;
   return prisma.car.upsert({
     where: { id: input.id },
     update: {
@@ -254,8 +260,17 @@ async function upsertCar(input: {
       plateNumber: input.plateNumber,
       category: input.category,
       transmission: input.transmission,
+      status,
     },
-    create: input,
+    create: {
+      id: input.id,
+      organizationId: input.organizationId,
+      instructorId: input.instructorId,
+      plateNumber: input.plateNumber,
+      category: input.category,
+      transmission: input.transmission,
+      status,
+    },
   });
 }
 
@@ -560,6 +575,33 @@ async function main() {
     category: LicenseCategory.B,
     transmission: Transmission.MANUAL,
   });
+  const maintenanceCar = await upsertCar({
+    id: DEMO_CAR_MAINTENANCE_ID,
+    organizationId: organization.id,
+    instructorId: instructor.id,
+    plateNumber: 'AA0006BB',
+    category: LicenseCategory.B,
+    transmission: Transmission.MANUAL,
+    status: CarStatus.MAINTENANCE,
+  });
+  const inactiveCar = await upsertCar({
+    id: DEMO_CAR_INACTIVE_ID,
+    organizationId: organization.id,
+    instructorId: instructor.id,
+    plateNumber: 'AA0009BB',
+    category: LicenseCategory.B,
+    transmission: Transmission.MANUAL,
+    status: CarStatus.INACTIVE,
+  });
+  const unassignedCar = await upsertCar({
+    id: DEMO_CAR_UNASSIGNED_ID,
+    organizationId: organization.id,
+    instructorId: null,
+    plateNumber: 'AA0008BB',
+    category: LicenseCategory.B,
+    transmission: Transmission.MANUAL,
+    status: CarStatus.AVAILABLE,
+  });
 
   const tokenHash = hashToken(DEMO_INVITE_TOKEN);
   const expiresAt = new Date(Date.now() + INVITATION_TTL_MS);
@@ -637,7 +679,19 @@ async function main() {
   console.log(`  car of the second instructor: ${otherInstructorCar.id}`);
   console.log(`  other-org car: ${foreignCar.id}`);
   console.log(
-    'PATCH /api/students/{id}/practice-access — only ADMIN. Body: { "instructorId", "carId" }.',
+    `  MAINTENANCE car (assignment and practice rejected): ${maintenanceCar.id}`,
+  );
+  console.log(
+    `  INACTIVE car (assignment and practice rejected): ${inactiveCar.id}`,
+  );
+  console.log(
+    `  unassigned AVAILABLE car (assign via PATCH /api/cars/{id}/instructor): ${unassignedCar.id}`,
+  );
+  console.log(
+    'PATCH /api/cars/{id}/instructor — OWNER or ADMIN. Body: { "instructorId": "<uuid>" } or { "instructorId": null }.',
+  );
+  console.log(
+    'PATCH /api/students/{id}/practice-access — only ADMIN. Body: { "instructorId", "carId" }. Response student.car is the current car.',
   );
   console.log(
     `DELETE /api/students/{id} — OWNER or ADMIN. Archives student ${DEMO_STUDENT_EMAIL} without deleting the row. id=${activeStudent.id}`,
