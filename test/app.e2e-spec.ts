@@ -2433,6 +2433,8 @@ describe('API (e2e)', () => {
         groupId: null,
         instructorId: null,
         carId: null,
+        category: null,
+        transmission: null,
         trainingStatus: 'INVITED',
       },
     });
@@ -2461,6 +2463,7 @@ describe('API (e2e)', () => {
     prismaMock.group.findUnique.mockResolvedValue({
       id: schoolGroupId,
       organizationId: organization.id,
+      status: 'ACTIVE',
     });
 
     const token = signAccessToken(owner.id);
@@ -3074,7 +3077,7 @@ describe('API (e2e)', () => {
         {
           field: 'body',
           message:
-            'Немає дозволених полів для оновлення (firstName, lastName, phone).',
+            'Немає дозволених полів для оновлення (firstName, lastName, phone, category, transmission).',
         },
       ],
     });
