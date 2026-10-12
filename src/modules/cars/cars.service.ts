@@ -170,7 +170,10 @@ function buildCarWhere(
 
   const search = query.search?.trim();
   if (search) {
-    filters.push({ plateNumber: contains(search) });
+    const plateSearch = normalizePlateNumber(search);
+    if (plateSearch) {
+      filters.push({ plateNumber: contains(plateSearch) });
+    }
   }
 
   return { AND: filters };
@@ -351,6 +354,9 @@ export class CarsService {
           payload.instructorId !== undefined &&
           payload.instructorId !== existing.instructorId
         ) {
+          if (existing.status !== CarStatus.AVAILABLE) {
+            throw new ConflictException(CAR_NOT_ASSIGNABLE_MESSAGE);
+          }
           await this.requireInstructor(tx, actor, payload.instructorId);
           data.instructorId = payload.instructorId;
           instructorId = payload.instructorId;

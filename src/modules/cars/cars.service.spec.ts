@@ -329,7 +329,7 @@ describe('CarsService', () => {
             { instructorId: 'instructor-1' },
             {
               plateNumber: {
-                contains: 'aa0001',
+                contains: 'AA0001',
                 mode: Prisma.QueryMode.insensitive,
               },
             },
@@ -338,6 +338,26 @@ describe('CarsService', () => {
         orderBy: [{ createdAt: 'desc' }, { id: 'asc' }],
         skip: 5,
         take: 5,
+      }),
+    );
+  });
+
+  it('searches a plate with spaces and hyphens the same way it is stored', async () => {
+    await service.list(actor(UserRole.ADMIN), { search: ' aa-0001 ' });
+
+    expect(prisma.car.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: {
+          AND: [
+            { organizationId: 'org-1' },
+            {
+              plateNumber: {
+                contains: 'AA0001',
+                mode: Prisma.QueryMode.insensitive,
+              },
+            },
+          ],
+        },
       }),
     );
   });
@@ -657,6 +677,19 @@ describe('CarsService', () => {
         transmission: Transmission.AUTOMATIC,
       }),
     ).rejects.toMatchObject({ message: CAR_ASSIGNED_STUDENT_MESSAGE });
+    expect(prisma.car.update).not.toHaveBeenCalled();
+  });
+
+  it('does not change the instructor of a car that is not available', async () => {
+    prisma.car.findUnique.mockResolvedValue(
+      carRow({ status: CarStatus.MAINTENANCE }),
+    );
+
+    await expect(
+      service.update(actor(UserRole.ADMIN), 'car-1', {
+        instructorId: 'instructor-2',
+      }),
+    ).rejects.toMatchObject({ message: CAR_NOT_ASSIGNABLE_MESSAGE });
     expect(prisma.car.update).not.toHaveBeenCalled();
   });
 
