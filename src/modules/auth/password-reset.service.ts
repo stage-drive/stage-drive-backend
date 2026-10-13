@@ -2,27 +2,18 @@ import { Injectable, UnauthorizedException } from '@nestjs/common';
 import { UserStatus } from '@prisma/client';
 import * as bcrypt from 'bcrypt';
 import { createHash, randomBytes } from 'crypto';
+import { frontendBaseUrl } from '../../common/config/frontend-url';
 import { MailService } from '../mail/mail.service';
 import { PrismaService } from '../../prisma/prisma.service';
 import { RefreshTokenService } from './refresh-token.service';
 
 const BCRYPT_ROUNDS = 10;
 const PASSWORD_RESET_TTL_MS = 30 * 60 * 1000;
-const DEFAULT_FRONTEND_URL = 'http://localhost:5173';
 const INVALID_RESET_TOKEN_MESSAGE =
   'Посилання для скидання пароля недійсне або застаріле.';
 
 function hashToken(token: string): string {
   return createHash('sha256').update(token).digest('hex');
-}
-
-function frontendBaseUrl(): string {
-  const fromEnv = (
-    process.env.FRONTEND_URL ??
-    process.env.GOOGLE_OAUTH_SUCCESS_REDIRECT ??
-    DEFAULT_FRONTEND_URL
-  ).trim();
-  return (fromEnv || DEFAULT_FRONTEND_URL).replace(/\/$/, '');
 }
 
 function passwordResetUrl(token: string): string {

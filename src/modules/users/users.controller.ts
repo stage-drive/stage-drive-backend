@@ -5,7 +5,6 @@ import {
   Delete,
   Get,
   HttpCode,
-  HttpException,
   HttpStatus,
   Patch,
   Post,
@@ -31,12 +30,15 @@ import {
   imageStorage,
   publicUploadUrl,
 } from '../../common/files/image-upload';
+import { EmailChangeService } from './email-change.service';
 import { UsersService } from './users.service';
 import {
+  ChangeEmailDto,
   ChangePasswordDto,
   MessageResponseDto,
   PublicUserDto,
   UpdateProfileDto,
+  VerifyEmailDto,
 } from './users.dto';
 
 @ApiTags('users')
@@ -45,7 +47,10 @@ import {
 @Controller('users')
 @UseGuards(AuthGuard)
 export class UsersController {
-  constructor(private readonly usersService: UsersService) {}
+  constructor(
+    private readonly usersService: UsersService,
+    private readonly emailChangeService: EmailChangeService,
+  ) {}
 
   @Get('me')
   @ApiOkResponse({ type: PublicUserDto })
@@ -114,14 +119,20 @@ export class UsersController {
   }
 
   @Post('me/email/change')
-  @HttpCode(HttpStatus.NOT_IMPLEMENTED)
-  changeEmail() {
-    throw new HttpException('Поза MVP', HttpStatus.NOT_IMPLEMENTED);
+  @HttpCode(HttpStatus.OK)
+  @ApiOkResponse({ type: MessageResponseDto })
+  changeEmail(@CurrentUser() user: User, @Body() body: ChangeEmailDto) {
+    return this.emailChangeService.requestEmailChange(
+      user,
+      body.newEmail,
+      body.currentPassword,
+    );
   }
 
   @Post('me/email/verify')
-  @HttpCode(HttpStatus.NOT_IMPLEMENTED)
-  verifyEmail() {
-    throw new HttpException('Поза MVP', HttpStatus.NOT_IMPLEMENTED);
+  @HttpCode(HttpStatus.OK)
+  @ApiOkResponse({ type: MessageResponseDto })
+  verifyEmail(@CurrentUser() user: User, @Body() body: VerifyEmailDto) {
+    return this.emailChangeService.verifyEmailChange(user, body.token);
   }
 }
