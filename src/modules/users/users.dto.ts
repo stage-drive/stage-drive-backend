@@ -1,6 +1,7 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import { UserRole } from '@prisma/client';
 import {
+  IsEmail,
   IsNotEmpty,
   IsOptional,
   IsString,
@@ -85,6 +86,28 @@ export class ChangePasswordDto {
   @MinLength(8, { message: 'Пароль має містити щонайменше 8 символів.' })
   @IsString()
   newPassword: string;
+}
+
+export class ChangeEmailDto {
+  @ApiProperty({ example: 'new.owner@example.com' })
+  @IsEmail({}, { message: 'Введіть коректний email.' })
+  @MaxLength(255)
+  @IsNotEmpty()
+  newEmail: string;
+
+  @ApiProperty({ example: 'SecurePassword123!' })
+  @IsString()
+  @IsNotEmpty()
+  currentPassword: string;
+}
+
+export class VerifyEmailDto {
+  @ApiProperty({
+    description: 'Токен із посилання в листі (/confirm-email?token=...)',
+  })
+  @IsString()
+  @IsNotEmpty()
+  token: string;
 }
 
 export class MessageResponseDto {

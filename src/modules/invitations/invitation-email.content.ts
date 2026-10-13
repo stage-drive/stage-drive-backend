@@ -1,6 +1,5 @@
 import { UserRole } from '@prisma/client';
-
-const DEFAULT_FRONTEND_URL = 'http://localhost:5173';
+import { frontendBaseUrl } from '../../common/config/frontend-url';
 
 const ROLE_TITLE_UK: Record<UserRole, string> = {
   [UserRole.OWNER]: 'власником',
@@ -9,15 +8,6 @@ const ROLE_TITLE_UK: Record<UserRole, string> = {
   [UserRole.INSTRUCTOR]: 'інструктором',
   [UserRole.STUDENT]: 'учнем',
 };
-
-function frontendBaseUrl(): string {
-  const fromEnv = (
-    process.env.FRONTEND_URL ??
-    process.env.GOOGLE_OAUTH_SUCCESS_REDIRECT ??
-    DEFAULT_FRONTEND_URL
-  ).trim();
-  return (fromEnv || DEFAULT_FRONTEND_URL).replace(/\/$/, '');
-}
 
 export function invitationAcceptUrl(token: string): string {
   return `${frontendBaseUrl()}/invite?token=${encodeURIComponent(token)}`;

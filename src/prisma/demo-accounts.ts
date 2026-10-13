@@ -98,9 +98,16 @@ export async function provisionDemoAccounts(
   const organization = await ensureDemoOrganization(db);
 
   for (const account of DEMO_ACCOUNTS) {
-    const user = await db.user.upsert({
+    // Fallback на фіксований id: demo-юзер міг змінити email через /users/me/email/*,
+    // і upsert лише за email спробував би створити рядок із тим самим id (P2002).
+    const byEmail = await db.user.findUnique({
       where: { email: account.email },
+      select: { id: true },
+    });
+    const user = await db.user.upsert({
+      where: { id: byEmail?.id ?? account.id },
       update: {
+        email: account.email,
         passwordHash,
         firstName: account.firstName,
         lastName: account.lastName,

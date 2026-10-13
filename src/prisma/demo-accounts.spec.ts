@@ -112,6 +112,31 @@ describe('provisionDemoAccounts', () => {
     expect(db.organization.update).not.toHaveBeenCalled();
     expect(db.student.create).not.toHaveBeenCalled();
   });
+
+  it('restores a demo login whose email was changed, by its fixed id', async () => {
+    const db = createDb();
+
+    await provisionDemoAccounts(db);
+
+    const admin = db.user.upsert.mock.calls[0][0];
+    expect(admin.where).toEqual({ id: '66666666-6666-6666-6666-666666666666' });
+    expect(admin.update.email).toBe('admin@example.com');
+  });
+
+  it('updates a demo login found by email even if its id differs', async () => {
+    const db = createDb();
+    db.user.findUnique.mockImplementation(({ where }) =>
+      Promise.resolve(
+        where.email === 'admin@example.com' ? { id: 'legacy-admin' } : null,
+      ),
+    );
+
+    await provisionDemoAccounts(db);
+
+    expect(db.user.upsert.mock.calls[0][0].where).toEqual({
+      id: 'legacy-admin',
+    });
+  });
 });
 
 function createDb() {
@@ -128,6 +153,7 @@ function createDb() {
       update: jest.fn(),
     },
     user: {
+      findUnique: jest.fn().mockResolvedValue(null),
       upsert: jest.fn().mockImplementation(({ create }) =>
         Promise.resolve({
           id: create.id,
@@ -159,7 +185,7 @@ function createDb() {
       create: jest.Mock;
       update: jest.Mock;
     };
-    user: { upsert: jest.Mock; findFirst: jest.Mock };
+    user: { findUnique: jest.Mock; upsert: jest.Mock; findFirst: jest.Mock };
     student: { findUnique: jest.Mock; create: jest.Mock };
     car: { upsert: jest.Mock };
   };
