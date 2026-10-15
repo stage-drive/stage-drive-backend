@@ -62,6 +62,11 @@ function studentRow(
     organizationId: string;
     createdAt: Date;
     deletedAt: Date | null;
+    studentProfile: {
+      organizationId: string;
+      category: LicenseCategory | null;
+      transmission: Transmission | null;
+    } | null;
   }> = {},
 ) {
   return {
@@ -76,6 +81,7 @@ function studentRow(
     organizationId: 'org-1',
     createdAt: new Date('2026-01-02T00:00:00.000Z'),
     deletedAt: null,
+    studentProfile: null,
     ...overrides,
   };
 }
@@ -157,6 +163,8 @@ describe('StudentsService', () => {
           role: UserRole.STUDENT,
           status: UserStatus.ACTIVE,
           organizationId: 'org-1',
+          category: null,
+          transmission: null,
           createdAt: row.createdAt,
         },
       ],
@@ -180,9 +188,16 @@ describe('StudentsService', () => {
       }),
     );
     const queryArgs = prisma.user.findMany.mock.calls[0][0] as {
-      select: Record<string, boolean>;
+      select: Record<string, unknown>;
     };
     expect(queryArgs.select.email).toBe(true);
+    expect(queryArgs.select.studentProfile).toEqual({
+      select: {
+        organizationId: true,
+        category: true,
+        transmission: true,
+      },
+    });
     expect(queryArgs.select).not.toHaveProperty('passwordHash');
     expect(prisma.user.count).toHaveBeenCalledWith({
       where: {
@@ -243,6 +258,46 @@ describe('StudentsService', () => {
     expect(result.students.map((student) => student.id)).toEqual(['student-1']);
     expect(result.students[0]).not.toHaveProperty('passwordHash');
     expect(result.students[0]).not.toHaveProperty('deletedAt');
+  });
+
+  it('returns category and transmission from the student profile', async () => {
+    const row = studentRow({
+      studentProfile: {
+        organizationId: 'org-1',
+        category: LicenseCategory.B,
+        transmission: Transmission.MANUAL,
+      },
+    });
+    prisma.user.findMany.mockResolvedValue([row]);
+    prisma.user.count.mockResolvedValue(1);
+
+    const result = await service.list(actor(UserRole.ADMIN), {});
+
+    expect(result.students[0]).toMatchObject({
+      id: row.id,
+      category: LicenseCategory.B,
+      transmission: Transmission.MANUAL,
+    });
+  });
+
+  it('returns null category and transmission when the profile belongs to another organization', async () => {
+    prisma.user.findMany.mockResolvedValue([
+      studentRow({
+        studentProfile: {
+          organizationId: 'org-2',
+          category: LicenseCategory.C,
+          transmission: Transmission.AUTOMATIC,
+        },
+      }),
+    ]);
+    prisma.user.count.mockResolvedValue(1);
+
+    const result = await service.list(actor(UserRole.ADMIN), {});
+
+    expect(result.students[0]).toMatchObject({
+      category: null,
+      transmission: null,
+    });
   });
 
   it('applies search, status filter, sorting and pagination', async () => {

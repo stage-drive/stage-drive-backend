@@ -2091,6 +2091,11 @@ describe('API (e2e)', () => {
     organizationId: organization.id,
     createdAt: new Date('2026-01-02T00:00:00.000Z'),
     deletedAt: null,
+    studentProfile: {
+      organizationId: organization.id,
+      category: 'B' as const,
+      transmission: 'MANUAL' as const,
+    },
   };
 
   it('GET /api/students without token returns 401', () => {
@@ -2181,6 +2186,8 @@ describe('API (e2e)', () => {
             role: 'STUDENT',
             status: 'ACTIVE',
             organizationId: organization.id,
+            category: 'B',
+            transmission: 'MANUAL',
             createdAt: '2026-01-02T00:00:00.000Z',
           },
         ],

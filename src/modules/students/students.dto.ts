@@ -171,6 +171,24 @@ export class StudentListItemDto {
   @ApiProperty({ example: '11111111-1111-1111-1111-111111111111' })
   organizationId: string;
 
+  @ApiProperty({
+    enum: LicenseCategory,
+    nullable: true,
+    example: LicenseCategory.B,
+    description:
+      'Категорія, на яку навчається студент. null, якщо в профілі ще не вказана.',
+  })
+  category: LicenseCategory | null;
+
+  @ApiProperty({
+    enum: Transmission,
+    nullable: true,
+    example: Transmission.MANUAL,
+    description:
+      'Коробка передач, на яку навчається студент. null, якщо в профілі ще не вказана.',
+  })
+  transmission: Transmission | null;
+
   @ApiProperty({ example: '2026-01-02T00:00:00.000Z' })
   createdAt: Date;
 }

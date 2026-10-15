@@ -149,6 +149,13 @@ const studentSelect = {
   organizationId: true,
   createdAt: true,
   deletedAt: true,
+  studentProfile: {
+    select: {
+      organizationId: true,
+      category: true,
+      transmission: true,
+    },
+  },
 } satisfies Prisma.UserSelect;
 
 type StudentRow = Prisma.UserGetPayload<{ select: typeof studentSelect }>;
@@ -412,6 +419,12 @@ function isVisibleStudent(row: StudentRow, organizationId: string): boolean {
 }
 
 function toStudentListItem(row: StudentRow): StudentListItemDto {
+  const profile =
+    row.studentProfile &&
+    row.studentProfile.organizationId === row.organizationId
+      ? row.studentProfile
+      : null;
+
   return {
     id: row.id,
     email: row.email,
@@ -422,6 +435,8 @@ function toStudentListItem(row: StudentRow): StudentListItemDto {
     role: row.role,
     status: row.status,
     organizationId: row.organizationId,
+    category: profile?.category ?? null,
+    transmission: profile?.transmission ?? null,
     createdAt: row.createdAt,
   };
 }
