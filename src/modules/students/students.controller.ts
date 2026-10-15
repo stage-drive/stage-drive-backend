@@ -71,6 +71,7 @@ export class StudentsController {
     description:
       'ADMIN, TEACHER і INSTRUCTOR отримують студентів лише своєї організації. ' +
       'Студент іншої автошколи, інші ролі та soft-delete у відповідь не потрапляють. ' +
+      'У кожному рядку є category і transmission з профілю учня (null, якщо ще не вказані). ' +
       'Підтримуються search, фільтр status, sortBy/sortOrder і пагінація page/limit.',
   })
   @ApiQuery({ name: 'search', required: false, example: 'Петренко' })
