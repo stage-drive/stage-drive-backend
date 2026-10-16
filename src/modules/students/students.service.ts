@@ -79,6 +79,9 @@ export const GROUP_NOT_ASSIGNABLE_MESSAGE =
   'Групу зі статусом ARCHIVED або COMPLETED не можна призначити.';
 export const STUDENT_ACTIVE_GROUP_MESSAGE =
   'Студент уже перебуває в іншій активній групі.';
+export const STUDENT_NOT_IN_GROUP_MESSAGE = 'Student is not in this group';
+export const GROUP_CLOSED_ROSTER_MESSAGE =
+  'Склад групи зі статусом COMPLETED або ARCHIVED змінювати не можна.';
 export const TRAINING_STATUS_TRANSITION_MESSAGE =
   'Недозволений перехід навчального статусу.';
 export const INSTRUCTOR_NOT_FOUND_MESSAGE = 'Instructor not found';
@@ -90,8 +93,7 @@ export const INSTRUCTOR_CAR_MISMATCH_MESSAGE =
   'Некоректна комбінація інструктора та автомобіля.';
 export const CAR_NOT_AVAILABLE_MESSAGE =
   'Автомобіль має бути в статусі AVAILABLE.';
-export const CAR_NOT_ASSIGNED_MESSAGE =
-  'Автомобіль не призначено інструктору.';
+export const CAR_NOT_ASSIGNED_MESSAGE = 'Автомобіль не призначено інструктору.';
 export const STUDENT_PRACTICE_ACCESS_MESSAGE =
   'Студент не має права на допуск до практичного навчання.';
 export const ARCHIVED_STUDENT_BOOKING_MESSAGE =
@@ -304,13 +306,18 @@ function isTerminalTrainingStatus(status: TrainingStatus): boolean {
   );
 }
 
+/**
+ * ARCHIVED закриває активне зарахування як DROPPED, щоб архівований студент
+ * не лишався у складі групи. ARCHIVED термінальний, тож блокування нових
+ * зарахувань через DROPPED нічого не ламає.
+ */
 function enrollmentStatusForTraining(
   status: TrainingStatus,
 ): EnrollmentStatus | null {
   if (status === TrainingStatus.GRADUATED) {
     return EnrollmentStatus.COMPLETED;
   }
-  if (status === TrainingStatus.DROPPED) {
+  if (status === TrainingStatus.DROPPED || status === TrainingStatus.ARCHIVED) {
     return EnrollmentStatus.DROPPED;
   }
   return null;
@@ -476,9 +483,10 @@ function isOwnStudentProfile(row: StudentCardRow, actor: User): boolean {
 }
 
 function toPracticeCar(
-  car: NonNullable<
-    NonNullable<StudentCardRow['studentProfile']>['car']
-  > | null | undefined,
+  car:
+    | NonNullable<NonNullable<StudentCardRow['studentProfile']>['car']>
+    | null
+    | undefined,
   organizationId: string,
 ) {
   if (!car || car.organizationId !== organizationId) {
@@ -1063,6 +1071,76 @@ export class StudentsService {
     });
   }
 
+  /**
+   * Прибирає студента зі складу відкритої групи: видаляє ACTIVE-зарахування і
+   * обнуляє Student.groupId, якщо той вказує на цю групу. Статус зарахування не
+   * змінюється на DROPPED чи COMPLETED, бо обидва блокують нове зарахування
+   * (див. assignGroup). trainingStatus студента не змінюється.
+   */
+  async removeFromGroup(
+    actor: User,
+    studentId: string,
+    groupId: string,
+  ): Promise<void> {
+    assertCanAssignStudentGroup(actor);
+    await this.requireOrganization(actor.organizationId);
+
+    await this.prisma.$transaction(async (tx) => {
+      const group = await tx.group.findFirst({
+        where: { id: groupId, organizationId: actor.organizationId },
+        select: { id: true, status: true },
+      });
+      if (!group) {
+        throw new NotFoundException(GROUP_NOT_FOUND_MESSAGE);
+      }
+      if (!isOpenGroup(group.status)) {
+        throw new ConflictException(GROUP_CLOSED_ROSTER_MESSAGE);
+      }
+
+      const student = await tx.user.findFirst({
+        where: {
+          id: studentId,
+          organizationId: actor.organizationId,
+          role: UserRole.STUDENT,
+          deletedAt: null,
+        },
+        select: {
+          id: true,
+          studentProfile: {
+            select: { id: true, organizationId: true, groupId: true },
+          },
+        },
+      });
+      if (
+        !student?.studentProfile ||
+        student.studentProfile.organizationId !== actor.organizationId
+      ) {
+        throw new NotFoundException(STUDENT_NOT_FOUND_MESSAGE);
+      }
+
+      const enrollment = await tx.enrollment.findUnique({
+        where: {
+          groupId_studentId: { groupId: group.id, studentId: student.id },
+        },
+      });
+      if (!enrollment || enrollment.status !== EnrollmentStatus.ACTIVE) {
+        throw new NotFoundException(STUDENT_NOT_IN_GROUP_MESSAGE);
+      }
+
+      await tx.enrollment.delete({ where: { id: enrollment.id } });
+      if (student.studentProfile.groupId === group.id) {
+        await tx.student.update({
+          where: { id: student.studentProfile.id },
+          data: { groupId: null },
+        });
+      }
+    });
+
+    this.logger.log(
+      `Student removed from group studentId=${studentId} groupId=${groupId} actorId=${actor.id} organizationId=${actor.organizationId}`,
+    );
+  }
+
   async changeTrainingStatus(
     actor: User,
     studentId: string,
@@ -1269,6 +1347,15 @@ export class StudentsService {
       const profile = await tx.student.update({
         where: { id: student.studentProfile.id },
         data: { trainingStatus: TrainingStatus.ARCHIVED },
+      });
+      // Архівований студент не лишається у складі групи.
+      await tx.enrollment.updateMany({
+        where: {
+          studentId: student.id,
+          status: EnrollmentStatus.ACTIVE,
+          group: { organizationId: actor.organizationId },
+        },
+        data: { status: EnrollmentStatus.DROPPED },
       });
 
       this.logger.log(

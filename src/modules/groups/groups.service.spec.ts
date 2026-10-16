@@ -10,10 +10,18 @@ import {
   EnrollmentStatus,
   GroupStatus,
   OrganizationStatus,
+  TrainingStatus,
   UserRole,
   UserStatus,
 } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
+import {
+  GROUP_NOT_ASSIGNABLE_MESSAGE,
+  STUDENT_ACTIVE_GROUP_MESSAGE,
+  STUDENT_NOT_FOUND_MESSAGE,
+  STUDENT_NOT_IN_GROUP_MESSAGE,
+  StudentsService,
+} from '../students/students.service';
 import {
   GROUP_CLOSED_MESSAGE,
   GROUP_DATE_RANGE_MESSAGE,
@@ -82,8 +90,13 @@ describe('GroupsService', () => {
       update: jest.fn(),
     },
     user: { findUnique: jest.fn() },
-    enrollment: { updateMany: jest.fn() },
+    enrollment: { updateMany: jest.fn(), findMany: jest.fn() },
     $transaction: jest.fn(),
+  };
+
+  const studentsService = {
+    assignGroup: jest.fn(),
+    removeFromGroup: jest.fn(),
   };
 
   let service: GroupsService;
@@ -115,6 +128,9 @@ describe('GroupsService', () => {
     prisma.group.findMany.mockResolvedValue([]);
     prisma.user.findUnique.mockResolvedValue(teacher);
     prisma.enrollment.updateMany.mockResolvedValue({ count: 0 });
+    prisma.enrollment.findMany.mockResolvedValue([]);
+    studentsService.assignGroup.mockResolvedValue({});
+    studentsService.removeFromGroup.mockResolvedValue(undefined);
     prisma.$transaction.mockImplementation(
       (callback: (tx: typeof prisma) => Promise<unknown>) => callback(prisma),
     );
@@ -122,7 +138,10 @@ describe('GroupsService', () => {
     log = jest
       .spyOn(Logger.prototype, 'log')
       .mockImplementation(() => undefined);
-    service = new GroupsService(prisma as unknown as PrismaService);
+    service = new GroupsService(
+      prisma as unknown as PrismaService,
+      studentsService as unknown as StudentsService,
+    );
   });
 
   afterEach(() => {
@@ -747,6 +766,311 @@ describe('GroupsService', () => {
         }),
       ).rejects.toBeInstanceOf(NotFoundException);
       expect(prisma.$transaction).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('group roster', () => {
+    const teacherActor = {
+      id: 'teacher-1',
+      role: UserRole.TEACHER,
+      organizationId: 'org-1',
+    };
+
+    const enrollmentRow = {
+      enrolledAt: new Date('2026-10-02T09:00:00.000Z'),
+      student: {
+        id: 'student-1',
+        firstName: 'Олена',
+        lastName: 'Коваль',
+        email: 'student@example.com',
+        phone: '+380991234567',
+        studentProfile: { trainingStatus: TrainingStatus.ACTIVE },
+      },
+    };
+
+    const rosterStudent = {
+      id: 'student-1',
+      firstName: 'Олена',
+      lastName: 'Коваль',
+      email: 'student@example.com',
+      phone: '+380991234567',
+      trainingStatus: TrainingStatus.ACTIVE,
+      enrolledAt: new Date('2026-10-02T09:00:00.000Z'),
+    };
+
+    const groupItem = {
+      id: 'group-1',
+      name: 'ПДР — Група А',
+      status: GroupStatus.ACTIVE,
+      startDate: new Date('2026-10-01T00:00:00.000Z'),
+      endDate: null,
+      teacher: { id: 'teacher-1', firstName: 'Ірина', lastName: 'Мельник' },
+      studentsCount: 1,
+      createdAt: new Date('2026-09-29T19:20:00.000Z'),
+    };
+
+    beforeEach(() => {
+      mockGroupLookups({
+        existing: { ...groupRow, _count: { enrollments: 1 } },
+      });
+      prisma.enrollment.findMany.mockResolvedValue([enrollmentRow]);
+    });
+
+    describe('listStudents', () => {
+      it('returns the group and its active students for ADMIN', async () => {
+        await expect(
+          service.listStudents(admin as never, 'group-1'),
+        ).resolves.toEqual({ group: groupItem, students: [rosterStudent] });
+
+        const [groupArgs] = prisma.group.findFirst.mock.calls[0];
+        expect(groupArgs.where).toEqual({
+          id: 'group-1',
+          organizationId: 'org-1',
+        });
+      });
+
+      it('reads only ACTIVE enrollments of the organization with safe student fields', async () => {
+        await service.listStudents(admin as never, 'group-1');
+
+        expect(prisma.enrollment.findMany).toHaveBeenCalledWith({
+          where: {
+            groupId: 'group-1',
+            status: EnrollmentStatus.ACTIVE,
+            student: { organizationId: 'org-1' },
+          },
+          select: {
+            enrolledAt: true,
+            student: {
+              select: {
+                id: true,
+                firstName: true,
+                lastName: true,
+                email: true,
+                phone: true,
+                studentProfile: { select: { trainingStatus: true } },
+              },
+            },
+          },
+          orderBy: [
+            { student: { lastName: 'asc' } },
+            { student: { firstName: 'asc' } },
+            { student: { id: 'asc' } },
+          ],
+        });
+      });
+
+      it('maps a student without a profile to a null trainingStatus', async () => {
+        prisma.enrollment.findMany.mockResolvedValue([
+          {
+            ...enrollmentRow,
+            student: { ...enrollmentRow.student, studentProfile: null },
+          },
+        ]);
+
+        const result = await service.listStudents(admin as never, 'group-1');
+
+        expect(result.students).toEqual([
+          { ...rosterStudent, trainingStatus: null },
+        ]);
+      });
+
+      it('lets a TEACHER read the roster of their own group', async () => {
+        await expect(
+          service.listStudents(teacherActor as never, 'group-1'),
+        ).resolves.toEqual({ group: groupItem, students: [rosterStudent] });
+      });
+
+      it('returns 403 to a TEACHER of another group without reading students', async () => {
+        const error = await caught(
+          service.listStudents(
+            { ...teacherActor, id: 'teacher-2' } as never,
+            'group-1',
+          ),
+        );
+
+        expect(error).toBeInstanceOf(ForbiddenException);
+        expect(prisma.enrollment.findMany).not.toHaveBeenCalled();
+      });
+
+      it.each([UserRole.STUDENT, UserRole.INSTRUCTOR, UserRole.OWNER])(
+        'returns 403 to %s without touching the database',
+        async (role) => {
+          await expect(
+            service.listStudents({ ...admin, role } as never, 'group-1'),
+          ).rejects.toBeInstanceOf(ForbiddenException);
+          expect(prisma.organization.findUnique).not.toHaveBeenCalled();
+          expect(prisma.group.findFirst).not.toHaveBeenCalled();
+          expect(prisma.enrollment.findMany).not.toHaveBeenCalled();
+        },
+      );
+
+      it('returns 404 for a missing group or a group of another organization', async () => {
+        mockGroupLookups({ existing: null });
+
+        const error = await caught(
+          service.listStudents(admin as never, 'group-1'),
+        );
+
+        expect(error).toBeInstanceOf(NotFoundException);
+        expect(error.message).toBe(GROUP_NOT_FOUND_MESSAGE);
+        expect(prisma.enrollment.findMany).not.toHaveBeenCalled();
+      });
+
+      it('returns 404 when the organization is soft-deleted', async () => {
+        prisma.organization.findUnique.mockResolvedValue({
+          ...organization,
+          deletedAt: new Date(),
+        });
+
+        await expect(
+          service.listStudents(admin as never, 'group-1'),
+        ).rejects.toBeInstanceOf(NotFoundException);
+        expect(prisma.group.findFirst).not.toHaveBeenCalled();
+      });
+    });
+
+    describe('addStudent', () => {
+      const payload = { studentId: 'student-1' };
+
+      it('checks the group, delegates to assignGroup and returns the current roster', async () => {
+        await expect(
+          service.addStudent(admin as never, 'group-1', payload),
+        ).resolves.toEqual({ group: groupItem, students: [rosterStudent] });
+
+        expect(studentsService.assignGroup).toHaveBeenCalledWith(
+          admin,
+          'student-1',
+          { groupId: 'group-1' },
+        );
+        // The URL group is validated before assignGroup, and the roster is read after it.
+        const groupLookups = prisma.group.findFirst.mock.invocationCallOrder;
+        const assignCall =
+          studentsService.assignGroup.mock.invocationCallOrder[0];
+        expect(groupLookups[0]).toBeLessThan(assignCall);
+        expect(groupLookups[1]).toBeGreaterThan(assignCall);
+        expect(
+          prisma.enrollment.findMany.mock.invocationCallOrder[0],
+        ).toBeGreaterThan(assignCall);
+        expect(log).toHaveBeenCalledWith(
+          'Student added to group studentId=student-1 groupId=group-1 actorId=admin-1 organizationId=org-1',
+        );
+      });
+
+      it('returns 404 for a group of another organization before touching the student', async () => {
+        mockGroupLookups({ existing: null });
+
+        const error = await caught(
+          service.addStudent(admin as never, 'group-1', payload),
+        );
+
+        expect(error).toBeInstanceOf(NotFoundException);
+        expect(error.message).toBe(GROUP_NOT_FOUND_MESSAGE);
+        const [args] = prisma.group.findFirst.mock.calls[0];
+        expect(args.where).toEqual({ id: 'group-1', organizationId: 'org-1' });
+        expect(studentsService.assignGroup).not.toHaveBeenCalled();
+      });
+
+      it.each([
+        ['missing student', new NotFoundException(STUDENT_NOT_FOUND_MESSAGE)],
+        ['closed group', new ConflictException(GROUP_NOT_ASSIGNABLE_MESSAGE)],
+        [
+          'student in another open group',
+          new ConflictException(STUDENT_ACTIVE_GROUP_MESSAGE),
+        ],
+      ])('passes the assignGroup error through (%s)', async (_, failure) => {
+        studentsService.assignGroup.mockRejectedValue(failure);
+
+        await expect(
+          service.addStudent(admin as never, 'group-1', payload),
+        ).rejects.toBe(failure);
+        expect(prisma.enrollment.findMany).not.toHaveBeenCalled();
+      });
+
+      it.each([
+        UserRole.OWNER,
+        UserRole.TEACHER,
+        UserRole.INSTRUCTOR,
+        UserRole.STUDENT,
+      ])('forbids %s without touching the database', async (role) => {
+        await expect(
+          service.addStudent({ ...admin, role } as never, 'group-1', payload),
+        ).rejects.toBeInstanceOf(ForbiddenException);
+        expect(prisma.organization.findUnique).not.toHaveBeenCalled();
+        expect(studentsService.assignGroup).not.toHaveBeenCalled();
+      });
+
+      it('returns 404 when the organization is soft-deleted', async () => {
+        prisma.organization.findUnique.mockResolvedValue({
+          ...organization,
+          deletedAt: new Date(),
+        });
+
+        await expect(
+          service.addStudent(admin as never, 'group-1', payload),
+        ).rejects.toBeInstanceOf(NotFoundException);
+        expect(studentsService.assignGroup).not.toHaveBeenCalled();
+      });
+    });
+
+    describe('removeStudent', () => {
+      it('delegates to removeFromGroup and returns the roster without the student', async () => {
+        mockGroupLookups({
+          existing: { ...groupRow, _count: { enrollments: 0 } },
+        });
+        prisma.enrollment.findMany.mockResolvedValue([]);
+
+        await expect(
+          service.removeStudent(admin as never, 'group-1', 'student-1'),
+        ).resolves.toEqual({
+          group: { ...groupItem, studentsCount: 0 },
+          students: [],
+        });
+
+        expect(studentsService.removeFromGroup).toHaveBeenCalledWith(
+          admin,
+          'student-1',
+          'group-1',
+        );
+        expect(
+          prisma.enrollment.findMany.mock.invocationCallOrder[0],
+        ).toBeGreaterThan(
+          studentsService.removeFromGroup.mock.invocationCallOrder[0],
+        );
+      });
+
+      it.each([
+        ['missing group', new NotFoundException(GROUP_NOT_FOUND_MESSAGE)],
+        [
+          'student not in the group',
+          new NotFoundException(STUDENT_NOT_IN_GROUP_MESSAGE),
+        ],
+      ])(
+        'passes the removeFromGroup error through (%s)',
+        async (_, failure) => {
+          studentsService.removeFromGroup.mockRejectedValue(failure);
+
+          await expect(
+            service.removeStudent(admin as never, 'group-1', 'student-1'),
+          ).rejects.toBe(failure);
+          expect(prisma.enrollment.findMany).not.toHaveBeenCalled();
+        },
+      );
+
+      it.each([
+        UserRole.OWNER,
+        UserRole.TEACHER,
+        UserRole.INSTRUCTOR,
+        UserRole.STUDENT,
+      ])('forbids %s before calling removeFromGroup', async (role) => {
+        await expect(
+          service.removeStudent(
+            { ...admin, role } as never,
+            'group-1',
+            'student-1',
+          ),
+        ).rejects.toBeInstanceOf(ForbiddenException);
+        expect(studentsService.removeFromGroup).not.toHaveBeenCalled();
+      });
     });
   });
 });
