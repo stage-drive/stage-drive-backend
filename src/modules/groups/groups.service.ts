@@ -15,15 +15,22 @@ import {
   UserStatus,
 } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
+import { StudentsService } from '../students/students.service';
 import {
+  AddGroupStudentDto,
   CreateGroupDto,
   GroupListDto,
   GroupListItemDto,
+  GroupStudentDto,
+  GroupStudentsDto,
   UpdateGroupDto,
   UpdateGroupStatusDto,
 } from './groups.dto';
 
 export const GROUP_MANAGE_ROLES = [UserRole.ADMIN] as const;
+
+/** Склад групи з контактами студентів: ADMIN і викладач цієї групи. */
+export const GROUP_ROSTER_ROLES = [UserRole.ADMIN, UserRole.TEACHER] as const;
 
 export const GROUP_NOT_FOUND_MESSAGE = 'Group not found';
 export const TEACHER_NOT_FOUND_MESSAGE = 'Teacher not found';
@@ -69,8 +76,33 @@ type GroupListRow = Prisma.GroupGetPayload<{
   include: typeof groupListInclude;
 }>;
 
+// Лише безпечні поля студента: без passwordHash та інших полів User.
+const groupStudentSelect = {
+  enrolledAt: true,
+  student: {
+    select: {
+      id: true,
+      firstName: true,
+      lastName: true,
+      email: true,
+      phone: true,
+      studentProfile: { select: { trainingStatus: true } },
+    },
+  },
+} satisfies Prisma.EnrollmentSelect;
+
+type GroupStudentRow = Prisma.EnrollmentGetPayload<{
+  select: typeof groupStudentSelect;
+}>;
+
 function assertCanManageGroups(actor: User): void {
   if (!(GROUP_MANAGE_ROLES as readonly UserRole[]).includes(actor.role)) {
+    throw new ForbiddenException('Insufficient permissions');
+  }
+}
+
+function assertCanViewRoster(actor: User): void {
+  if (!(GROUP_ROSTER_ROLES as readonly UserRole[]).includes(actor.role)) {
     throw new ForbiddenException('Insufficient permissions');
   }
 }
@@ -113,11 +145,26 @@ function toGroupListItem(group: GroupListRow): GroupListItemDto {
   };
 }
 
+function toGroupStudent(row: GroupStudentRow): GroupStudentDto {
+  return {
+    id: row.student.id,
+    firstName: row.student.firstName,
+    lastName: row.student.lastName,
+    email: row.student.email,
+    phone: row.student.phone,
+    trainingStatus: row.student.studentProfile?.trainingStatus ?? null,
+    enrolledAt: row.enrolledAt,
+  };
+}
+
 @Injectable()
 export class GroupsService {
   private readonly logger = new Logger(GroupsService.name);
 
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly studentsService: StudentsService,
+  ) {}
 
   async list(admin: User): Promise<GroupListDto> {
     await this.requireOrganization(admin.organizationId);
@@ -276,6 +323,90 @@ export class GroupsService {
       );
       return toGroupListItem(saved);
     });
+  }
+
+  /**
+   * Склад групи (ACTIVE-зарахування). ADMIN бачить будь-яку групу своєї
+   * організації, TEACHER — лише групу, яку веде.
+   */
+  async listStudents(actor: User, groupId: string): Promise<GroupStudentsDto> {
+    assertCanViewRoster(actor);
+    await this.requireOrganization(actor.organizationId);
+
+    const group = await this.requireGroup(this.prisma, actor, groupId);
+    if (actor.role === UserRole.TEACHER && group.teacherId !== actor.id) {
+      throw new ForbiddenException('Insufficient permissions');
+    }
+
+    return {
+      group: toGroupListItem(group),
+      students: await this.findGroupStudents(actor, group.id),
+    };
+  }
+
+  /**
+   * Перевірки студента, групи й інваріантів зарахування робить
+   * StudentsService.assignGroup — єдине місце, що змінює Enrollment.
+   */
+  async addStudent(
+    actor: User,
+    groupId: string,
+    payload: AddGroupStudentDto,
+  ): Promise<GroupStudentsDto> {
+    assertCanManageGroups(actor);
+    await this.requireOrganization(actor.organizationId);
+    await this.requireGroup(this.prisma, actor, groupId);
+
+    await this.studentsService.assignGroup(actor, payload.studentId, {
+      groupId,
+    });
+
+    this.logger.log(
+      `Student added to group studentId=${payload.studentId} groupId=${groupId} actorId=${actor.id} organizationId=${actor.organizationId}`,
+    );
+    return this.loadRoster(actor, groupId);
+  }
+
+  async removeStudent(
+    actor: User,
+    groupId: string,
+    studentId: string,
+  ): Promise<GroupStudentsDto> {
+    assertCanManageGroups(actor);
+    await this.studentsService.removeFromGroup(actor, studentId, groupId);
+    return this.loadRoster(actor, groupId);
+  }
+
+  /** Читається після транзакції запису, тож бачить збережений склад. */
+  private async loadRoster(
+    actor: User,
+    groupId: string,
+  ): Promise<GroupStudentsDto> {
+    const [group, students] = await Promise.all([
+      this.requireGroup(this.prisma, actor, groupId),
+      this.findGroupStudents(actor, groupId),
+    ]);
+    return { group: toGroupListItem(group), students };
+  }
+
+  private async findGroupStudents(
+    actor: User,
+    groupId: string,
+  ): Promise<GroupStudentDto[]> {
+    const rows = await this.prisma.enrollment.findMany({
+      where: {
+        groupId,
+        status: EnrollmentStatus.ACTIVE,
+        student: { organizationId: actor.organizationId },
+      },
+      select: groupStudentSelect,
+      orderBy: [
+        { student: { lastName: 'asc' } },
+        { student: { firstName: 'asc' } },
+        { student: { id: 'asc' } },
+      ],
+    });
+    return rows.map(toGroupStudent);
   }
 
   private async requireGroup(

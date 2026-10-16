@@ -1,6 +1,7 @@
 import {
   Body,
   Controller,
+  Delete,
   Get,
   HttpCode,
   HttpStatus,
@@ -29,13 +30,19 @@ import { CurrentUser } from '../auth/current-user.decorator';
 import { Roles } from '../auth/roles.decorator';
 import { RolesGuard } from '../auth/roles.guard';
 import {
+  AddGroupStudentDto,
   CreateGroupDto,
   GroupListDto,
   GroupListItemDto,
+  GroupStudentsDto,
   UpdateGroupDto,
   UpdateGroupStatusDto,
 } from './groups.dto';
-import { GROUP_MANAGE_ROLES, GroupsService } from './groups.service';
+import {
+  GROUP_MANAGE_ROLES,
+  GROUP_ROSTER_ROLES,
+  GroupsService,
+} from './groups.service';
 
 @ApiTags('groups')
 @ApiBearerAuth()
@@ -164,5 +171,120 @@ export class GroupsController {
     @Body() body: UpdateGroupStatusDto,
   ) {
     return this.groupsService.changeStatus(user, id, body);
+  }
+
+  @Get(':id/students')
+  @Roles(...GROUP_ROSTER_ROLES)
+  @ApiOperation({
+    summary: 'Склад навчальної групи',
+    description:
+      'Студенти з активним зарахуванням, відсортовані за прізвищем та ім’ям, разом з карткою групи. ' +
+      'ADMIN бачить склад будь-якої групи своєї автошколи, TEACHER — лише групи, яку веде. ' +
+      'Група іншої автошколи повертає 404.',
+  })
+  @ApiParam({
+    name: 'id',
+    format: 'uuid',
+    description: 'Id групи своєї автошколи.',
+  })
+  @ApiOkResponse({ type: GroupStudentsDto })
+  @ApiBadRequestResponse({ description: 'id не UUID.' })
+  @ApiForbiddenResponse({
+    description:
+      'Склад доступний лише ADMIN і викладачу цієї групи. Інші ролі та TEACHER чужої групи отримують 403.',
+  })
+  @ApiNotFoundResponse({
+    description:
+      'Групу не знайдено або вона належить іншій автошколі. Також якщо автошколу видалено.',
+  })
+  listStudents(
+    @CurrentUser() user: User,
+    @Param('id', new ParseUUIDPipe({ version: '4' })) id: string,
+  ) {
+    return this.groupsService.listStudents(user, id);
+  }
+
+  @Post(':id/students')
+  @Roles(...GROUP_MANAGE_ROLES)
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({
+    summary: 'Додати студента до навчальної групи',
+    description:
+      'ADMIN зараховує STUDENT своєї автошколи у відкриту (PLANNED або ACTIVE) групу. ' +
+      'Студент не може бути в іншій відкритій групі; студент зі статусом ARCHIVED, DROPPED або GRADUATED не приймається. ' +
+      'Повторне додавання студента, який уже в цій групі, нічого не змінює. ' +
+      'Відповідь — актуальний склад групи після операції.',
+  })
+  @ApiParam({
+    name: 'id',
+    format: 'uuid',
+    description: 'Id групи своєї автошколи.',
+  })
+  @ApiOkResponse({ type: GroupStudentsDto })
+  @ApiBadRequestResponse({
+    description:
+      'id не UUID, або studentId відсутній чи не UUID. Тіло містить errors: [{ field, message }].',
+  })
+  @ApiForbiddenResponse({
+    description: 'Додавати студентів до групи може лише ADMIN.',
+  })
+  @ApiNotFoundResponse({
+    description:
+      'Групу або студента не знайдено, їх видалено, або вони належать іншій автошколі. ' +
+      'Також якщо автошколу видалено.',
+  })
+  @ApiConflictResponse({
+    description:
+      'Група закрита (COMPLETED/ARCHIVED), студент уже в іншій відкритій групі, ' +
+      'або студент має статус ARCHIVED, DROPPED чи GRADUATED.',
+  })
+  addStudent(
+    @CurrentUser() user: User,
+    @Param('id', new ParseUUIDPipe({ version: '4' })) id: string,
+    @Body() body: AddGroupStudentDto,
+  ) {
+    return this.groupsService.addStudent(user, id, body);
+  }
+
+  @Delete(':id/students/:studentId')
+  @Roles(...GROUP_MANAGE_ROLES)
+  @ApiOperation({
+    summary: 'Видалити студента з навчальної групи',
+    description:
+      'ADMIN прибирає студента зі складу відкритої групи своєї автошколи: активне зарахування видаляється, ' +
+      'а поточна група студента очищується. Навчальний статус студента не змінюється, і його можна знову ' +
+      'зарахувати в будь-яку відкриту групу. Склад завершеної або архівної групи змінювати не можна. ' +
+      'Випуск і відрахування робляться через PATCH /students/{id}/status. ' +
+      'Відповідь — актуальний склад групи після операції.',
+  })
+  @ApiParam({
+    name: 'id',
+    format: 'uuid',
+    description: 'Id групи своєї автошколи.',
+  })
+  @ApiParam({
+    name: 'studentId',
+    format: 'uuid',
+    description: 'Id користувача-студента.',
+  })
+  @ApiOkResponse({ type: GroupStudentsDto })
+  @ApiBadRequestResponse({ description: 'id або studentId не UUID.' })
+  @ApiForbiddenResponse({
+    description: 'Видаляти студентів з групи може лише ADMIN.',
+  })
+  @ApiNotFoundResponse({
+    description:
+      'Групу або студента не знайдено, вони належать іншій автошколі, або студент не в цій групі. ' +
+      'Також якщо автошколу видалено.',
+  })
+  @ApiConflictResponse({
+    description: 'Група закрита (COMPLETED/ARCHIVED).',
+  })
+  removeStudent(
+    @CurrentUser() user: User,
+    @Param('id', new ParseUUIDPipe({ version: '4' })) id: string,
+    @Param('studentId', new ParseUUIDPipe({ version: '4' })) studentId: string,
+  ) {
+    return this.groupsService.removeStudent(user, id, studentId);
   }
 }

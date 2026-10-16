@@ -1,5 +1,5 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
-import { GroupStatus } from '@prisma/client';
+import { GroupStatus, TrainingStatus } from '@prisma/client';
 import { Transform } from 'class-transformer';
 import {
   IsDefined,
@@ -179,4 +179,54 @@ export class UpdateGroupStatusDto {
   @IsEnum(GroupStatus, { message: GROUP_STATUS_VALUE_MESSAGE })
   @IsDefined({ message: REQUIRED_FIELD_MESSAGE })
   status: GroupStatus;
+}
+
+export class AddGroupStudentDto {
+  @ApiProperty({
+    format: 'uuid',
+    example: '88888888-8888-4888-8888-888888888888',
+    description:
+      'Id користувача-студента тієї самої автошколи. Студент не може бути в іншій відкритій групі.',
+  })
+  @IsUUID('4', { message: 'studentId має бути UUID.' })
+  @IsDefined({ message: REQUIRED_FIELD_MESSAGE })
+  studentId: string;
+}
+
+export class GroupStudentDto {
+  @ApiProperty({ description: 'Id користувача-студента.' })
+  id: string;
+
+  @ApiProperty({ example: 'Олена' })
+  firstName: string;
+
+  @ApiProperty({ example: 'Коваль' })
+  lastName: string;
+
+  @ApiProperty({ example: 'student@example.com' })
+  email: string;
+
+  @ApiProperty({ type: String, nullable: true, example: '+380991234567' })
+  phone: string | null;
+
+  @ApiProperty({ enum: TrainingStatus, nullable: true })
+  trainingStatus: TrainingStatus | null;
+
+  @ApiProperty({ description: 'Коли студента зараховано в групу.' })
+  enrolledAt: Date;
+}
+
+export class GroupStudentsDto {
+  @ApiProperty({
+    type: GroupListItemDto,
+    description: 'Група з актуальним studentsCount.',
+  })
+  group: GroupListItemDto;
+
+  @ApiProperty({
+    type: [GroupStudentDto],
+    description:
+      'Студенти з активним зарахуванням, відсортовані за прізвищем та ім’ям.',
+  })
+  students: GroupStudentDto[];
 }

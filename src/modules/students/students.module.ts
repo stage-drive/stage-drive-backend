@@ -8,5 +8,6 @@ import { StudentsService } from './students.service';
   imports: [AuthModule, InvitationsModule],
   controllers: [StudentsController],
   providers: [StudentsService],
+  exports: [StudentsService],
 })
 export class StudentsModule {}

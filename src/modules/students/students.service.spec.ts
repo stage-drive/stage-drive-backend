@@ -25,6 +25,7 @@ import {
   CAR_NOT_ASSIGNED_MESSAGE,
   CAR_NOT_AVAILABLE_MESSAGE,
   CAR_NOT_FOUND_MESSAGE,
+  GROUP_CLOSED_ROSTER_MESSAGE,
   GROUP_NOT_ASSIGNABLE_MESSAGE,
   GROUP_NOT_FOUND_MESSAGE,
   INSTRUCTOR_CAR_MISMATCH_MESSAGE,
@@ -35,6 +36,7 @@ import {
   STUDENT_ACTIVE_GROUP_MESSAGE,
   ARCHIVED_STUDENT_BOOKING_MESSAGE,
   STUDENT_NOT_FOUND_MESSAGE,
+  STUDENT_NOT_IN_GROUP_MESSAGE,
   STUDENT_PRACTICE_ACCESS_MESSAGE,
   STUDENT_TRAINING_STATUS_MESSAGE,
   TRAINING_STATUS_TRANSITION_MESSAGE,
@@ -104,13 +106,15 @@ describe('StudentsService', () => {
       update: jest.fn(),
       delete: jest.fn(),
     },
-    group: { findUnique: jest.fn() },
+    group: { findUnique: jest.fn(), findFirst: jest.fn() },
     student: { create: jest.fn(), update: jest.fn(), delete: jest.fn() },
     car: { findUnique: jest.fn() },
     enrollment: {
       findFirst: jest.fn(),
+      findUnique: jest.fn(),
       upsert: jest.fn(),
       updateMany: jest.fn(),
+      delete: jest.fn(),
       deleteMany: jest.fn(),
     },
     invitation: { create: jest.fn() },
@@ -1733,6 +1737,251 @@ describe('StudentsService', () => {
     });
   });
 
+  describe('removeFromGroup', () => {
+    const openGroup = { id: 'group-1', status: GroupStatus.ACTIVE };
+
+    function rosterStudent(groupId: string | null = 'group-1') {
+      return {
+        id: 'student-1',
+        studentProfile: {
+          id: 'profile-1',
+          organizationId: 'org-1',
+          groupId,
+        },
+      };
+    }
+
+    function enrollment(status: EnrollmentStatus = EnrollmentStatus.ACTIVE) {
+      return {
+        id: 'enrollment-1',
+        groupId: 'group-1',
+        studentId: 'student-1',
+        status,
+        enrolledAt: new Date('2026-10-01T00:00:00.000Z'),
+      };
+    }
+
+    let log: jest.SpyInstance;
+
+    beforeEach(() => {
+      prisma.group.findFirst.mockResolvedValue(openGroup);
+      prisma.user.findFirst.mockResolvedValue(rosterStudent());
+      prisma.enrollment.findUnique.mockResolvedValue(enrollment());
+      prisma.enrollment.delete.mockResolvedValue(enrollment());
+      prisma.student.update.mockResolvedValue({});
+      log = jest
+        .spyOn(Logger.prototype, 'log')
+        .mockImplementation(() => undefined);
+    });
+
+    afterEach(() => {
+      jest.restoreAllMocks();
+    });
+
+    it.each([UserRole.OWNER, UserRole.ADMIN] as const)(
+      'deletes the active enrollment and clears groupId for %s',
+      async (role) => {
+        await expect(
+          service.removeFromGroup(actor(role), 'student-1', 'group-1'),
+        ).resolves.toBeUndefined();
+
+        expect(prisma.enrollment.delete).toHaveBeenCalledWith({
+          where: { id: 'enrollment-1' },
+        });
+        expect(prisma.student.update).toHaveBeenCalledWith({
+          where: { id: 'profile-1' },
+          data: { groupId: null },
+        });
+        expect(log).toHaveBeenCalledWith(
+          `Student removed from group studentId=student-1 groupId=group-1 actorId=${role.toLowerCase()}-1 organizationId=org-1`,
+        );
+      },
+    );
+
+    it('never marks the enrollment DROPPED or COMPLETED and keeps trainingStatus', async () => {
+      await service.removeFromGroup(
+        actor(UserRole.ADMIN),
+        'student-1',
+        'group-1',
+      );
+
+      expect(prisma.enrollment.updateMany).not.toHaveBeenCalled();
+      expect(prisma.enrollment.upsert).not.toHaveBeenCalled();
+      for (const [args] of prisma.student.update.mock.calls as [
+        { data: object },
+      ][]) {
+        expect(args.data).not.toHaveProperty('trainingStatus');
+      }
+    });
+
+    it('looks up the group, student and enrollment inside the actor organization', async () => {
+      await service.removeFromGroup(
+        actor(UserRole.ADMIN),
+        'student-1',
+        'group-1',
+      );
+
+      expect(prisma.group.findFirst).toHaveBeenCalledWith({
+        where: { id: 'group-1', organizationId: 'org-1' },
+        select: { id: true, status: true },
+      });
+      expect(prisma.user.findFirst).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: {
+            id: 'student-1',
+            organizationId: 'org-1',
+            role: UserRole.STUDENT,
+            deletedAt: null,
+          },
+        }),
+      );
+      expect(prisma.enrollment.findUnique).toHaveBeenCalledWith({
+        where: {
+          groupId_studentId: { groupId: 'group-1', studentId: 'student-1' },
+        },
+      });
+    });
+
+    it('leaves groupId alone when it points to another group', async () => {
+      prisma.user.findFirst.mockResolvedValue(rosterStudent('group-other'));
+
+      await service.removeFromGroup(
+        actor(UserRole.ADMIN),
+        'student-1',
+        'group-1',
+      );
+
+      expect(prisma.enrollment.delete).toHaveBeenCalled();
+      expect(prisma.student.update).not.toHaveBeenCalled();
+    });
+
+    it('also removes a student from a PLANNED group', async () => {
+      prisma.group.findFirst.mockResolvedValue({
+        ...openGroup,
+        status: GroupStatus.PLANNED,
+      });
+
+      await service.removeFromGroup(
+        actor(UserRole.ADMIN),
+        'student-1',
+        'group-1',
+      );
+
+      expect(prisma.enrollment.delete).toHaveBeenCalled();
+    });
+
+    it.each([GroupStatus.COMPLETED, GroupStatus.ARCHIVED])(
+      'returns 409 for a %s group without touching the roster',
+      async (status) => {
+        prisma.group.findFirst.mockResolvedValue({ ...openGroup, status });
+
+        await expect(
+          service.removeFromGroup(
+            actor(UserRole.ADMIN),
+            'student-1',
+            'group-1',
+          ),
+        ).rejects.toMatchObject({
+          constructor: ConflictException,
+          message: GROUP_CLOSED_ROSTER_MESSAGE,
+        });
+        expect(prisma.user.findFirst).not.toHaveBeenCalled();
+        expect(prisma.enrollment.delete).not.toHaveBeenCalled();
+      },
+    );
+
+    it('returns 404 for a missing group or a group of another organization', async () => {
+      prisma.group.findFirst.mockResolvedValue(null);
+
+      await expect(
+        service.removeFromGroup(actor(UserRole.ADMIN), 'student-1', 'group-1'),
+      ).rejects.toMatchObject({
+        constructor: NotFoundException,
+        message: GROUP_NOT_FOUND_MESSAGE,
+      });
+      expect(prisma.enrollment.delete).not.toHaveBeenCalled();
+    });
+
+    it('returns 404 for a missing student or a student of another organization', async () => {
+      prisma.user.findFirst.mockResolvedValue(null);
+
+      await expect(
+        service.removeFromGroup(actor(UserRole.ADMIN), 'student-1', 'group-1'),
+      ).rejects.toMatchObject({
+        constructor: NotFoundException,
+        message: STUDENT_NOT_FOUND_MESSAGE,
+      });
+      expect(prisma.enrollment.findUnique).not.toHaveBeenCalled();
+      expect(prisma.enrollment.delete).not.toHaveBeenCalled();
+    });
+
+    it('returns 404 when the student profile belongs to another organization', async () => {
+      prisma.user.findFirst.mockResolvedValue({
+        ...rosterStudent(),
+        studentProfile: {
+          ...rosterStudent().studentProfile,
+          organizationId: 'org-2',
+        },
+      });
+
+      await expect(
+        service.removeFromGroup(actor(UserRole.ADMIN), 'student-1', 'group-1'),
+      ).rejects.toMatchObject({ message: STUDENT_NOT_FOUND_MESSAGE });
+      expect(prisma.enrollment.delete).not.toHaveBeenCalled();
+    });
+
+    it('returns 404 for a user without a student profile', async () => {
+      prisma.user.findFirst.mockResolvedValue({
+        id: 'student-1',
+        studentProfile: null,
+      });
+
+      await expect(
+        service.removeFromGroup(actor(UserRole.ADMIN), 'student-1', 'group-1'),
+      ).rejects.toMatchObject({ message: STUDENT_NOT_FOUND_MESSAGE });
+    });
+
+    it.each([
+      ['no enrollment at all', null],
+      ['a COMPLETED enrollment', enrollment(EnrollmentStatus.COMPLETED)],
+      ['a DROPPED enrollment', enrollment(EnrollmentStatus.DROPPED)],
+    ])('returns 404 when the student has %s', async (_, existing) => {
+      prisma.enrollment.findUnique.mockResolvedValue(existing);
+
+      await expect(
+        service.removeFromGroup(actor(UserRole.ADMIN), 'student-1', 'group-1'),
+      ).rejects.toMatchObject({
+        constructor: NotFoundException,
+        message: STUDENT_NOT_IN_GROUP_MESSAGE,
+      });
+      expect(prisma.enrollment.delete).not.toHaveBeenCalled();
+      expect(prisma.student.update).not.toHaveBeenCalled();
+    });
+
+    it.each([UserRole.TEACHER, UserRole.INSTRUCTOR, UserRole.STUDENT] as const)(
+      'rejects %s before reading anything',
+      async (role) => {
+        await expect(
+          service.removeFromGroup(actor(role), 'student-1', 'group-1'),
+        ).rejects.toBeInstanceOf(ForbiddenException);
+        expect(prisma.organization.findUnique).not.toHaveBeenCalled();
+        expect(prisma.$transaction).not.toHaveBeenCalled();
+      },
+    );
+
+    it('returns 404 when the organization is deleted', async () => {
+      prisma.organization.findUnique.mockResolvedValue({
+        ...organization,
+        deletedAt: new Date('2026-03-01T00:00:00.000Z'),
+      });
+
+      await expect(
+        service.removeFromGroup(actor(UserRole.ADMIN), 'student-1', 'group-1'),
+      ).rejects.toBeInstanceOf(NotFoundException);
+      expect(prisma.group.findFirst).not.toHaveBeenCalled();
+    });
+  });
+
   describe('changeTrainingStatus', () => {
     const profile = {
       id: 'profile-1',
@@ -1825,12 +2074,19 @@ describe('StudentsService', () => {
       );
     });
 
-    it('does not touch enrollments when archiving an active student', async () => {
+    it('closes active enrollments as DROPPED when an active student is archived', async () => {
       await service.changeTrainingStatus(actor(UserRole.ADMIN), 'student-1', {
         status: TrainingStatus.ARCHIVED,
       });
 
-      expect(prisma.enrollment.updateMany).not.toHaveBeenCalled();
+      expect(prisma.enrollment.updateMany).toHaveBeenCalledWith({
+        where: {
+          studentId: 'student-1',
+          status: EnrollmentStatus.ACTIVE,
+          group: { organizationId: 'org-1' },
+        },
+        data: { status: EnrollmentStatus.DROPPED },
+      });
     });
 
     it('does not assign PRACTICE through the status endpoint', async () => {
@@ -2343,7 +2599,15 @@ describe('StudentsService', () => {
         });
         expect(prisma.user.delete).not.toHaveBeenCalled();
         expect(prisma.student.delete).not.toHaveBeenCalled();
-        expect(prisma.enrollment.updateMany).not.toHaveBeenCalled();
+        // Only the ACTIVE enrollment leaves the roster; history stays.
+        expect(prisma.enrollment.updateMany).toHaveBeenCalledWith({
+          where: {
+            studentId: 'student-1',
+            status: EnrollmentStatus.ACTIVE,
+            group: { organizationId: 'org-1' },
+          },
+          data: { status: EnrollmentStatus.DROPPED },
+        });
         expect(prisma.enrollment.deleteMany).not.toHaveBeenCalled();
         expect(result).toMatchObject({
           id: 'student-1',
@@ -2370,6 +2634,7 @@ describe('StudentsService', () => {
       ).rejects.toMatchObject({ message: STUDENT_NOT_FOUND_MESSAGE });
       expect(prisma.user.update).not.toHaveBeenCalled();
       expect(prisma.student.update).not.toHaveBeenCalled();
+      expect(prisma.enrollment.updateMany).not.toHaveBeenCalled();
     });
 
     it('returns 404 when the organization is deleted', async () => {

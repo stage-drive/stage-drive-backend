@@ -3,6 +3,7 @@ import { GroupStatus } from '@prisma/client';
 import { validationExceptionFactory } from '../../common/validation/field-error';
 import { UNSAFE_TEXT_MESSAGE } from '../../common/validators/plain-text.decorator';
 import {
+  AddGroupStudentDto,
   CreateGroupDto,
   DATE_FORMAT_MESSAGE,
   GROUP_NAME_LENGTH_MESSAGE,
@@ -216,5 +217,45 @@ describe('UpdateGroupStatusDto', () => {
     await expect(errorsFor(UpdateGroupStatusDto, { status })).resolves.toEqual(
       fieldErrors('status', GROUP_STATUS_VALUE_MESSAGE),
     );
+  });
+});
+
+describe('AddGroupStudentDto', () => {
+  const STUDENT_ID = '88888888-8888-4888-8888-888888888888';
+
+  it('accepts a UUID studentId', async () => {
+    await expect(
+      validate(AddGroupStudentDto, { studentId: STUDENT_ID }),
+    ).resolves.toEqual({ studentId: STUDENT_ID });
+  });
+
+  it.each([{}, { studentId: null }])(
+    'requires studentId (%p)',
+    async (body) => {
+      await expect(errorsFor(AddGroupStudentDto, body)).resolves.toEqual(
+        fieldErrors('studentId', REQUIRED_FIELD_MESSAGE),
+      );
+    },
+  );
+
+  it.each(['abc', '', 42, '88888888-8888-1888-8888-888888888888'])(
+    'rejects studentId %p',
+    async (studentId) => {
+      await expect(
+        errorsFor(AddGroupStudentDto, { studentId }),
+      ).resolves.toEqual(fieldErrors('studentId', 'studentId має бути UUID.'));
+    },
+  );
+
+  it('rejects unknown fields such as groupId or organizationId', async () => {
+    const response = (await errorsFor(AddGroupStudentDto, {
+      studentId: STUDENT_ID,
+      organizationId: 'org-2',
+    })) as { statusCode: number; errors: { field: string }[] };
+
+    expect(response.statusCode).toBe(400);
+    expect(response.errors.map((error) => error.field)).toEqual([
+      'organizationId',
+    ]);
   });
 });
