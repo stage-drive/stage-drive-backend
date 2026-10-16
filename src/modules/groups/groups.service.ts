@@ -7,6 +7,7 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import {
+  CourseStatus,
   EnrollmentStatus,
   GroupStatus,
   Prisma,
@@ -18,6 +19,7 @@ import { PrismaService } from '../../prisma/prisma.service';
 import { StudentsService } from '../students/students.service';
 import {
   AddGroupStudentDto,
+  AssignGroupCourseDto,
   CreateGroupDto,
   GroupListDto,
   GroupListItemDto,
@@ -46,6 +48,9 @@ export const NO_GROUP_FIELDS_MESSAGE =
   'Немає дозволених полів для оновлення (name, teacherId, startDate, endDate).';
 export const GROUP_STATUS_TRANSITION_MESSAGE =
   'Недозволений перехід статусу групи.';
+export const COURSE_NOT_FOUND_MESSAGE = 'Course not found';
+export const COURSE_ARCHIVED_MESSAGE =
+  'Архівований курс не можна призначити групі.';
 
 const OPEN_GROUP_STATUSES: GroupStatus[] = [
   GroupStatus.PLANNED,
@@ -65,6 +70,7 @@ const GROUP_STATUS_TRANSITIONS: Record<GroupStatus, readonly GroupStatus[]> = {
 
 const groupListInclude = {
   teacher: { select: { id: true, firstName: true, lastName: true } },
+  course: { select: { id: true, name: true } },
   _count: {
     select: {
       enrollments: { where: { status: EnrollmentStatus.ACTIVE } },
@@ -140,6 +146,7 @@ function toGroupListItem(group: GroupListRow): GroupListItemDto {
     startDate: group.startDate,
     endDate: group.endDate,
     teacher: group.teacher,
+    course: group.course,
     studentsCount: group._count.enrollments,
     createdAt: group.createdAt,
   };
@@ -326,6 +333,43 @@ export class GroupsService {
   }
 
   /**
+   * Призначає, змінює або знімає (courseId = null) теоретичний курс групи.
+   * Курс має належати організації актора і бути ACTIVE. Курс закритої групи —
+   * історія, його не змінюють.
+   */
+  async assignCourse(
+    actor: User,
+    groupId: string,
+    payload: AssignGroupCourseDto,
+  ): Promise<GroupListItemDto> {
+    assertCanManageGroups(actor);
+    await this.requireOrganization(actor.organizationId);
+
+    const saved = await this.prisma.$transaction(async (tx) => {
+      const existing = await this.requireGroup(tx, actor, groupId);
+      if (!isOpenGroup(existing.status)) {
+        throw new ConflictException(GROUP_CLOSED_MESSAGE);
+      }
+      if (payload.courseId === existing.courseId) {
+        return existing;
+      }
+      if (payload.courseId !== null) {
+        await this.requireCourse(tx, actor.organizationId, payload.courseId);
+      }
+      return tx.group.update({
+        where: { id: existing.id },
+        data: { courseId: payload.courseId },
+        include: groupListInclude,
+      });
+    });
+
+    this.logger.log(
+      `Group course assigned groupId=${saved.id} courseId=${saved.courseId ?? 'none'} actorId=${actor.id} organizationId=${actor.organizationId}`,
+    );
+    return toGroupListItem(saved);
+  }
+
+  /**
    * Склад групи (ACTIVE-зарахування). ADMIN бачить будь-яку групу своєї
    * організації, TEACHER — лише групу, яку веде.
    */
@@ -450,6 +494,24 @@ export class GroupsService {
     }
     if (teacher.status !== UserStatus.ACTIVE) {
       throw new ConflictException(TEACHER_NOT_ACTIVE_MESSAGE);
+    }
+  }
+
+  /** Курс іншої організації дає той самий 404, що й неіснуючий. */
+  private async requireCourse(
+    tx: Prisma.TransactionClient,
+    organizationId: string,
+    courseId: string,
+  ): Promise<void> {
+    const course = await tx.course.findFirst({
+      where: { id: courseId, organizationId },
+      select: { status: true },
+    });
+    if (!course) {
+      throw new NotFoundException(COURSE_NOT_FOUND_MESSAGE);
+    }
+    if (course.status !== CourseStatus.ACTIVE) {
+      throw new ConflictException(COURSE_ARCHIVED_MESSAGE);
     }
   }
 

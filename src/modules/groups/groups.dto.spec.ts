@@ -4,6 +4,7 @@ import { validationExceptionFactory } from '../../common/validation/field-error'
 import { UNSAFE_TEXT_MESSAGE } from '../../common/validators/plain-text.decorator';
 import {
   AddGroupStudentDto,
+  AssignGroupCourseDto,
   CreateGroupDto,
   DATE_FORMAT_MESSAGE,
   GROUP_NAME_LENGTH_MESSAGE,
@@ -250,6 +251,51 @@ describe('AddGroupStudentDto', () => {
   it('rejects unknown fields such as groupId or organizationId', async () => {
     const response = (await errorsFor(AddGroupStudentDto, {
       studentId: STUDENT_ID,
+      organizationId: 'org-2',
+    })) as { statusCode: number; errors: { field: string }[] };
+
+    expect(response.statusCode).toBe(400);
+    expect(response.errors.map((error) => error.field)).toEqual([
+      'organizationId',
+    ]);
+  });
+});
+
+describe('AssignGroupCourseDto', () => {
+  const COURSE_ID = '41414141-4141-4414-8414-414141414141';
+
+  it('accepts a UUID courseId', async () => {
+    await expect(
+      validate(AssignGroupCourseDto, { courseId: COURSE_ID }),
+    ).resolves.toEqual({ courseId: COURSE_ID });
+  });
+
+  it('accepts null to remove the course', async () => {
+    await expect(
+      validate(AssignGroupCourseDto, { courseId: null }),
+    ).resolves.toEqual({ courseId: null });
+  });
+
+  it('requires courseId', async () => {
+    await expect(errorsFor(AssignGroupCourseDto, {})).resolves.toEqual(
+      fieldErrors('courseId', REQUIRED_FIELD_MESSAGE),
+    );
+  });
+
+  it.each(['abc', '', 42, '41414141-4141-1414-8414-414141414141'])(
+    'rejects courseId %p',
+    async (courseId) => {
+      await expect(
+        errorsFor(AssignGroupCourseDto, { courseId }),
+      ).resolves.toEqual(
+        fieldErrors('courseId', 'courseId має бути UUID або null.'),
+      );
+    },
+  );
+
+  it('rejects unknown fields such as organizationId', async () => {
+    const response = (await errorsFor(AssignGroupCourseDto, {
+      courseId: COURSE_ID,
       organizationId: 'org-2',
     })) as { statusCode: number; errors: { field: string }[] };
 

@@ -3,6 +3,7 @@ import 'dotenv/config';
 import { PrismaPg } from '@prisma/adapter-pg';
 import {
   CarStatus,
+  CourseStatus,
   EnrollmentStatus,
   GroupStatus,
   InvitationStatus,
@@ -36,6 +37,10 @@ const DEMO_GROUP_SECOND_ID = 'cdcdcdcd-cdcd-4cdc-8cdc-cdcdcdcdcdcd';
 const DEMO_GROUP_COMPLETED_ID = 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee';
 const DEMO_GROUP_ARCHIVED_ID = 'ffffffff-ffff-4fff-8fff-ffffffffffff';
 const DEMO_OTHER_GROUP_ID = 'abababab-abab-4bab-8bab-abababababab';
+const DEMO_COURSE_B_ID = '41414141-4141-4414-8414-414141414141';
+const DEMO_COURSE_A_ID = '42424242-4242-4424-8424-424242424242';
+const DEMO_COURSE_ARCHIVED_ID = '43434343-4343-4434-8434-434343434343';
+const DEMO_OTHER_COURSE_ID = '45454545-4545-4454-8454-454545454545';
 const DEMO_GROUPED_STUDENT_ID = '13131313-1313-4131-8131-131313131313';
 const DEMO_GROUPED_PROFILE_ID = '14141414-1414-4141-8141-141414141414';
 const DEMO_DROPPED_STUDENT_ID = '15151515-1515-4151-8151-151515151515';
@@ -134,9 +139,17 @@ async function upsertUser(
     passwordHash: string | null;
   },
 ) {
-  return prisma.user.upsert({
+  // Fallback на фіксований id: demo-юзер міг змінити email через /users/me/email/*,
+  // і upsert лише за email спробував би створити рядок із тим самим id (P2002).
+  // Так само робить provisionDemoAccounts у src/prisma/demo-accounts.ts.
+  const byEmail = await prisma.user.findUnique({
     where: { email: input.email },
+    select: { id: true },
+  });
+  return prisma.user.upsert({
+    where: { id: byEmail?.id ?? input.id },
     update: {
+      email: input.email,
       passwordHash: input.passwordHash,
       firstName: input.firstName,
       lastName: input.lastName,
@@ -229,7 +242,9 @@ async function upsertGroup(input: {
   status: GroupStatus;
   organizationId: string;
   teacherId: string;
+  courseId?: string | null;
 }) {
+  const courseId = input.courseId ?? null;
   return prisma.group.upsert({
     where: { id: input.id },
     update: {
@@ -237,8 +252,29 @@ async function upsertGroup(input: {
       status: input.status,
       organizationId: input.organizationId,
       teacherId: input.teacherId,
+      courseId,
     },
-    create: input,
+    create: { ...input, courseId },
+  });
+}
+
+async function upsertCourse(input: {
+  id: string;
+  name: string;
+  status: CourseStatus;
+  organizationId: string;
+  description?: string;
+}) {
+  const description = input.description ?? null;
+  return prisma.course.upsert({
+    where: { id: input.id },
+    update: {
+      name: input.name,
+      status: input.status,
+      organizationId: input.organizationId,
+      description,
+    },
+    create: { ...input, description },
   });
 }
 
@@ -390,12 +426,39 @@ async function main() {
     otherOrganization.id,
   );
 
+  const courseB = await upsertCourse({
+    id: DEMO_COURSE_B_ID,
+    name: 'Теоретичний курс, категорія B',
+    status: CourseStatus.ACTIVE,
+    organizationId: organization.id,
+    description: 'ПДР, основи безпеки руху та будова автомобіля.',
+  });
+  const courseA = await upsertCourse({
+    id: DEMO_COURSE_A_ID,
+    name: 'Теоретичний курс, категорія A',
+    status: CourseStatus.ACTIVE,
+    organizationId: organization.id,
+  });
+  const archivedCourse = await upsertCourse({
+    id: DEMO_COURSE_ARCHIVED_ID,
+    name: 'Старий курс (архів)',
+    status: CourseStatus.ARCHIVED,
+    organizationId: organization.id,
+  });
+  const foreignCourse = await upsertCourse({
+    id: DEMO_OTHER_COURSE_ID,
+    name: 'Курс іншої автошколи',
+    status: CourseStatus.ACTIVE,
+    organizationId: otherOrganization.id,
+  });
+
   const activeGroup = await upsertGroup({
     id: DEMO_GROUP_ACTIVE_ID,
     name: 'Група A — активна',
     status: GroupStatus.ACTIVE,
     organizationId: organization.id,
     teacherId: invited.id,
+    courseId: courseB.id,
   });
   const secondGroup = await upsertGroup({
     id: DEMO_GROUP_SECOND_ID,
@@ -661,6 +724,13 @@ async function main() {
   console.log(`  group C COMPLETED: ${completedGroup.id}`);
   console.log(`  group D ARCHIVED:  ${archivedGroup.id}`);
   console.log(`  other-org group:   ${foreignGroup.id}`);
+  console.log(`  course B ACTIVE (assigned to group A): ${courseB.id}`);
+  console.log(`  course A ACTIVE:   ${courseA.id}`);
+  console.log(`  course ARCHIVED (expect 409): ${archivedCourse.id}`);
+  console.log(`  other-org course (expect 404): ${foreignCourse.id}`);
+  console.log(
+    'PATCH /api/groups/{id}/course — only ADMIN. Body: { "courseId": "<uuid>" } or { "courseId": null }.',
+  );
   console.log(
     `  ACTIVE instructor: ${DEMO_INSTRUCTOR_EMAIL} / ${DEMO_PASSWORD} id=${instructor.id}`,
   );

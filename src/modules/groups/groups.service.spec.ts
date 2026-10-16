@@ -7,6 +7,7 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import {
+  CourseStatus,
   EnrollmentStatus,
   GroupStatus,
   OrganizationStatus,
@@ -23,6 +24,8 @@ import {
   StudentsService,
 } from '../students/students.service';
 import {
+  COURSE_ARCHIVED_MESSAGE,
+  COURSE_NOT_FOUND_MESSAGE,
   GROUP_CLOSED_MESSAGE,
   GROUP_DATE_RANGE_MESSAGE,
   GROUP_NAME_TAKEN_MESSAGE,
@@ -68,9 +71,11 @@ describe('GroupsService', () => {
     teacherId: 'teacher-1',
     startDate: new Date('2026-10-01T00:00:00.000Z'),
     endDate: null,
+    courseId: null as string | null,
     createdAt: new Date('2026-09-29T19:20:00.000Z'),
     updatedAt: new Date('2026-09-30T08:00:00.000Z'),
     teacher: { id: 'teacher-1', firstName: 'Ірина', lastName: 'Мельник' },
+    course: null as { id: string; name: string } | null,
     _count: { enrollments: 3 },
   };
 
@@ -90,6 +95,7 @@ describe('GroupsService', () => {
       update: jest.fn(),
     },
     user: { findUnique: jest.fn() },
+    course: { findFirst: jest.fn() },
     enrollment: { updateMany: jest.fn(), findMany: jest.fn() },
     $transaction: jest.fn(),
   };
@@ -129,6 +135,7 @@ describe('GroupsService', () => {
     prisma.user.findUnique.mockResolvedValue(teacher);
     prisma.enrollment.updateMany.mockResolvedValue({ count: 0 });
     prisma.enrollment.findMany.mockResolvedValue([]);
+    prisma.course.findFirst.mockResolvedValue({ status: CourseStatus.ACTIVE });
     studentsService.assignGroup.mockResolvedValue({});
     studentsService.removeFromGroup.mockResolvedValue(undefined);
     prisma.$transaction.mockImplementation(
@@ -177,6 +184,7 @@ describe('GroupsService', () => {
           startDate: new Date('2026-10-01T00:00:00.000Z'),
           endDate: null,
           teacher: { id: 'teacher-1', firstName: 'Ірина', lastName: 'Мельник' },
+          course: null,
           studentsCount: 3,
           createdAt: new Date('2026-09-29T19:20:00.000Z'),
         },
@@ -191,6 +199,26 @@ describe('GroupsService', () => {
     expect(args.include.teacher).toEqual({
       select: { id: true, firstName: true, lastName: true },
     });
+  });
+
+  it('selects only the course id and name', async () => {
+    await service.list(admin as never);
+
+    const [args] = prisma.group.findMany.mock.calls[0];
+    expect(args.include.course).toEqual({
+      select: { id: true, name: true },
+    });
+  });
+
+  it('maps an assigned course into the list item', async () => {
+    const course = { id: 'course-1', name: 'Теоретичний курс, категорія B' };
+    prisma.group.findMany.mockResolvedValue([
+      { ...groupRow, courseId: 'course-1', course },
+    ]);
+
+    const { groups } = await service.list(admin as never);
+
+    expect(groups[0].course).toEqual(course);
   });
 
   it('counts only ACTIVE enrollments', async () => {
@@ -260,6 +288,7 @@ describe('GroupsService', () => {
         startDate: new Date('2026-11-01T00:00:00.000Z'),
         endDate: new Date('2027-01-31T00:00:00.000Z'),
         teacher: { id: 'teacher-1', firstName: 'Ірина', lastName: 'Мельник' },
+        course: null,
         studentsCount: 0,
         createdAt: new Date('2026-09-29T19:20:00.000Z'),
       });
@@ -275,6 +304,7 @@ describe('GroupsService', () => {
         },
         include: {
           teacher: { select: { id: true, firstName: true, lastName: true } },
+          course: { select: { id: true, name: true } },
           _count: {
             select: {
               enrollments: { where: { status: EnrollmentStatus.ACTIVE } },
@@ -769,6 +799,230 @@ describe('GroupsService', () => {
     });
   });
 
+  describe('assignCourse', () => {
+    const course = { id: 'course-1', name: 'Теоретичний курс, категорія B' };
+
+    function withGroup(
+      overrides: {
+        status?: GroupStatus;
+        courseId?: string | null;
+        course?: { id: string; name: string } | null;
+      } = {},
+    ) {
+      mockGroupLookups({ existing: { ...groupRow, ...overrides } });
+      prisma.group.update.mockImplementation(
+        ({ data }: { data: { courseId: string | null } }) =>
+          Promise.resolve({
+            ...groupRow,
+            ...overrides,
+            courseId: data.courseId,
+            course: data.courseId ? { ...course, id: data.courseId } : null,
+          }),
+      );
+    }
+
+    beforeEach(() => {
+      withGroup();
+    });
+
+    it('assigns an ACTIVE course of the organization and returns the group with it', async () => {
+      const result = await service.assignCourse(admin as never, 'group-1', {
+        courseId: 'course-1',
+      });
+
+      expect(result).toEqual({
+        id: 'group-1',
+        name: 'ПДР — Група А',
+        status: GroupStatus.ACTIVE,
+        startDate: new Date('2026-10-01T00:00:00.000Z'),
+        endDate: null,
+        teacher: { id: 'teacher-1', firstName: 'Ірина', lastName: 'Мельник' },
+        course,
+        studentsCount: 3,
+        createdAt: new Date('2026-09-29T19:20:00.000Z'),
+      });
+      expect(prisma.course.findFirst).toHaveBeenCalledWith({
+        where: { id: 'course-1', organizationId: 'org-1' },
+        select: { status: true },
+      });
+      expect(prisma.group.update).toHaveBeenCalledWith({
+        where: { id: 'group-1' },
+        data: { courseId: 'course-1' },
+        include: {
+          teacher: { select: { id: true, firstName: true, lastName: true } },
+          course: { select: { id: true, name: true } },
+          _count: {
+            select: {
+              enrollments: { where: { status: EnrollmentStatus.ACTIVE } },
+            },
+          },
+        },
+      });
+      expect(log).toHaveBeenCalledWith(
+        'Group course assigned groupId=group-1 courseId=course-1 actorId=admin-1 organizationId=org-1',
+      );
+    });
+
+    it('replaces the current course with another one', async () => {
+      withGroup({
+        courseId: 'course-old',
+        course: { id: 'course-old', name: 'Старий' },
+      });
+
+      const result = await service.assignCourse(admin as never, 'group-1', {
+        courseId: 'course-1',
+      });
+
+      expect(result.course).toEqual(course);
+      expect(prisma.group.update).toHaveBeenCalledWith(
+        expect.objectContaining({ data: { courseId: 'course-1' } }),
+      );
+    });
+
+    it('also assigns a course to a PLANNED group', async () => {
+      withGroup({ status: GroupStatus.PLANNED });
+
+      await expect(
+        service.assignCourse(admin as never, 'group-1', {
+          courseId: 'course-1',
+        }),
+      ).resolves.toMatchObject({ course });
+    });
+
+    it('removes the course with null without looking a course up', async () => {
+      withGroup({ courseId: 'course-1', course });
+
+      const result = await service.assignCourse(admin as never, 'group-1', {
+        courseId: null,
+      });
+
+      expect(result.course).toBeNull();
+      expect(prisma.course.findFirst).not.toHaveBeenCalled();
+      expect(prisma.group.update).toHaveBeenCalledWith(
+        expect.objectContaining({ data: { courseId: null } }),
+      );
+      expect(log).toHaveBeenCalledWith(
+        'Group course assigned groupId=group-1 courseId=none actorId=admin-1 organizationId=org-1',
+      );
+    });
+
+    it('skips the write when the same course is sent again', async () => {
+      withGroup({ courseId: 'course-1', course });
+
+      await expect(
+        service.assignCourse(admin as never, 'group-1', {
+          courseId: 'course-1',
+        }),
+      ).resolves.toMatchObject({ course });
+      expect(prisma.course.findFirst).not.toHaveBeenCalled();
+      expect(prisma.group.update).not.toHaveBeenCalled();
+    });
+
+    it('skips the write when null is sent for a group without a course', async () => {
+      await expect(
+        service.assignCourse(admin as never, 'group-1', { courseId: null }),
+      ).resolves.toMatchObject({ course: null });
+      expect(prisma.group.update).not.toHaveBeenCalled();
+    });
+
+    it('returns 404 for a missing course or a course of another organization', async () => {
+      prisma.course.findFirst.mockResolvedValue(null);
+
+      const error = await caught(
+        service.assignCourse(admin as never, 'group-1', {
+          courseId: 'course-foreign',
+        }),
+      );
+
+      expect(error).toBeInstanceOf(NotFoundException);
+      expect(error.message).toBe(COURSE_NOT_FOUND_MESSAGE);
+      expect(prisma.course.findFirst).toHaveBeenCalledWith({
+        where: { id: 'course-foreign', organizationId: 'org-1' },
+        select: { status: true },
+      });
+      expect(prisma.group.update).not.toHaveBeenCalled();
+    });
+
+    it('returns 409 for an ARCHIVED course', async () => {
+      prisma.course.findFirst.mockResolvedValue({
+        status: CourseStatus.ARCHIVED,
+      });
+
+      const error = await caught(
+        service.assignCourse(admin as never, 'group-1', {
+          courseId: 'course-1',
+        }),
+      );
+
+      expect(error).toBeInstanceOf(ConflictException);
+      expect(error.message).toBe(COURSE_ARCHIVED_MESSAGE);
+      expect(prisma.group.update).not.toHaveBeenCalled();
+    });
+
+    it.each([GroupStatus.COMPLETED, GroupStatus.ARCHIVED])(
+      'returns 409 for a %s group before looking the course up',
+      async (status) => {
+        withGroup({ status });
+
+        for (const courseId of ['course-1', null]) {
+          const error = await caught(
+            service.assignCourse(admin as never, 'group-1', { courseId }),
+          );
+
+          expect(error).toBeInstanceOf(ConflictException);
+          expect(error.message).toBe(GROUP_CLOSED_MESSAGE);
+        }
+        expect(prisma.course.findFirst).not.toHaveBeenCalled();
+        expect(prisma.group.update).not.toHaveBeenCalled();
+      },
+    );
+
+    it('returns 404 for a group of another organization', async () => {
+      mockGroupLookups({ existing: null });
+
+      const error = await caught(
+        service.assignCourse(admin as never, 'group-1', {
+          courseId: 'course-1',
+        }),
+      );
+
+      expect(error).toBeInstanceOf(NotFoundException);
+      expect(error.message).toBe(GROUP_NOT_FOUND_MESSAGE);
+      const [args] = prisma.group.findFirst.mock.calls[0];
+      expect(args.where).toEqual({ id: 'group-1', organizationId: 'org-1' });
+      expect(prisma.course.findFirst).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      UserRole.OWNER,
+      UserRole.TEACHER,
+      UserRole.INSTRUCTOR,
+      UserRole.STUDENT,
+    ])('forbids %s without touching the database', async (role) => {
+      await expect(
+        service.assignCourse({ ...admin, role } as never, 'group-1', {
+          courseId: 'course-1',
+        }),
+      ).rejects.toBeInstanceOf(ForbiddenException);
+      expect(prisma.organization.findUnique).not.toHaveBeenCalled();
+      expect(prisma.$transaction).not.toHaveBeenCalled();
+    });
+
+    it('returns 404 when the organization is soft-deleted', async () => {
+      prisma.organization.findUnique.mockResolvedValue({
+        ...organization,
+        deletedAt: new Date(),
+      });
+
+      await expect(
+        service.assignCourse(admin as never, 'group-1', {
+          courseId: 'course-1',
+        }),
+      ).rejects.toBeInstanceOf(NotFoundException);
+      expect(prisma.$transaction).not.toHaveBeenCalled();
+    });
+  });
+
   describe('group roster', () => {
     const teacherActor = {
       id: 'teacher-1',
@@ -805,6 +1059,7 @@ describe('GroupsService', () => {
       startDate: new Date('2026-10-01T00:00:00.000Z'),
       endDate: null,
       teacher: { id: 'teacher-1', firstName: 'Ірина', lastName: 'Мельник' },
+      course: null,
       studentsCount: 1,
       createdAt: new Date('2026-09-29T19:20:00.000Z'),
     };

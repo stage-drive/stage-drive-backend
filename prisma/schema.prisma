@@ -100,6 +100,12 @@ enum CarStatus {
   INACTIVE
 }
 
+/// Курси архівуються, а не видаляються: ARCHIVED не можна призначити групі.
+enum CourseStatus {
+  ACTIVE
+  ARCHIVED
+}
+
 model Organization {
   id             String             @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   name           String             @db.VarChar(255)
@@ -119,6 +125,7 @@ model Organization {
   students       Student[]
   cars           Car[]
   drivingLessons DrivingLesson[]
+  courses        Course[]
 
   @@index([deletedAt])
   @@map("organizations")
@@ -295,6 +302,8 @@ model Group {
   teacher        User         @relation("TeacherGroups", fields: [teacherId], references: [id], onDelete: Cascade)
   startDate      DateTime?    @map("start_date")
   endDate        DateTime?    @map("end_date")
+  courseId       String?      @map("course_id") @db.Uuid
+  course         Course?      @relation(fields: [courseId], references: [id], onDelete: SetNull)
   createdAt      DateTime     @default(now()) @map("created_at")
   updatedAt      DateTime     @updatedAt @map("updated_at")
   enrollments    Enrollment[]
@@ -303,7 +312,24 @@ model Group {
 
   @@index([organizationId])
   @@index([teacherId])
+  @@index([courseId])
   @@map("groups")
+}
+
+/// Теоретичний курс автошколи: програма, яку викладач читає групі.
+model Course {
+  id             String       @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  organizationId String       @map("organization_id") @db.Uuid
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  name           String       @db.VarChar(120)
+  description    String?
+  status         CourseStatus @default(ACTIVE)
+  createdAt      DateTime     @default(now()) @map("created_at")
+  updatedAt      DateTime     @updatedAt @map("updated_at")
+  groups         Group[]
+
+  @@index([organizationId])
+  @@map("courses")
 }
 
 model Student {
