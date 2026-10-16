@@ -11,6 +11,7 @@ import { DashboardModule } from './modules/dashboard/dashboard.module';
 import { StudentsModule } from './modules/students/students.module';
 import { CarsModule } from './modules/cars/cars.module';
 import { GroupsModule } from './modules/groups/groups.module';
+import { CoursesModule } from './modules/courses/courses.module';
 
 @Module({
   imports: [
@@ -24,6 +25,7 @@ import { GroupsModule } from './modules/groups/groups.module';
     StudentsModule,
     CarsModule,
     GroupsModule,
+    CoursesModule,
   ],
   controllers: [AppController],
   providers: [AppService],

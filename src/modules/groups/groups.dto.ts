@@ -38,6 +38,14 @@ export class GroupTeacherDto {
   lastName: string;
 }
 
+export class GroupCourseDto {
+  @ApiProperty()
+  id: string;
+
+  @ApiProperty({ example: 'Теоретичний курс, категорія B' })
+  name: string;
+}
+
 export class GroupListItemDto {
   @ApiProperty()
   id: string;
@@ -56,6 +64,13 @@ export class GroupListItemDto {
 
   @ApiProperty({ type: GroupTeacherDto })
   teacher: GroupTeacherDto;
+
+  @ApiProperty({
+    type: GroupCourseDto,
+    nullable: true,
+    description: 'Теоретичний курс групи. null, якщо курс не призначено.',
+  })
+  course: GroupCourseDto | null;
 
   @ApiProperty({
     description:
@@ -179,6 +194,21 @@ export class UpdateGroupStatusDto {
   @IsEnum(GroupStatus, { message: GROUP_STATUS_VALUE_MESSAGE })
   @IsDefined({ message: REQUIRED_FIELD_MESSAGE })
   status: GroupStatus;
+}
+
+export class AssignGroupCourseDto {
+  @ApiProperty({
+    type: String,
+    format: 'uuid',
+    nullable: true,
+    example: '41414141-4141-4414-8414-414141414141',
+    description: 'Активний курс своєї автошколи. null знімає курс.',
+  })
+  // Коли courseId === null, пропускаються і @IsUUID, і @IsDefined.
+  @ValidateIf((_, value) => value !== null)
+  @IsUUID('4', { message: 'courseId має бути UUID або null.' })
+  @IsDefined({ message: REQUIRED_FIELD_MESSAGE })
+  courseId: string | null;
 }
 
 export class AddGroupStudentDto {

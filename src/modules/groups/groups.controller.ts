@@ -31,6 +31,7 @@ import { Roles } from '../auth/roles.decorator';
 import { RolesGuard } from '../auth/roles.guard';
 import {
   AddGroupStudentDto,
+  AssignGroupCourseDto,
   CreateGroupDto,
   GroupListDto,
   GroupListItemDto,
@@ -171,6 +172,45 @@ export class GroupsController {
     @Body() body: UpdateGroupStatusDto,
   ) {
     return this.groupsService.changeStatus(user, id, body);
+  }
+
+  @Patch(':id/course')
+  @Roles(...GROUP_MANAGE_ROLES)
+  @ApiOperation({
+    summary: 'Призначити, змінити або зняти теоретичний курс групи',
+    description:
+      'ADMIN призначає групі своєї автошколи курс тієї самої автошколи зі статусом ACTIVE. ' +
+      'null знімає курс. Група іншої автошколи повертає 404, курс іншої автошколи теж 404. ' +
+      'Курс групи зі статусом COMPLETED або ARCHIVED змінювати не можна. ' +
+      'Повтор того самого курсу (або null для групи без курсу) нічого не змінює. ' +
+      'Відповідь містить групу з актуальним курсом.',
+  })
+  @ApiParam({
+    name: 'id',
+    format: 'uuid',
+    description: 'Id групи своєї автошколи.',
+  })
+  @ApiOkResponse({ type: GroupListItemDto })
+  @ApiBadRequestResponse({
+    description:
+      'id не UUID, courseId відсутній або не UUID і не null, або зайві поля. ' +
+      'Тіло містить errors: [{ field, message }].',
+  })
+  @ApiForbiddenResponse({ description: 'Призначати курс може лише ADMIN.' })
+  @ApiNotFoundResponse({
+    description:
+      'Групу або курс не знайдено, або вони належать іншій автошколі. ' +
+      'Також якщо автошколу видалено.',
+  })
+  @ApiConflictResponse({
+    description: 'Група закрита (COMPLETED/ARCHIVED) або курс архівовано.',
+  })
+  assignCourse(
+    @CurrentUser() user: User,
+    @Param('id', new ParseUUIDPipe({ version: '4' })) id: string,
+    @Body() body: AssignGroupCourseDto,
+  ) {
+    return this.groupsService.assignCourse(user, id, body);
   }
 
   @Get(':id/students')

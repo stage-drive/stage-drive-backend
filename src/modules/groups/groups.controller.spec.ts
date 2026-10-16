@@ -42,6 +42,7 @@ describe('GroupsController', () => {
     'create',
     'update',
     'changeStatus',
+    'assignCourse',
     'addStudent',
     'removeStudent',
   ] as const)('restricts %s to ADMIN', (method) => {
@@ -61,6 +62,7 @@ describe('GroupsController', () => {
       create: jest.fn().mockResolvedValue(response),
       update: jest.fn().mockResolvedValue(response),
       changeStatus: jest.fn().mockResolvedValue(response),
+      assignCourse: jest.fn().mockResolvedValue(response),
     };
     const controller = new GroupsController(
       groupsService as unknown as GroupsService,
@@ -91,6 +93,19 @@ describe('GroupsController', () => {
         controller.changeStatus(user as never, 'group-1', body),
       ).resolves.toBe(response);
       expect(groupsService.changeStatus).toHaveBeenCalledWith(
+        user,
+        'group-1',
+        body,
+      );
+    });
+
+    it('assignCourse passes the current user, id and body to the service', async () => {
+      const body = { courseId: null };
+
+      await expect(
+        controller.assignCourse(user as never, 'group-1', body),
+      ).resolves.toBe(response);
+      expect(groupsService.assignCourse).toHaveBeenCalledWith(
         user,
         'group-1',
         body,
