@@ -10,7 +10,9 @@ import {
   CourseStatus,
   EnrollmentStatus,
   GroupStatus,
+  LessonStatus,
   OrganizationStatus,
+  Prisma,
   TrainingStatus,
   UserRole,
   UserStatus,
@@ -97,6 +99,8 @@ describe('GroupsService', () => {
     user: { findUnique: jest.fn() },
     course: { findFirst: jest.fn() },
     enrollment: { updateMany: jest.fn(), findMany: jest.fn() },
+    lesson: { updateMany: jest.fn() },
+    $queryRaw: jest.fn(),
     $transaction: jest.fn(),
   };
 
@@ -135,6 +139,8 @@ describe('GroupsService', () => {
     prisma.user.findUnique.mockResolvedValue(teacher);
     prisma.enrollment.updateMany.mockResolvedValue({ count: 0 });
     prisma.enrollment.findMany.mockResolvedValue([]);
+    prisma.lesson.updateMany.mockResolvedValue({ count: 0 });
+    prisma.$queryRaw.mockResolvedValue([]);
     prisma.course.findFirst.mockResolvedValue({ status: CourseStatus.ACTIVE });
     studentsService.assignGroup.mockResolvedValue({});
     studentsService.removeFromGroup.mockResolvedValue(undefined);
@@ -690,6 +696,25 @@ describe('GroupsService', () => {
       );
     }
 
+    it('locks the group row FOR UPDATE inside the actor organization before reading it', async () => {
+      withStatus(GroupStatus.ACTIVE);
+
+      await service.changeStatus(admin as never, 'group-1', {
+        status: GroupStatus.COMPLETED,
+      });
+
+      expect(prisma.$queryRaw).toHaveBeenCalledTimes(1);
+      expect(prisma.$queryRaw).toHaveBeenCalledWith(
+        expect.anything(),
+        'group-1',
+        'org-1',
+        Prisma.sql`FOR UPDATE`,
+      );
+      expect(prisma.$queryRaw.mock.invocationCallOrder[0]).toBeLessThan(
+        prisma.group.findFirst.mock.invocationCallOrder[0],
+      );
+    });
+
     it.each(ALLOWED)('allows %s → %s', async (from, to) => {
       withStatus(from);
 
@@ -715,8 +740,15 @@ describe('GroupsService', () => {
       expect(error.message).toBe(
         `${GROUP_STATUS_TRANSITION_MESSAGE} ${from} → ${to}.`,
       );
+      expect(error.getResponse()).toEqual({
+        statusCode: 409,
+        message: `${GROUP_STATUS_TRANSITION_MESSAGE} ${from} → ${to}.`,
+        error: 'Conflict',
+        currentStatus: from,
+      });
       expect(prisma.group.update).not.toHaveBeenCalled();
       expect(prisma.enrollment.updateMany).not.toHaveBeenCalled();
+      expect(prisma.lesson.updateMany).not.toHaveBeenCalled();
     });
 
     it.each([
@@ -728,6 +760,7 @@ describe('GroupsService', () => {
       async (from, to) => {
         withStatus(from);
         prisma.enrollment.updateMany.mockResolvedValue({ count: 4 });
+        prisma.lesson.updateMany.mockResolvedValue({ count: 2 });
 
         const result = await service.changeStatus(admin as never, 'group-1', {
           status: to,
@@ -742,12 +775,47 @@ describe('GroupsService', () => {
         ).toBeLessThan(prisma.group.update.mock.invocationCallOrder[0]);
         expect(result.studentsCount).toBe(0);
         expect(log).toHaveBeenCalledWith(
-          `Group status changed groupId=group-1 from=${from} to=${to} completedEnrollments=4 actorId=admin-1 organizationId=org-1`,
+          `Group status changed groupId=group-1 from=${from} to=${to} completedEnrollments=4 cancelledLessons=2 actorId=admin-1 organizationId=org-1`,
         );
       },
     );
 
-    it('leaves enrollments alone when the group stays open', async () => {
+    it.each([
+      [GroupStatus.ACTIVE, GroupStatus.COMPLETED],
+      [GroupStatus.ACTIVE, GroupStatus.ARCHIVED],
+      [GroupStatus.PLANNED, GroupStatus.ARCHIVED],
+      [GroupStatus.COMPLETED, GroupStatus.ARCHIVED],
+    ])(
+      'cancels only future SCHEDULED lessons before saving %s → %s',
+      async (from, to) => {
+        withStatus(from);
+
+        const before = Date.now();
+        await service.changeStatus(admin as never, 'group-1', { status: to });
+        const after = Date.now();
+
+        expect(prisma.lesson.updateMany).toHaveBeenCalledTimes(1);
+        const [args] = prisma.lesson.updateMany.mock.calls[0] as [
+          { where: { scheduledAt: { gte: Date } } },
+        ];
+        expect(args).toEqual({
+          where: {
+            groupId: 'group-1',
+            status: LessonStatus.SCHEDULED,
+            scheduledAt: { gte: expect.any(Date) },
+          },
+          data: { status: LessonStatus.CANCELLED },
+        });
+        const cutoff = args.where.scheduledAt.gte.getTime();
+        expect(cutoff).toBeGreaterThanOrEqual(before);
+        expect(cutoff).toBeLessThanOrEqual(after);
+        expect(
+          prisma.lesson.updateMany.mock.invocationCallOrder[0],
+        ).toBeLessThan(prisma.group.update.mock.invocationCallOrder[0]);
+      },
+    );
+
+    it('leaves enrollments and lessons alone when the group stays open', async () => {
       withStatus(GroupStatus.PLANNED);
 
       await service.changeStatus(admin as never, 'group-1', {
@@ -755,6 +823,28 @@ describe('GroupsService', () => {
       });
 
       expect(prisma.enrollment.updateMany).not.toHaveBeenCalled();
+      expect(prisma.lesson.updateMany).not.toHaveBeenCalled();
+      expect(log).toHaveBeenCalledWith(
+        'Group status changed groupId=group-1 from=PLANNED to=ACTIVE completedEnrollments=0 cancelledLessons=0 actorId=admin-1 organizationId=org-1',
+      );
+    });
+
+    it('rejects a request that reads the status saved by a concurrent change', async () => {
+      // After the lock is released the second request reads ARCHIVED, which a
+      // concurrent ACTIVE → ARCHIVED just saved, so ARCHIVED → COMPLETED fails.
+      withStatus(GroupStatus.ARCHIVED);
+
+      const error = await caught(
+        service.changeStatus(admin as never, 'group-1', {
+          status: GroupStatus.COMPLETED,
+        }),
+      );
+
+      expect(error).toBeInstanceOf(ConflictException);
+      expect(error.getResponse()).toMatchObject({
+        currentStatus: GroupStatus.ARCHIVED,
+      });
+      expect(prisma.group.update).not.toHaveBeenCalled();
     });
 
     it('returns 404 for a group of another organization', async () => {
@@ -762,7 +852,7 @@ describe('GroupsService', () => {
 
       const error = await caught(
         service.changeStatus(admin as never, 'group-1', {
-          status: GroupStatus.ACTIVE,
+          status: GroupStatus.ARCHIVED,
         }),
       );
 
@@ -770,7 +860,15 @@ describe('GroupsService', () => {
       expect(error.message).toBe(GROUP_NOT_FOUND_MESSAGE);
       const [args] = prisma.group.findFirst.mock.calls[0];
       expect(args.where).toEqual({ id: 'group-1', organizationId: 'org-1' });
+      expect(prisma.$queryRaw).toHaveBeenCalledWith(
+        expect.anything(),
+        'group-1',
+        'org-1',
+        Prisma.sql`FOR UPDATE`,
+      );
       expect(prisma.group.update).not.toHaveBeenCalled();
+      expect(prisma.enrollment.updateMany).not.toHaveBeenCalled();
+      expect(prisma.lesson.updateMany).not.toHaveBeenCalled();
     });
 
     it('forbids non-ADMIN roles', async () => {
@@ -782,6 +880,7 @@ describe('GroupsService', () => {
         ),
       ).rejects.toBeInstanceOf(ForbiddenException);
       expect(prisma.$transaction).not.toHaveBeenCalled();
+      expect(prisma.$queryRaw).not.toHaveBeenCalled();
     });
 
     it('returns 404 when the organization is soft-deleted', async () => {

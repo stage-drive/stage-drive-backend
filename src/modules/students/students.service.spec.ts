@@ -118,6 +118,7 @@ describe('StudentsService', () => {
       deleteMany: jest.fn(),
     },
     invitation: { create: jest.fn() },
+    $queryRaw: jest.fn(),
     $transaction: jest.fn(),
   };
 
@@ -140,6 +141,7 @@ describe('StudentsService', () => {
     prisma.organization.findUnique.mockResolvedValue(organization);
     prisma.user.findMany.mockResolvedValue([]);
     prisma.user.count.mockResolvedValue(0);
+    prisma.$queryRaw.mockResolvedValue([]);
     prisma.$transaction.mockImplementation(
       (callback: (tx: typeof prisma) => unknown) => callback(prisma),
     );
@@ -602,6 +604,37 @@ describe('StudentsService', () => {
       expect(result.student.instructorId).toBeNull();
       expect(result.student.carId).toBeNull();
       expect(result.user.organizationId).toBe('org-1');
+    });
+
+    it('locks the selected group FOR SHARE in the actor organization before reading it', async () => {
+      prisma.group.findUnique.mockResolvedValue({
+        id: 'group-1',
+        organizationId: 'org-1',
+        status: GroupStatus.ACTIVE,
+      });
+
+      await service.create(actor(UserRole.ADMIN), {
+        ...payload,
+        groupId: 'group-1',
+      });
+
+      expect(prisma.$queryRaw).toHaveBeenCalledTimes(1);
+      expect(prisma.$queryRaw).toHaveBeenCalledWith(
+        expect.anything(),
+        'group-1',
+        'org-1',
+        Prisma.sql`FOR SHARE`,
+      );
+      expect(prisma.$queryRaw.mock.invocationCallOrder[0]).toBeLessThan(
+        prisma.group.findUnique.mock.invocationCallOrder[0],
+      );
+    });
+
+    it('does not lock any group when no groupId is sent', async () => {
+      await service.create(actor(UserRole.ADMIN), payload);
+
+      expect(prisma.$queryRaw).not.toHaveBeenCalled();
+      expect(prisma.group.findUnique).not.toHaveBeenCalled();
     });
 
     it.each([GroupStatus.ARCHIVED, GroupStatus.COMPLETED] as const)(
@@ -1398,6 +1431,26 @@ describe('StudentsService', () => {
         });
       },
     );
+
+    it('locks the target group FOR SHARE in the actor organization before reading its status', async () => {
+      await service.assignGroup(actor(UserRole.ADMIN), 'student-1', {
+        groupId: 'group-new',
+      });
+
+      expect(prisma.$queryRaw).toHaveBeenCalledTimes(1);
+      expect(prisma.$queryRaw).toHaveBeenCalledWith(
+        expect.anything(),
+        'group-new',
+        'org-1',
+        Prisma.sql`FOR SHARE`,
+      );
+      expect(prisma.$queryRaw.mock.invocationCallOrder[0]).toBeLessThan(
+        prisma.group.findUnique.mock.invocationCallOrder[0],
+      );
+      expect(prisma.$queryRaw.mock.invocationCallOrder[0]).toBeLessThan(
+        prisma.enrollment.upsert.mock.invocationCallOrder[0],
+      );
+    });
 
     it('assigns a student to a planned group', async () => {
       prisma.group.findUnique.mockResolvedValue({

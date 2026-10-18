@@ -10,11 +10,13 @@ import {
   CourseStatus,
   EnrollmentStatus,
   GroupStatus,
+  LessonStatus,
   Prisma,
   User,
   UserRole,
   UserStatus,
 } from '@prisma/client';
+import { lockGroup } from '../../common/prisma/group-lock';
 import { PrismaService } from '../../prisma/prisma.service';
 import { StudentsService } from '../students/students.service';
 import {
@@ -299,24 +301,42 @@ export class GroupsService {
     await this.requireOrganization(actor.organizationId);
 
     return this.prisma.$transaction(async (tx) => {
+      // Блокування до читання: паралельна зміна статусу або зарахування
+      // студента чекає на цю транзакцію і бачить уже збережений статус.
+      await lockGroup(tx, groupId, actor.organizationId, 'update');
       const existing = await this.requireGroup(tx, actor, groupId);
 
       const next = payload.status;
       if (!GROUP_STATUS_TRANSITIONS[existing.status].includes(next)) {
-        throw new ConflictException(
-          `${GROUP_STATUS_TRANSITION_MESSAGE} ${existing.status} → ${next}.`,
-        );
+        throw new ConflictException({
+          statusCode: 409,
+          message: `${GROUP_STATUS_TRANSITION_MESSAGE} ${existing.status} → ${next}.`,
+          error: 'Conflict',
+          currentStatus: existing.status,
+        });
       }
 
       // Закриття групи завершує активні зарахування. COMPLETED, а не DROPPED:
       // DROPPED блокує студенту зарахування в будь-яку іншу групу.
       let completedEnrollments = 0;
+      let cancelledLessons = 0;
       if (!isOpenGroup(next)) {
-        const result = await tx.enrollment.updateMany({
+        const enrollments = await tx.enrollment.updateMany({
           where: { groupId: existing.id, status: EnrollmentStatus.ACTIVE },
           data: { status: EnrollmentStatus.COMPLETED },
         });
-        completedEnrollments = result.count;
+        completedEnrollments = enrollments.count;
+
+        // Минулі SCHEDULED-заняття не чіпаємо: це облік відвідування, а не розклад.
+        const lessons = await tx.lesson.updateMany({
+          where: {
+            groupId: existing.id,
+            status: LessonStatus.SCHEDULED,
+            scheduledAt: { gte: new Date() },
+          },
+          data: { status: LessonStatus.CANCELLED },
+        });
+        cancelledLessons = lessons.count;
       }
 
       const saved = await tx.group.update({
@@ -326,7 +346,7 @@ export class GroupsService {
       });
 
       this.logger.log(
-        `Group status changed groupId=${saved.id} from=${existing.status} to=${saved.status} completedEnrollments=${completedEnrollments} actorId=${actor.id} organizationId=${actor.organizationId}`,
+        `Group status changed groupId=${saved.id} from=${existing.status} to=${saved.status} completedEnrollments=${completedEnrollments} cancelledLessons=${cancelledLessons} actorId=${actor.id} organizationId=${actor.organizationId}`,
       );
       return toGroupListItem(saved);
     });

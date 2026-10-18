@@ -143,9 +143,11 @@ export class GroupsController {
     description:
       'ADMIN змінює статус групи своєї організації. Група іншої автошколи повертає 404. ' +
       'Переходи: PLANNED → ACTIVE | ARCHIVED; ACTIVE → COMPLETED | ARCHIVED; COMPLETED → ARCHIVED. ' +
+      'Завершення групи — { status: COMPLETED } з ACTIVE; архівування — { status: ARCHIVED } з PLANNED, ACTIVE або COMPLETED. ' +
       'Повтор того самого статусу, повернення назад і будь-який перехід з ARCHIVED відхиляються. ' +
       'Перехід у COMPLETED або ARCHIVED переводить активні зарахування групи в COMPLETED, ' +
-      'тож студентів можна зарахувати в іншу групу. Відповідь містить збережений статус.',
+      'тож студентів можна зарахувати в іншу групу, і скасовує майбутні SCHEDULED-заняття групи. ' +
+      'Відповідь містить збережений статус.',
   })
   @ApiParam({
     name: 'id',
@@ -165,7 +167,11 @@ export class GroupsController {
     description:
       'Групу не знайдено або вона належить іншій автошколі. Також якщо автошколу видалено.',
   })
-  @ApiConflictResponse({ description: 'Недозволений перехід статусу.' })
+  @ApiConflictResponse({
+    description:
+      'Недозволений перехід статусу. Тіло: { statusCode, message, error, currentStatus }, ' +
+      'де currentStatus — поточний статус групи.',
+  })
   changeStatus(
     @CurrentUser() user: User,
     @Param('id', new ParseUUIDPipe({ version: '4' })) id: string,
