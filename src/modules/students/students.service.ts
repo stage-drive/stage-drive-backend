@@ -20,6 +20,7 @@ import {
   UserStatus,
 } from '@prisma/client';
 import { createHash, randomBytes } from 'crypto';
+import { lockGroup } from '../../common/prisma/group-lock';
 import { isUniqueConstraintOn } from '../../common/prisma/unique-constraint';
 import { PrismaService } from '../../prisma/prisma.service';
 import {
@@ -694,6 +695,9 @@ export class StudentsService {
         }
 
         if (groupId) {
+          // FOR SHARE: закриття групи чекає на це зарахування, а зарахування —
+          // на закриття (див. GroupsService.changeStatus).
+          await lockGroup(tx, groupId, actor.organizationId, 'share');
           const group = await tx.group.findUnique({ where: { id: groupId } });
           if (!group || group.organizationId !== actor.organizationId) {
             throw new NotFoundException(GROUP_NOT_FOUND_MESSAGE);
@@ -997,6 +1001,9 @@ export class StudentsService {
         throw new ConflictException(STUDENT_TRAINING_STATUS_MESSAGE);
       }
 
+      // FOR SHARE: закриття групи чекає на це зарахування, а зарахування —
+      // на закриття (див. GroupsService.changeStatus).
+      await lockGroup(tx, payload.groupId, actor.organizationId, 'share');
       const group = await tx.group.findUnique({
         where: { id: payload.groupId },
       });
