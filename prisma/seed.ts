@@ -3,6 +3,7 @@ import 'dotenv/config';
 import { PrismaPg } from '@prisma/adapter-pg';
 import {
   CarStatus,
+  CourseMaterialType,
   CourseStatus,
   EnrollmentStatus,
   GroupStatus,
@@ -41,6 +42,16 @@ const DEMO_COURSE_B_ID = '41414141-4141-4414-8414-414141414141';
 const DEMO_COURSE_A_ID = '42424242-4242-4424-8424-424242424242';
 const DEMO_COURSE_ARCHIVED_ID = '43434343-4343-4434-8434-434343434343';
 const DEMO_OTHER_COURSE_ID = '45454545-4545-4454-8454-454545454545';
+const DEMO_CHAPTER_TRAFFIC_ID = '51515151-5151-4515-8515-515151515151';
+const DEMO_CHAPTER_CAR_ID = '52525252-5252-4525-8525-525252525252';
+const DEMO_OTHER_CHAPTER_ID = '53535353-5353-4535-8535-535353535353';
+const DEMO_LESSON_SIGNS_ID = '61616161-6161-4616-8616-616161616161';
+const DEMO_LESSON_CONTROL_ID = '62626262-6262-4626-8626-626262626262';
+const DEMO_LESSON_ENGINE_ID = '63636363-6363-4636-8636-636363636363';
+const DEMO_MATERIAL_SIGNS_TEXT_ID = '71717171-7171-4717-8717-717171717171';
+const DEMO_MATERIAL_SIGNS_LINK_ID = '72727272-7272-4727-8727-727272727272';
+const DEMO_MATERIAL_CONTROL_VIDEO_ID = '73737373-7373-4737-8737-737373737373';
+const DEMO_MATERIAL_ENGINE_TEXT_ID = '74747474-7474-4747-8747-747474747474';
 const DEMO_GROUPED_STUDENT_ID = '13131313-1313-4131-8131-131313131313';
 const DEMO_GROUPED_PROFILE_ID = '14141414-1414-4141-8141-141414141414';
 const DEMO_DROPPED_STUDENT_ID = '15151515-1515-4151-8151-151515151515';
@@ -278,6 +289,72 @@ async function upsertCourse(input: {
   });
 }
 
+async function upsertChapter(input: {
+  id: string;
+  courseId: string;
+  title: string;
+  description?: string | null;
+  position: number;
+}) {
+  const description = input.description ?? null;
+  return prisma.courseChapter.upsert({
+    where: { id: input.id },
+    update: {
+      courseId: input.courseId,
+      title: input.title,
+      description,
+      position: input.position,
+    },
+    create: { ...input, description },
+  });
+}
+
+async function upsertLesson(input: {
+  id: string;
+  courseId: string;
+  chapterId: string;
+  title: string;
+  description?: string | null;
+  position: number;
+}) {
+  const description = input.description ?? null;
+  return prisma.courseLesson.upsert({
+    where: { id: input.id },
+    update: {
+      courseId: input.courseId,
+      chapterId: input.chapterId,
+      title: input.title,
+      description,
+      position: input.position,
+    },
+    create: { ...input, description },
+  });
+}
+
+async function upsertMaterial(input: {
+  id: string;
+  courseId: string;
+  lessonId: string;
+  title: string;
+  type: CourseMaterialType;
+  body?: string | null;
+  position: number;
+}) {
+  const body = input.body ?? null;
+  return prisma.courseMaterial.upsert({
+    where: { id: input.id },
+    update: {
+      courseId: input.courseId,
+      lessonId: input.lessonId,
+      title: input.title,
+      type: input.type,
+      body,
+      position: input.position,
+    },
+    create: { ...input, body },
+  });
+}
+
 async function upsertCar(input: {
   id: string;
   organizationId: string;
@@ -450,6 +527,85 @@ async function main() {
     name: 'Курс іншої автошколи',
     status: CourseStatus.ACTIVE,
     organizationId: otherOrganization.id,
+  });
+
+  await upsertChapter({
+    id: DEMO_CHAPTER_TRAFFIC_ID,
+    courseId: courseB.id,
+    title: 'Правила дорожнього руху',
+    description: 'Знаки, розмітка та регулювання.',
+    position: 1,
+  });
+  await upsertChapter({
+    id: DEMO_CHAPTER_CAR_ID,
+    courseId: courseB.id,
+    title: 'Будова автомобіля',
+    description: 'Двигун, трансмісія та ходова частина.',
+    position: 2,
+  });
+  await upsertChapter({
+    id: DEMO_OTHER_CHAPTER_ID,
+    courseId: foreignCourse.id,
+    title: 'Розділ іншої автошколи',
+    position: 1,
+  });
+  await upsertLesson({
+    id: DEMO_LESSON_SIGNS_ID,
+    courseId: courseB.id,
+    chapterId: DEMO_CHAPTER_TRAFFIC_ID,
+    title: 'Дорожні знаки',
+    description: 'Огляд груп знаків.',
+    position: 1,
+  });
+  await upsertLesson({
+    id: DEMO_LESSON_CONTROL_ID,
+    courseId: courseB.id,
+    chapterId: DEMO_CHAPTER_TRAFFIC_ID,
+    title: 'Регулювання руху',
+    position: 2,
+  });
+  await upsertLesson({
+    id: DEMO_LESSON_ENGINE_ID,
+    courseId: courseB.id,
+    chapterId: DEMO_CHAPTER_CAR_ID,
+    title: 'Двигун',
+    position: 1,
+  });
+  await upsertMaterial({
+    id: DEMO_MATERIAL_SIGNS_TEXT_ID,
+    courseId: courseB.id,
+    lessonId: DEMO_LESSON_SIGNS_ID,
+    title: 'Групи дорожніх знаків',
+    type: CourseMaterialType.TEXT,
+    body: 'Попереджувальні, пріоритету, заборонні, наказові, інформаційні.',
+    position: 1,
+  });
+  await upsertMaterial({
+    id: DEMO_MATERIAL_SIGNS_LINK_ID,
+    courseId: courseB.id,
+    lessonId: DEMO_LESSON_SIGNS_ID,
+    title: 'Офіційні ПДР',
+    type: CourseMaterialType.LINK,
+    body: 'https://zakon.rada.gov.ua/laws/show/1306-2001-%D0%BF',
+    position: 2,
+  });
+  await upsertMaterial({
+    id: DEMO_MATERIAL_CONTROL_VIDEO_ID,
+    courseId: courseB.id,
+    lessonId: DEMO_LESSON_CONTROL_ID,
+    title: 'Регулювальник',
+    type: CourseMaterialType.VIDEO,
+    body: 'https://example.com/video/traffic-control',
+    position: 1,
+  });
+  await upsertMaterial({
+    id: DEMO_MATERIAL_ENGINE_TEXT_ID,
+    courseId: courseB.id,
+    lessonId: DEMO_LESSON_ENGINE_ID,
+    title: 'Призначення двигуна',
+    type: CourseMaterialType.TEXT,
+    body: 'Двигун перетворює енергію палива на механічну роботу.',
+    position: 1,
   });
 
   const activeGroup = await upsertGroup({
@@ -728,6 +884,16 @@ async function main() {
   console.log(`  course A ACTIVE:   ${courseA.id}`);
   console.log(`  course ARCHIVED (expect 409): ${archivedCourse.id}`);
   console.log(`  other-org course (expect 404): ${foreignCourse.id}`);
+  console.log(`  chapter ПДР: ${DEMO_CHAPTER_TRAFFIC_ID}`);
+  console.log(`  chapter будова: ${DEMO_CHAPTER_CAR_ID}`);
+  console.log(`  other-org chapter (expect 404): ${DEMO_OTHER_CHAPTER_ID}`);
+  console.log(`  lesson знаки: ${DEMO_LESSON_SIGNS_ID}`);
+  console.log(`  lesson регулювання: ${DEMO_LESSON_CONTROL_ID}`);
+  console.log(`  lesson двигун: ${DEMO_LESSON_ENGINE_ID}`);
+  console.log(`  material text: ${DEMO_MATERIAL_SIGNS_TEXT_ID}`);
+  console.log(
+    'GET /api/courses/{courseId} — only ADMIN. Chapters, lessons and materials by position.',
+  );
   console.log(
     'PATCH /api/groups/{id}/course — only ADMIN. Body: { "courseId": "<uuid>" } or { "courseId": null }.',
   );

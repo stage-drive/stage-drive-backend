@@ -11,6 +11,10 @@ export function configureSwagger(app: INestApplication) {
     .addTag('dashboard', 'Дані Owner і Admin Dashboard')
     .addTag('students', 'Студенти автошколи')
     .addTag('cars', 'Автомобілі автошколи')
+    .addTag(
+      'courses',
+      'Теоретичні курси: програма, розділи, уроки та матеріали',
+    )
     .addBearerAuth()
     .build();
 
