@@ -106,6 +106,14 @@ enum CourseStatus {
   ARCHIVED
 }
 
+/// Навчальний матеріал теоретичного уроку.
+/// TEXT — текст, LINK — зовнішнє посилання, VIDEO — посилання на відео.
+enum CourseMaterialType {
+  TEXT
+  LINK
+  VIDEO
+}
+
 model Organization {
   id             String             @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   name           String             @db.VarChar(255)
@@ -247,21 +255,21 @@ model EmailChangeToken {
 }
 
 model Invitation {
-  id             String           @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  email          String           @db.VarChar(255)
+  id             String               @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  email          String               @db.VarChar(255)
   role           UserRole
-  tokenHash      String           @unique @map("token_hash") @db.VarChar(128)
-  status         InvitationStatus @default(PENDING)
-  expiresAt      DateTime         @map("expires_at")
-  acceptedAt     DateTime?        @map("accepted_at")
-  invitedById    String           @map("invited_by_id") @db.Uuid
-  invitedBy      User             @relation("SentInvitations", fields: [invitedById], references: [id], onDelete: Cascade)
-  userId         String           @map("user_id") @db.Uuid
-  user           User             @relation("ReceivedInvitations", fields: [userId], references: [id], onDelete: Cascade)
-  organizationId String           @map("organization_id") @db.Uuid
-  organization   Organization     @relation(fields: [organizationId], references: [id], onDelete: Cascade)
-  createdAt      DateTime         @default(now()) @map("created_at")
-  updatedAt      DateTime         @updatedAt @map("updated_at")
+  tokenHash      String               @unique @map("token_hash") @db.VarChar(128)
+  status         InvitationStatus     @default(PENDING)
+  expiresAt      DateTime             @map("expires_at")
+  acceptedAt     DateTime?            @map("accepted_at")
+  invitedById    String               @map("invited_by_id") @db.Uuid
+  invitedBy      User                 @relation("SentInvitations", fields: [invitedById], references: [id], onDelete: Cascade)
+  userId         String               @map("user_id") @db.Uuid
+  user           User                 @relation("ReceivedInvitations", fields: [userId], references: [id], onDelete: Cascade)
+  organizationId String               @map("organization_id") @db.Uuid
+  organization   Organization         @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  createdAt      DateTime             @default(now()) @map("created_at")
+  updatedAt      DateTime             @updatedAt @map("updated_at")
   emailJobs      InvitationEmailJob[]
 
   @@index([userId])
@@ -273,19 +281,19 @@ model Invitation {
 
 /// Задача на відправку листа-запрошення. Сирий token тримається лише до завершення задачі.
 model InvitationEmailJob {
-  id                String                 @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  invitationId      String                 @map("invitation_id") @db.Uuid
-  invitation        Invitation             @relation(fields: [invitationId], references: [id], onDelete: Cascade)
-  token             String?                @db.VarChar(128)
-  tokenHash         String                 @map("token_hash") @db.VarChar(128)
-  status            InvitationEmailStatus  @default(QUEUED)
-  attempts          Int                    @default(0)
-  lastError         String?                @map("last_error") @db.VarChar(500)
-  providerMessageId String?                @map("provider_message_id") @db.VarChar(512)
-  nextAttemptAt     DateTime               @default(now()) @map("next_attempt_at")
-  sentAt            DateTime?              @map("sent_at")
-  createdAt         DateTime               @default(now()) @map("created_at")
-  updatedAt         DateTime               @updatedAt @map("updated_at")
+  id                String                @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  invitationId      String                @map("invitation_id") @db.Uuid
+  invitation        Invitation            @relation(fields: [invitationId], references: [id], onDelete: Cascade)
+  token             String?               @db.VarChar(128)
+  tokenHash         String                @map("token_hash") @db.VarChar(128)
+  status            InvitationEmailStatus @default(QUEUED)
+  attempts          Int                   @default(0)
+  lastError         String?               @map("last_error") @db.VarChar(500)
+  providerMessageId String?               @map("provider_message_id") @db.VarChar(512)
+  nextAttemptAt     DateTime              @default(now()) @map("next_attempt_at")
+  sentAt            DateTime?             @map("sent_at")
+  createdAt         DateTime              @default(now()) @map("created_at")
+  updatedAt         DateTime              @updatedAt @map("updated_at")
 
   @@index([status, nextAttemptAt])
   @@index([invitationId, createdAt])
@@ -318,18 +326,78 @@ model Group {
 
 /// Теоретичний курс автошколи: програма, яку викладач читає групі.
 model Course {
-  id             String       @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  organizationId String       @map("organization_id") @db.Uuid
-  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
-  name           String       @db.VarChar(120)
+  id             String           @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  organizationId String           @map("organization_id") @db.Uuid
+  organization   Organization     @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  name           String           @db.VarChar(120)
   description    String?
-  status         CourseStatus @default(ACTIVE)
-  createdAt      DateTime     @default(now()) @map("created_at")
-  updatedAt      DateTime     @updatedAt @map("updated_at")
+  status         CourseStatus     @default(ACTIVE)
+  createdAt      DateTime         @default(now()) @map("created_at")
+  updatedAt      DateTime         @updatedAt @map("updated_at")
   groups         Group[]
+  chapters       CourseChapter[]
+  lessons        CourseLesson[]
+  materials      CourseMaterial[]
 
   @@index([organizationId])
   @@map("courses")
+}
+
+/// Розділ теоретичного курсу. Порядок усередині курсу задає position.
+model CourseChapter {
+  id          String         @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  courseId    String         @map("course_id") @db.Uuid
+  course      Course         @relation(fields: [courseId], references: [id], onDelete: Cascade)
+  title       String         @db.VarChar(200)
+  description String?
+  position    Int
+  createdAt   DateTime       @default(now()) @map("created_at")
+  updatedAt   DateTime       @updatedAt @map("updated_at")
+  lessons     CourseLesson[]
+
+  @@unique([id, courseId])
+  @@unique([courseId, position])
+  @@map("course_chapters")
+}
+
+/// Урок теоретичного курсу. Це не заняття групи (модель Lesson).
+/// courseId збігається з курсом розділу: складений ключ не дає прив’язати урок до чужого розділу.
+model CourseLesson {
+  id          String           @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  courseId    String           @map("course_id") @db.Uuid
+  course      Course           @relation(fields: [courseId], references: [id], onDelete: Cascade)
+  chapterId   String           @map("chapter_id") @db.Uuid
+  chapter     CourseChapter    @relation(fields: [chapterId, courseId], references: [id, courseId], onDelete: Cascade)
+  title       String           @db.VarChar(200)
+  description String?
+  position    Int
+  createdAt   DateTime         @default(now()) @map("created_at")
+  updatedAt   DateTime         @updatedAt @map("updated_at")
+  materials   CourseMaterial[]
+
+  @@unique([id, courseId])
+  @@unique([chapterId, position])
+  @@index([courseId])
+  @@map("course_lessons")
+}
+
+/// Навчальний матеріал уроку. courseId збігається з курсом уроку.
+model CourseMaterial {
+  id        String             @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  courseId  String             @map("course_id") @db.Uuid
+  course    Course             @relation(fields: [courseId], references: [id], onDelete: Cascade)
+  lessonId  String             @map("lesson_id") @db.Uuid
+  lesson    CourseLesson       @relation(fields: [lessonId, courseId], references: [id, courseId], onDelete: Cascade)
+  title     String             @db.VarChar(200)
+  type      CourseMaterialType @default(TEXT)
+  body      String?
+  position  Int
+  createdAt DateTime           @default(now()) @map("created_at")
+  updatedAt DateTime           @updatedAt @map("updated_at")
+
+  @@unique([lessonId, position])
+  @@index([courseId])
+  @@map("course_materials")
 }
 
 model Student {
