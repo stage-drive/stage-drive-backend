@@ -134,7 +134,9 @@ export class InvitationsController {
     summary: 'Список запрошень своєї автошколи',
     description:
       'OWNER бачить запрошення ADMIN, TEACHER, INSTRUCTOR і STUDENT. ' +
-      'ADMIN бачить лише TEACHER, INSTRUCTOR і STUDENT. Сирий token не повертається.',
+      'ADMIN бачить лише TEACHER, INSTRUCTOR і STUDENT. Сирий token не повертається. ' +
+      'Ті самі запрошені є в GET /api/users зі статусом INVITED. ' +
+      'Ім’я, прізвище і телефон редагуються через PATCH /api/users/{userId}.',
   })
   @ApiUnauthorizedResponse({ description: 'Потрібен access token' })
   @ApiOkResponse({ type: InvitationListDto })
