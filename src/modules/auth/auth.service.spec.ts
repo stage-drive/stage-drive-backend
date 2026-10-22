@@ -1,4 +1,8 @@
-import { ConflictException, ForbiddenException } from '@nestjs/common';
+import {
+  BadRequestException,
+  ConflictException,
+  ForbiddenException,
+} from '@nestjs/common';
 import { Test, TestingModule } from '@nestjs/testing';
 import { Prisma, UserRole, UserStatus } from '@prisma/client';
 import * as bcrypt from 'bcrypt';
@@ -8,7 +12,7 @@ import {
   INVALID_CREDENTIALS_MESSAGE,
 } from './auth-access';
 import { RegisterDto } from './auth.dto';
-import { AuthService } from './auth.service';
+import { AuthService, EMAIL_ALREADY_EXISTS_MESSAGE } from './auth.service';
 import { RefreshTokenService } from './refresh-token.service';
 import { verifyAccessToken } from './token';
 
@@ -27,6 +31,7 @@ describe('AuthService', () => {
 
   const prisma = {
     user: { findUnique: jest.fn(), update: jest.fn() },
+    organization: { findUnique: jest.fn() },
     $transaction: jest.fn(),
   };
   const refreshTokenService = {
@@ -322,6 +327,96 @@ describe('AuthService', () => {
         Prisma.PrismaClientKnownRequestError,
       );
       expect(prisma.$transaction).toHaveBeenCalledTimes(6);
+    });
+  });
+
+  describe('assertEmailAvailable', () => {
+    beforeEach(() => {
+      prisma.user.findUnique.mockResolvedValue(null);
+      prisma.organization.findUnique.mockResolvedValue(null);
+    });
+
+    it('looks up the trimmed lowercase email on the user and the school', async () => {
+      await expect(
+        service.assertEmailAvailable('  Owner@Example.com '),
+      ).resolves.toBeUndefined();
+
+      expect(prisma.user.findUnique).toHaveBeenCalledWith({
+        where: { email: 'owner@example.com' },
+        select: { id: true },
+      });
+      expect(prisma.organization.findUnique).toHaveBeenCalledWith({
+        where: { email: 'owner@example.com' },
+        select: { id: true },
+      });
+    });
+
+    it('rejects when a user already has this email', async () => {
+      prisma.user.findUnique.mockResolvedValue({ id: 'user-1' });
+
+      const error = await service
+        .assertEmailAvailable('owner@example.com')
+        .catch((caught: unknown) => caught);
+
+      expect(error).toBeInstanceOf(ConflictException);
+      expect((error as ConflictException).getResponse()).toEqual({
+        statusCode: 409,
+        errors: [{ field: 'email', message: EMAIL_ALREADY_EXISTS_MESSAGE }],
+      });
+    });
+
+    it('rejects when only the driving school already has this email', async () => {
+      prisma.organization.findUnique.mockResolvedValue({ id: 'org-1' });
+
+      await expect(
+        service.assertEmailAvailable('school@example.com'),
+      ).rejects.toBeInstanceOf(ConflictException);
+    });
+  });
+
+  describe('validateRegistrationFields', () => {
+    beforeEach(() => {
+      prisma.user.findUnique.mockResolvedValue(null);
+      prisma.organization.findUnique.mockResolvedValue(null);
+    });
+
+    it('rejects an empty body', async () => {
+      const error = await service
+        .validateRegistrationFields({})
+        .catch((caught: unknown) => caught);
+
+      expect(error).toBeInstanceOf(BadRequestException);
+      expect((error as BadRequestException).getResponse()).toEqual({
+        statusCode: 400,
+        errors: [
+          {
+            field: 'body',
+            message: 'Передайте хоча б одне поле для перевірки.',
+          },
+        ],
+      });
+      expect(prisma.user.findUnique).not.toHaveBeenCalled();
+    });
+
+    it('accepts a phone without checking email', async () => {
+      await expect(
+        service.validateRegistrationFields({ phone: null }),
+      ).resolves.toEqual({ valid: true });
+      expect(prisma.user.findUnique).not.toHaveBeenCalled();
+    });
+
+    it('checks email availability when email is present', async () => {
+      prisma.user.findUnique.mockResolvedValue({ id: 'user-1' });
+
+      const error = await service
+        .validateRegistrationFields({ email: 'Owner@Example.com' })
+        .catch((caught: unknown) => caught);
+
+      expect(error).toBeInstanceOf(ConflictException);
+      expect((error as ConflictException).getResponse()).toEqual({
+        statusCode: 409,
+        errors: [{ field: 'email', message: EMAIL_ALREADY_EXISTS_MESSAGE }],
+      });
     });
   });
 });

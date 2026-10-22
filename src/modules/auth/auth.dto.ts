@@ -10,6 +10,7 @@ import {
   Matches,
   MaxLength,
   MinLength,
+  ValidateIf,
 } from 'class-validator';
 import { Match } from '../../common/validators/match.decorator';
 import {
@@ -22,7 +23,14 @@ const PHONE_REGEX = /^\+?[0-9\s-]{7,20}$/;
 
 const REQUIRED_FIELD_MESSAGE = "Заповніть обов'язкове поле.";
 const INVALID_EMAIL_MESSAGE = 'Введіть коректний email.';
+const INVALID_PHONE_MESSAGE = 'Введіть коректний номер телефону.';
 const PASSWORDS_DO_NOT_MATCH_MESSAGE = 'Паролі не співпадають.';
+const TERMS_NOT_ACCEPTED_MESSAGE =
+  'Потрібно погодитися з умовами використання.';
+
+function isFieldPresent(_: object, value: unknown): boolean {
+  return value !== undefined;
+}
 
 // class-validator (legacy TS decorators) registers stacked property decorators
 // bottom-to-top, so the bottom-most decorator is evaluated FIRST. With
@@ -81,7 +89,7 @@ export class RegisterDto {
   email: string;
 
   @ApiProperty({ example: '+380991234567', required: false, nullable: true })
-  @Matches(PHONE_REGEX, { message: 'Введіть коректний номер телефону.' })
+  @Matches(PHONE_REGEX, { message: INVALID_PHONE_MESSAGE })
   @IsString()
   @IsOptional()
   phone?: string;
@@ -102,8 +110,109 @@ export class RegisterDto {
 
   @ApiProperty({ example: true })
   @IsBoolean()
-  @Equals(true, { message: 'Потрібно погодитися з умовами використання.' })
+  @Equals(true, { message: TERMS_NOT_ACCEPTED_MESSAGE })
   termsAccepted: boolean;
+}
+
+export class CheckEmailDto {
+  @ApiProperty({
+    example: 'new-owner@example.com',
+    description:
+      'Email з форми реєстрації. Пробіли по краях і регістр не створюють окремий акаунт: ' +
+      'перед пошуком адреса обрізається і переводиться в нижній регістр.',
+  })
+  @IsEmail({}, { message: INVALID_EMAIL_MESSAGE })
+  @IsNotEmpty({ message: REQUIRED_FIELD_MESSAGE })
+  email: string;
+}
+
+export class EmailAvailabilityResponseDto {
+  @ApiProperty({
+    example: true,
+    description: 'true, якщо формат коректний і email ще не зайнятий.',
+  })
+  available: boolean;
+}
+
+export class ValidateRegistrationFieldsDto {
+  @ApiPropertyOptional({ example: 'Автошкола Drive' })
+  @ValidateIf(isFieldPresent)
+  @MaxLength(120)
+  @IsPlainText()
+  @IsString()
+  @IsNotEmpty({ message: REQUIRED_FIELD_MESSAGE })
+  organizationName?: string;
+
+  @ApiPropertyOptional({ example: 'Іван' })
+  @ValidateIf(isFieldPresent)
+  @MaxLength(60)
+  @IsPlainText()
+  @IsString()
+  @IsNotEmpty({ message: REQUIRED_FIELD_MESSAGE })
+  firstName?: string;
+
+  @ApiPropertyOptional({ example: 'Петренко' })
+  @ValidateIf(isFieldPresent)
+  @MaxLength(60)
+  @IsPlainText()
+  @IsString()
+  @IsNotEmpty({ message: REQUIRED_FIELD_MESSAGE })
+  lastName?: string;
+
+  @ApiPropertyOptional({
+    example: 'new-owner@example.com',
+    description:
+      'Якщо поле передано і формат коректний, додатково перевіряється зайнятість email.',
+  })
+  @ValidateIf(isFieldPresent)
+  @IsEmail({}, { message: INVALID_EMAIL_MESSAGE })
+  @IsNotEmpty({ message: REQUIRED_FIELD_MESSAGE })
+  email?: string;
+
+  @ApiPropertyOptional({
+    example: '+380991234567',
+    nullable: true,
+    description:
+      'Необов’язкове поле. null — без помилки. Непорожній рядок перевіряється тим самим правилом, що й реєстрація.',
+  })
+  @Matches(PHONE_REGEX, { message: INVALID_PHONE_MESSAGE })
+  @IsString()
+  @IsOptional()
+  phone?: string | null;
+
+  @ApiPropertyOptional({ example: 'SecurePassword123!' })
+  @ValidateIf(isFieldPresent)
+  @Matches(PASSWORD_STRENGTH_REGEX, { message: PASSWORD_STRENGTH_MESSAGE })
+  @MaxLength(72, { message: 'Пароль занадто довгий.' })
+  @MinLength(8, { message: 'Пароль має містити щонайменше 8 символів.' })
+  @IsString()
+  @IsNotEmpty({ message: REQUIRED_FIELD_MESSAGE })
+  password?: string;
+
+  @ApiPropertyOptional({
+    example: 'SecurePassword123!',
+    description:
+      'Передавайте разом із password. Без password порівняння неможливе.',
+  })
+  @ValidateIf(isFieldPresent)
+  @Match('password', { message: PASSWORDS_DO_NOT_MATCH_MESSAGE })
+  @IsString()
+  @IsNotEmpty({ message: REQUIRED_FIELD_MESSAGE })
+  passwordConfirmation?: string;
+
+  @ApiPropertyOptional({ example: true })
+  @ValidateIf(isFieldPresent)
+  @IsBoolean()
+  @Equals(true, { message: TERMS_NOT_ACCEPTED_MESSAGE })
+  termsAccepted?: boolean;
+}
+
+export class RegistrationFieldsValidationResponseDto {
+  @ApiProperty({
+    example: true,
+    description: 'true, якщо всі передані поля пройшли перевірку.',
+  })
+  valid: boolean;
 }
 
 export class LoginResponseDto {

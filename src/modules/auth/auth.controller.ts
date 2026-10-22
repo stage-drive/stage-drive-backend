@@ -11,7 +11,9 @@ import {
   Res,
 } from '@nestjs/common';
 import {
+  ApiBadRequestResponse,
   ApiBearerAuth,
+  ApiConflictResponse,
   ApiForbiddenResponse,
   ApiFoundResponse,
   ApiOkResponse,
@@ -24,13 +26,18 @@ import {
 import { Request, Response } from 'express';
 import { AuthService } from './auth.service';
 import {
+  CheckEmailDto,
+  EmailAvailabilityResponseDto,
   GoogleIdTokenDto,
   LoginDto,
   LoginResponseDto,
   RefreshTokenDto,
   RegisterDto,
   RegisterResponseDto,
+  RegistrationFieldsValidationResponseDto,
+  ValidateRegistrationFieldsDto,
 } from './auth.dto';
+import { EMAIL_ALREADY_EXISTS_MESSAGE } from './auth.service';
 import { GoogleAuthService } from './google-auth.service';
 import { GoogleOAuthConfig } from './google-oauth.config';
 import { PasswordResetService } from './password-reset.service';
@@ -68,9 +75,123 @@ export class AuthController {
   }
 
   @Post('register')
+  @ApiOperation({
+    operationId: 'registerDrivingSchool',
+    summary: 'Зареєструвати автошколу',
+    description:
+      'Створює організацію і власника. Окремі поля можна перевірити до цього запиту: ' +
+      'POST /api/auth/register/check-email і POST /api/auth/register/validate.',
+  })
   @ApiOkResponse({ type: RegisterResponseDto })
+  @ApiBadRequestResponse({
+    description:
+      'Некоректне або порожнє поле. Тіло містить errors: [{ field, message }].',
+  })
+  @ApiConflictResponse({
+    description:
+      'Email уже зайнятий. Тіло містить errors: [{ field: email, message }].',
+    schema: {
+      example: {
+        statusCode: 409,
+        errors: [{ field: 'email', message: EMAIL_ALREADY_EXISTS_MESSAGE }],
+      },
+    },
+  })
   async register(@Body() body: RegisterDto) {
     return this.authService.register(body);
+  }
+
+  @Post('register/check-email')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({
+    operationId: 'checkRegistrationEmail',
+    summary: 'Перевірити email перед реєстрацією автошколи',
+    description:
+      'Для поля email на формі UF01-03. Фронтенд викликає запит, коли адреса введена ' +
+      'і фокус пішов з поля, ще до пароля і кнопки «Зареєструватись». ' +
+      'Авторизація не потрібна. Адреса порівнюється так само, як при реєстрації: ' +
+      'пробіли по краях прибираються, регістр ігнорується. Зайнятим вважається email ' +
+      'існуючого користувача або автошколи, включно з видаленим акаунтом: ' +
+      'унікальний індекс однаково не дасть створити школу. ' +
+      '200 і available: true означає, що формат коректний і email вільний.',
+  })
+  @ApiOkResponse({ type: EmailAvailabilityResponseDto })
+  @ApiBadRequestResponse({
+    description:
+      'Порожній або некоректний email. ' +
+      "Порожнє поле: «Заповніть обов'язкове поле.» " +
+      'Некоректний формат: «Введіть коректний email.» ' +
+      'Тіло: { statusCode: 400, errors: [{ field: email, message }] }.',
+    schema: {
+      example: {
+        statusCode: 400,
+        errors: [{ field: 'email', message: 'Введіть коректний email.' }],
+      },
+    },
+  })
+  @ApiConflictResponse({
+    description:
+      'Акаунт або автошкола з таким email уже є. ' +
+      'Тіло: { statusCode: 409, errors: [{ field: email, message }] }.',
+    schema: {
+      example: {
+        statusCode: 409,
+        errors: [{ field: 'email', message: EMAIL_ALREADY_EXISTS_MESSAGE }],
+      },
+    },
+  })
+  async checkRegistrationEmail(@Body() body: CheckEmailDto) {
+    await this.authService.assertEmailAvailable(body.email);
+    return { available: true };
+  }
+
+  @Post('register/validate')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({
+    operationId: 'validateRegistrationFields',
+    summary: 'Перевірити окремі поля реєстрації автошколи',
+    description:
+      'Ті самі правила, що в POST /api/auth/register, але лише для полів, які є в тілі. ' +
+      'Викликайте після виходу з конкретного поля і передавайте тільки його. ' +
+      'organizationName, firstName, lastName: обов’язкові, без символів < і >. ' +
+      'email: формат і зайнятість (409, якщо адреса вже є) — те саме, що check-email. ' +
+      'phone: необов’язковий. null без помилки; непорожній рядок дає ' +
+      '«Введіть коректний номер телефону.», якщо формат некоректний. ' +
+      'password: щонайменше 8 символів, велика і мала літера, цифра та спецсимвол. ' +
+      'passwordConfirmation: передавайте разом із password, інакше паролі не збігаються. ' +
+      'termsAccepted: лише true. Порожнє тіло — 400. Авторизація не потрібна. ' +
+      '200 і valid: true означає, що передані поля коректні.',
+  })
+  @ApiOkResponse({ type: RegistrationFieldsValidationResponseDto })
+  @ApiBadRequestResponse({
+    description:
+      'Передане поле не пройшло ту саму перевірку, що й реєстрація, або тіло порожнє. ' +
+      'Тіло: { statusCode: 400, errors: [{ field, message }] }. ' +
+      'field збігається з ім’ям поля форми.',
+    schema: {
+      example: {
+        statusCode: 400,
+        errors: [
+          { field: 'phone', message: 'Введіть коректний номер телефону.' },
+        ],
+      },
+    },
+  })
+  @ApiConflictResponse({
+    description:
+      'У тілі є email, і він уже зайнятий. ' +
+      'Тіло: { statusCode: 409, errors: [{ field: email, message }] }.',
+    schema: {
+      example: {
+        statusCode: 409,
+        errors: [{ field: 'email', message: EMAIL_ALREADY_EXISTS_MESSAGE }],
+      },
+    },
+  })
+  async validateRegistrationFields(
+    @Body() body: ValidateRegistrationFieldsDto,
+  ) {
+    return this.authService.validateRegistrationFields(body);
   }
 
   @Post('logout')
