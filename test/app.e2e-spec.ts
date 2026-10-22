@@ -443,7 +443,14 @@ describe('API (e2e)', () => {
       (args: { data: Partial<TestUser> }) =>
         Promise.resolve({ ...owner, ...args.data }),
     );
-    prismaMock.organization.findUnique.mockResolvedValue({ ...organization });
+    prismaMock.organization.findUnique.mockImplementation(
+      (args?: { where?: { email?: string } }) => {
+        if (args?.where && 'email' in args.where) {
+          return Promise.resolve(null);
+        }
+        return Promise.resolve({ ...organization });
+      },
+    );
     prismaMock.organization.update.mockImplementation(
       (args: { data: Partial<TestOrganization> }) =>
         Promise.resolve({ ...organization, ...args.data }),
@@ -681,6 +688,104 @@ describe('API (e2e)', () => {
         },
       ],
     });
+  });
+
+  it('POST /api/auth/register/check-email reports a taken address before registration', async () => {
+    const response = await request(app.getHttpServer())
+      .post('/api/auth/register/check-email')
+      .send({ email: 'Owner@Example.com' })
+      .expect(409);
+
+    expect(response.body).toEqual({
+      statusCode: 409,
+      errors: [
+        {
+          field: 'email',
+          message: 'Користувач з таким email уже існує.',
+        },
+      ],
+    });
+  });
+
+  it('POST /api/auth/register/check-email accepts a free address', async () => {
+    const response = await request(app.getHttpServer())
+      .post('/api/auth/register/check-email')
+      .send({ email: 'fresh-school@example.com' })
+      .expect(200);
+
+    expect(response.body).toEqual({ available: true });
+  });
+
+  it('POST /api/auth/register/check-email rejects an invalid address', async () => {
+    const response = await request(app.getHttpServer())
+      .post('/api/auth/register/check-email')
+      .send({ email: 'not-an-email' })
+      .expect(400);
+
+    expect(response.body).toEqual({
+      statusCode: 400,
+      errors: [{ field: 'email', message: 'Введіть коректний email.' }],
+    });
+  });
+
+  it('POST /api/auth/register/validate checks one field without the rest of the form', async () => {
+    const invalidPhone = await request(app.getHttpServer())
+      .post('/api/auth/register/validate')
+      .send({ phone: '123' })
+      .expect(400);
+
+    expect(invalidPhone.body).toEqual({
+      statusCode: 400,
+      errors: [
+        { field: 'phone', message: 'Введіть коректний номер телефону.' },
+      ],
+    });
+
+    const validPhone = await request(app.getHttpServer())
+      .post('/api/auth/register/validate')
+      .send({ phone: '+380991234567' })
+      .expect(200);
+
+    expect(validPhone.body).toEqual({ valid: true });
+  });
+
+  it('POST /api/auth/register/validate reports a taken email', async () => {
+    const response = await request(app.getHttpServer())
+      .post('/api/auth/register/validate')
+      .send({ email: 'owner@example.com' })
+      .expect(409);
+
+    expect(response.body).toEqual({
+      statusCode: 409,
+      errors: [
+        {
+          field: 'email',
+          message: 'Користувач з таким email уже існує.',
+        },
+      ],
+    });
+  });
+
+  it('OpenAPI documents registration field checks', async () => {
+    const response = await request(app.getHttpServer())
+      .get('/api/docs-json')
+      .expect(200);
+
+    const paths = (
+      response.body as {
+        paths: Record<string, { post?: { operationId?: string } }>;
+      }
+    ).paths;
+    const checkEmail =
+      paths['/api/auth/register/check-email'] ??
+      paths['/auth/register/check-email'];
+    const validateFields =
+      paths['/api/auth/register/validate'] ?? paths['/auth/register/validate'];
+
+    expect(checkEmail?.post?.operationId).toBe('checkRegistrationEmail');
+    expect(validateFields?.post?.operationId).toBe(
+      'validateRegistrationFields',
+    );
   });
 
   it('POST /api/auth/google without idToken returns 400', async () => {
