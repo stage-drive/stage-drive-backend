@@ -19,6 +19,7 @@
 Вхідний payload точно за специфікацією (`organizationName`, `firstName`, `lastName`, `email`, `phone?`, `password`, `passwordConfirmation`, `termsAccepted`). **Поля `role` немає навмисно** — CLAUDE.md вимагає, щоб роль неможливо було передати ззовні; спроба надіслати `role` у тілі запиту відхиляється на рівні `ValidationPipe` (`forbidNonWhitelisted`).
 
 Відповідь:
+
 ```json
 {
   "user": { "id", "firstName", "lastName", "email", "role", "status", "organizationId" },
@@ -41,22 +42,34 @@
 ### 4. Формат помилок валідації — [field-error.ts](../src/common/validation/field-error.ts)
 
 За замовчуванням Nest повертає помилки масивом рядків, без прив'язки до конкретного поля форми. Замінено на `exceptionFactory`, що перетворює помилки в:
+
 ```json
-{ "statusCode": 400, "errors": [{ "field": "email", "message": "Введіть коректний email." }] }
+{
+  "statusCode": 400,
+  "errors": [{ "field": "email", "message": "Введіть коректний email." }]
+}
 ```
+
 Це відповідає вимозі «На формі: …» — фронтенд може напряму мапити `field` на конкретний input.
 
 ### 5. Помилки реєстрації (REG-E01…E05)
 
-| Код | Умова | HTTP | Повідомлення |
-|---|---|---|---|
-| REG-E01 | email вже існує | 409 | «Користувач з таким email уже існує.» |
-| REG-E02 | некоректний email | 400 | «Введіть коректний email.» |
-| REG-E03 | паролі не співпадають | 400 | «Паролі не співпадають.» |
-| REG-E04 | не заповнене обов'язкове поле | 400 | «Заповніть обов'язкове поле.» |
-| REG-E05 | помилка створення OWNER | — | `Organization` і `User` створюються в одній `prisma.$transaction` — якщо `User.create` падає, `Organization` теж не зберігається (Prisma сама відкочує транзакцію) |
+| Код     | Умова                         | HTTP | Повідомлення                                                                                                                                                       |
+| ------- | ----------------------------- | ---- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| REG-E01 | email вже існує               | 409  | «Користувач з таким email уже існує.»                                                                                                                              |
+| REG-E02 | некоректний email             | 400  | «Введіть коректний email.»                                                                                                                                         |
+| REG-E03 | паролі не співпадають         | 400  | «Паролі не співпадають.»                                                                                                                                           |
+| REG-E04 | не заповнене обов'язкове поле | 400  | «Заповніть обов'язкове поле.»                                                                                                                                      |
+| REG-E05 | помилка створення OWNER       | —    | `Organization` і `User` створюються в одній `prisma.$transaction` — якщо `User.create` падає, `Organization` теж не зберігається (Prisma сама відкочує транзакцію) |
 
 REG-E01 виявляється через `P2002` (унікальне порушення на `email`) — [auth.service.ts](../src/modules/auth/auth.service.ts). У Prisma 7 з `@prisma/adapter-pg` назва поля-порушника лежить не в класичному `meta.target`, а в `meta.driverAdapterError.cause.constraint.fields` — `uniqueConstraintFields()` враховує обидва варіанти.
+
+Ті самі повідомлення можна отримати до натискання «Зареєструватись»:
+
+- `POST /api/auth/register/check-email` — формат і зайнятість email. Вільна адреса: `200 { "available": true }`. Зайнята: `409` з `errors: [{ field: "email", message }]`.
+- `POST /api/auth/register/validate` — будь-яка підмножина полів форми (`organizationName`, `firstName`, `lastName`, `email`, `phone`, `password`, `passwordConfirmation`, `termsAccepted`) тими самими правилами. Успіх: `200 { "valid": true }`. Якщо в тілі є `email`, додатково перевіряється зайнятість.
+
+Обидва запити без авторизації. Зайнятим вважається email користувача або автошколи, включно з видаленим записом.
 
 ### 6. `slug` організації — [slug.ts](../src/modules/auth/slug.ts)
 
@@ -65,6 +78,7 @@ REG-E01 виявляється через `P2002` (унікальне поруш
 ### 7. Токени — [token.ts](../src/modules/auth/token.ts)
 
 Раніше існував лише один тип токена. Додано розрізнення `type: 'access' | 'refresh'`, зашите у payload і перевірене при верифікації:
+
 - `accessToken` — TTL 7 днів (без змін), перевіряється `AuthGuard` для захищених ендпоінтів.
 - `refreshToken` — TTL 30 днів, поки виключно повертається клієнту; ендпоінта `/auth/refresh` для його обміну ще немає.
 

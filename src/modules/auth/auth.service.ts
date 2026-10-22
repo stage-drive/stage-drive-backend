@@ -1,4 +1,5 @@
 import {
+  BadRequestException,
   ConflictException,
   Injectable,
   UnauthorizedException,
@@ -12,14 +13,35 @@ import {
   INVALID_CREDENTIALS_MESSAGE,
 } from './auth-access';
 import { toAuthSession } from './auth-session';
-import { RegisterDto } from './auth.dto';
+import { RegisterDto, ValidateRegistrationFieldsDto } from './auth.dto';
 import { RefreshTokenService } from './refresh-token.service';
 import { randomSlugSuffix, slugify } from './slug';
 import { signAccessToken } from './token';
 
 const BCRYPT_ROUNDS = 10;
 const MAX_SLUG_ATTEMPTS = 5;
-const EMAIL_ALREADY_EXISTS_MESSAGE = 'Користувач з таким email уже існує.';
+export const EMAIL_ALREADY_EXISTS_MESSAGE =
+  'Користувач з таким email уже існує.';
+const REGISTRATION_CHECK_REQUIRED_MESSAGE =
+  'Передайте хоча б одне поле для перевірки.';
+
+const REGISTRATION_CHECK_FIELDS = [
+  'organizationName',
+  'firstName',
+  'lastName',
+  'email',
+  'phone',
+  'password',
+  'passwordConfirmation',
+  'termsAccepted',
+] as const;
+
+function emailAlreadyExists(): ConflictException {
+  return new ConflictException({
+    statusCode: 409,
+    errors: [{ field: 'email', message: EMAIL_ALREADY_EXISTS_MESSAGE }],
+  });
+}
 
 export type CreateOwnerInput = {
   organizationName: string;
@@ -120,10 +142,7 @@ export class AuthService {
         });
       } catch (error) {
         if (isUniqueConstraintOn(error, 'email')) {
-          throw new ConflictException({
-            statusCode: 409,
-            errors: [{ field: 'email', message: EMAIL_ALREADY_EXISTS_MESSAGE }],
-          });
+          throw emailAlreadyExists();
         }
         if (
           isUniqueConstraintOn(error, 'slug') &&
@@ -147,5 +166,45 @@ export class AuthService {
       passwordHash,
     });
     return toAuthSession(user, this.refreshTokenService);
+  }
+
+  async assertEmailAvailable(email: string): Promise<void> {
+    const normalized = email.trim().toLowerCase();
+    // Реєстрація записує той самий email і користувачу, і автошколі.
+    // deletedAt не відсікаємо: унікальний індекс зайнятий і після видалення.
+    const [user, organization] = await Promise.all([
+      this.prisma.user.findUnique({
+        where: { email: normalized },
+        select: { id: true },
+      }),
+      this.prisma.organization.findUnique({
+        where: { email: normalized },
+        select: { id: true },
+      }),
+    ]);
+
+    if (user || organization) {
+      throw emailAlreadyExists();
+    }
+  }
+
+  async validateRegistrationFields(fields: ValidateRegistrationFieldsDto) {
+    const hasField = REGISTRATION_CHECK_FIELDS.some(
+      (field) => fields[field] !== undefined,
+    );
+    if (!hasField) {
+      throw new BadRequestException({
+        statusCode: 400,
+        errors: [
+          { field: 'body', message: REGISTRATION_CHECK_REQUIRED_MESSAGE },
+        ],
+      });
+    }
+
+    if (fields.email !== undefined) {
+      await this.assertEmailAvailable(fields.email);
+    }
+
+    return { valid: true };
   }
 }
