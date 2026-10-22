@@ -438,6 +438,7 @@ model Car {
   createdAt      DateTime        @default(now()) @map("created_at")
   updatedAt      DateTime        @updatedAt @map("updated_at")
   students       Student[]
+  drivingLessons DrivingLesson[]
 
   @@unique([organizationId, plateNumber])
   @@index([organizationId])
@@ -469,6 +470,7 @@ model Lesson {
   durationMin Int          @default(90) @map("duration_min")
   status      LessonStatus @default(SCHEDULED)
   createdAt   DateTime     @default(now()) @map("created_at")
+  updatedAt   DateTime     @default(now()) @updatedAt @map("updated_at")
 
   @@index([groupId])
   @@index([scheduledAt])
@@ -483,14 +485,19 @@ model DrivingLesson {
   instructor     User                @relation("InstructorDrivingLessons", fields: [instructorId], references: [id], onDelete: Cascade)
   studentId      String              @map("student_id") @db.Uuid
   student        User                @relation("StudentDrivingLessons", fields: [studentId], references: [id], onDelete: Cascade)
+  /// Авто заняття. null лише для старих занять студентів без авто.
+  carId          String?             @map("car_id") @db.Uuid
+  car            Car?                @relation(fields: [carId], references: [id], onDelete: SetNull)
   scheduledAt    DateTime            @map("scheduled_at")
   durationMin    Int                 @default(60) @map("duration_min")
   status         DrivingLessonStatus @default(SCHEDULED)
   createdAt      DateTime            @default(now()) @map("created_at")
+  updatedAt      DateTime            @default(now()) @updatedAt @map("updated_at")
 
   @@index([organizationId])
   @@index([instructorId])
   @@index([studentId])
+  @@index([carId])
   @@index([scheduledAt])
   @@map("driving_lessons")
 }
