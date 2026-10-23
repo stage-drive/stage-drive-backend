@@ -404,9 +404,7 @@ describe('GoogleAuthService', () => {
   it('rejects a callback without an authorization code', async () => {
     seedPending();
 
-    await expect(
-      service.complete({ state: 'state-1' }),
-    ).rejects.toMatchObject({
+    await expect(service.complete({ state: 'state-1' })).rejects.toMatchObject({
       status: 401,
       message: expect.stringContaining('authorization code'),
     });

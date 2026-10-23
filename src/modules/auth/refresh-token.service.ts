@@ -20,7 +20,10 @@ export class RefreshTokenService {
     return createHash('sha256').update(token).digest('hex');
   }
 
-  async issue(userId: string, familyId: string = randomUUID()): Promise<string> {
+  async issue(
+    userId: string,
+    familyId: string = randomUUID(),
+  ): Promise<string> {
     const token = randomBytes(48).toString('base64url');
     await this.prisma.refreshToken.create({
       data: {

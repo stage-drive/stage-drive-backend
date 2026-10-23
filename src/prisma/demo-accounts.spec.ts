@@ -52,7 +52,7 @@ describe('ensureDemoAccountsIfEnabled', () => {
     const db = createDb();
 
     await expect(
-      ensureDemoAccountsIfEnabled(db, {
+      ensureDemoAccountsIfEnabled(asPrisma(db), {
         NODE_ENV: 'production',
         SEED_DEMO_USERS: 'true',
       }),
@@ -67,7 +67,7 @@ describe('provisionDemoAccounts', () => {
   it('upserts the four role logins and a student profile', async () => {
     const db = createDb();
 
-    await expect(provisionDemoAccounts(db)).resolves.toEqual([
+    await expect(provisionDemoAccounts(asPrisma(db))).resolves.toEqual([
       'admin@example.com',
       'teacher@example.com',
       'instructor@example.com',
@@ -106,7 +106,7 @@ describe('provisionDemoAccounts', () => {
     });
     db.student.findUnique.mockResolvedValue({ id: 'existing-profile' });
 
-    await provisionDemoAccounts(db);
+    await provisionDemoAccounts(asPrisma(db));
 
     expect(db.organization.create).not.toHaveBeenCalled();
     expect(db.organization.update).not.toHaveBeenCalled();
@@ -116,7 +116,7 @@ describe('provisionDemoAccounts', () => {
   it('restores a demo login whose email was changed, by its fixed id', async () => {
     const db = createDb();
 
-    await provisionDemoAccounts(db);
+    await provisionDemoAccounts(asPrisma(db));
 
     const admin = db.user.upsert.mock.calls[0][0];
     expect(admin.where).toEqual({ id: '66666666-6666-6666-6666-666666666666' });
@@ -131,7 +131,7 @@ describe('provisionDemoAccounts', () => {
       ),
     );
 
-    await provisionDemoAccounts(db);
+    await provisionDemoAccounts(asPrisma(db));
 
     expect(db.user.upsert.mock.calls[0][0].where).toEqual({
       id: 'legacy-admin',
@@ -179,14 +179,13 @@ function createDb() {
     car: {
       upsert: jest.fn().mockResolvedValue({ id: 'car' }),
     },
-  } as unknown as PrismaClient & {
-    organization: {
-      findUnique: jest.Mock;
-      create: jest.Mock;
-      update: jest.Mock;
-    };
-    user: { findUnique: jest.Mock; upsert: jest.Mock; findFirst: jest.Mock };
-    student: { findUnique: jest.Mock; create: jest.Mock };
-    car: { upsert: jest.Mock };
   };
+}
+
+/**
+ * The code under test wants a PrismaClient; assertions go through the plain
+ * jest.fn() mocks, so they are not unbound PrismaClient methods.
+ */
+function asPrisma(db: ReturnType<typeof createDb>): PrismaClient {
+  return db as unknown as PrismaClient;
 }

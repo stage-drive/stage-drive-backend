@@ -27,7 +27,8 @@ export function assertActiveUser(user: {
   deletedAt?: Date | null;
   organization?: { status: OrganizationStatus } | null;
 }): void {
-  if (user.deletedAt || 
+  if (
+    user.deletedAt ||
     user.status !== UserStatus.ACTIVE ||
     user.organization?.status === OrganizationStatus.BLOCKED
   ) {

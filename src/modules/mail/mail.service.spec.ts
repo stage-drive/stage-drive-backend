@@ -6,6 +6,7 @@ import { SendMailDto } from './dto/send-mail.dto';
 describe('MailService', () => {
   let service: MailService;
   let mailerService: { sendMail: jest.Mock };
+  let loggerError: jest.SpyInstance;
 
   const dto: SendMailDto = {
     to: 'student@example.com',
@@ -16,7 +17,9 @@ describe('MailService', () => {
   beforeEach(() => {
     mailerService = { sendMail: jest.fn().mockResolvedValue(undefined) };
     service = new MailService(mailerService as unknown as MailerService);
-    jest.spyOn(Logger.prototype, 'error').mockImplementation(() => undefined);
+    loggerError = jest
+      .spyOn(Logger.prototype, 'error')
+      .mockImplementation(() => undefined);
   });
 
   afterEach(() => {
@@ -61,7 +64,7 @@ describe('MailService', () => {
       InternalServerErrorException,
     );
 
-    expect(Logger.prototype.error).toHaveBeenCalledWith(
+    expect(loggerError).toHaveBeenCalledWith(
       expect.stringContaining(dto.to),
       error.stack,
     );

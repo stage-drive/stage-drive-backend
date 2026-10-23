@@ -7,6 +7,7 @@ import { ROLES_KEY } from '../auth/roles.decorator';
 import { RolesGuard } from '../auth/roles.guard';
 import { LessonsController } from './lessons.controller';
 import { LessonsService } from './lessons.service';
+import { PersonalScheduleService } from './personal-schedule.service';
 
 describe('LessonsController', () => {
   it('applies AuthGuard and RolesGuard to the whole controller', () => {
@@ -23,6 +24,10 @@ describe('LessonsController', () => {
     ['reschedulePractice', [UserRole.ADMIN, UserRole.INSTRUCTOR]],
     ['cancelTheory', [UserRole.ADMIN, UserRole.TEACHER]],
     ['cancelPractice', [UserRole.ADMIN, UserRole.INSTRUCTOR]],
+    [
+      'getMySchedule',
+      [UserRole.TEACHER, UserRole.INSTRUCTOR, UserRole.STUDENT],
+    ],
   ] as const)('restricts %s to %j', (method, expected) => {
     const roles = new Reflector().get<UserRole[]>(
       ROLES_KEY,
@@ -58,8 +63,12 @@ describe('LessonsController', () => {
       cancelTheory: jest.fn().mockResolvedValue(response),
       cancelPractice: jest.fn().mockResolvedValue(response),
     };
+    const personalScheduleService = {
+      getMySchedule: jest.fn().mockResolvedValue(response),
+    };
     const controller = new LessonsController(
       lessonsService as unknown as LessonsService,
+      personalScheduleService as unknown as PersonalScheduleService,
     );
 
     it.each([
@@ -78,5 +87,17 @@ describe('LessonsController', () => {
         expect(lessonsService[method]).toHaveBeenCalledWith(user, id, body);
       },
     );
+
+    it('getMySchedule passes the current user and query to the schedule service', async () => {
+      const query = { from: '2026-11-02T00:00:00Z', type: 'THEORY' as const };
+
+      await expect(
+        controller.getMySchedule(user as never, query),
+      ).resolves.toBe(response);
+      expect(personalScheduleService.getMySchedule).toHaveBeenCalledWith(
+        user,
+        query,
+      );
+    });
   });
 });

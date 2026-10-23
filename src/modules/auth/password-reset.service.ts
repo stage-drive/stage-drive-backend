@@ -92,9 +92,7 @@ export class PasswordResetService {
         passwordHash,
         tokensInvalidBefore: new Date(),
         status:
-          user.status === UserStatus.INVITED
-            ? UserStatus.ACTIVE
-            : user.status,
+          user.status === UserStatus.INVITED ? UserStatus.ACTIVE : user.status,
       },
     });
 

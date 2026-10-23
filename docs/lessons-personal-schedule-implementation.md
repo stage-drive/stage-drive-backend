@@ -596,7 +596,11 @@ export class PersonalScheduleService {
 }
 ```
 
-- `AND` замість злиття ключів: у гілці `STUDENT` є власний `scheduledAt`, і `AND` не дає йому перетерти вікно.
+- `AND` замість spread (`{ ...scope, scheduledAt }`): spread мовчки перетирає однойменний ключ верхнього рівня. Зараз
+  колізії немає (`scheduledAt` гілки `STUDENT` всередині `OR`), але щойно в scope з'явиться `status` чи `scheduledAt`
+  на верхньому рівні, spread зламає фільтр без жодної помилки. `AND` нічого не перетирає.
+- У реалізації запити винесено в `findTheory` / `findPractice` (`null` → `[]` без запиту в БД, явний тип
+  результату), а `timing` додає `withTiming`.
 - `candidateWindow` повертає `{ gt: from − 240 хв, lt: to }`; точний перетин рахує `overlaps`. Вікно точне завдяки
   `CHECK` на `duration_min`, як у пошуку конфліктів.
 

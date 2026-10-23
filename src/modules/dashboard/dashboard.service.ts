@@ -9,7 +9,13 @@ import {
   UserStatus,
 } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
-import { AdminDashboardDto, InstructorDashboardDto, OwnerDashboardDto, StudentDashboardDto, TeacherDashboardDto } from './dashboard.dto';
+import {
+  AdminDashboardDto,
+  InstructorDashboardDto,
+  OwnerDashboardDto,
+  StudentDashboardDto,
+  TeacherDashboardDto,
+} from './dashboard.dto';
 
 const USER_ROLES = Object.values(UserRole);
 const USER_STATUSES = Object.values(UserStatus);
@@ -145,17 +151,25 @@ export class DashboardService {
 
     const [groups, upcomingLessons, distinctStudents] = await Promise.all([
       this.prisma.group.findMany({
-        where: { teacherId: teacher.id, organizationId: teacher.organizationId },
+        where: {
+          teacherId: teacher.id,
+          organizationId: teacher.organizationId,
+        },
         include: {
           _count: {
-            select: { enrollments: { where: { status: EnrollmentStatus.ACTIVE } } },
+            select: {
+              enrollments: { where: { status: EnrollmentStatus.ACTIVE } },
+            },
           },
         },
         orderBy: { createdAt: 'asc' },
       }),
       this.prisma.lesson.findMany({
         where: {
-          group: { teacherId: teacher.id, organizationId: teacher.organizationId },
+          group: {
+            teacherId: teacher.id,
+            organizationId: teacher.organizationId,
+          },
           scheduledAt: { gte: now },
           status: LessonStatus.SCHEDULED,
         },
@@ -166,7 +180,10 @@ export class DashboardService {
       this.prisma.enrollment.findMany({
         where: {
           status: EnrollmentStatus.ACTIVE,
-          group: { teacherId: teacher.id, organizationId: teacher.organizationId },
+          group: {
+            teacherId: teacher.id,
+            organizationId: teacher.organizationId,
+          },
         },
         select: { studentId: true },
         distinct: ['studentId'],
@@ -278,8 +295,12 @@ export class DashboardService {
     };
   }
 
-  async getInstructorDashboard(instructor: User): Promise<InstructorDashboardDto> {
-    const organization = await this.requireOrganization(instructor.organizationId);
+  async getInstructorDashboard(
+    instructor: User,
+  ): Promise<InstructorDashboardDto> {
+    const organization = await this.requireOrganization(
+      instructor.organizationId,
+    );
     const now = new Date();
 
     const [upcomingLessons, distinctStudents] = await Promise.all([

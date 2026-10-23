@@ -258,7 +258,8 @@ export class CarsController {
   })
   @ApiOkResponse({ type: CarListItemDto })
   @ApiForbiddenResponse({
-    description: 'Призначати автомобіль інструктору можуть лише OWNER або ADMIN.',
+    description:
+      'Призначати автомобіль інструктору можуть лише OWNER або ADMIN.',
   })
   @ApiBadRequestResponse({
     description:
