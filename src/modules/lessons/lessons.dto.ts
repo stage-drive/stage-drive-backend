@@ -37,6 +37,10 @@ export const LESSON_TOPIC_MAX_LENGTH = 200;
 /** Збігається з VarChar(500) колонки cancellation_reason. */
 export const CANCELLATION_REASON_MAX_LENGTH = 500;
 
+/** Збігаються з @default у колонках duration_min. */
+export const THEORY_DEFAULT_DURATION_MIN = 90;
+export const PRACTICE_DEFAULT_DURATION_MIN = 60;
+
 export const REQUIRED_FIELD_MESSAGE = "Заповніть обов'язкове поле.";
 export const LESSON_TOPIC_LENGTH_MESSAGE = `Тема має містити не більше ${LESSON_TOPIC_MAX_LENGTH} символів.`;
 export const CANCELLATION_REASON_LENGTH_MESSAGE = `Причина має містити не більше ${CANCELLATION_REASON_MAX_LENGTH} символів.`;
@@ -116,6 +120,16 @@ function IsLessonDuration() {
   );
 }
 
+/** Обов'язковий початок заняття: ISO 8601 з часовим зсувом. */
+function IsScheduledAt() {
+  return applyDecorators(
+    IsISO8601({ strict: true }, { message: SCHEDULED_AT_FORMAT_MESSAGE }),
+    Matches(ZONED_DATE_TIME_PATTERN, { message: SCHEDULED_AT_FORMAT_MESSAGE }),
+    IsString({ message: SCHEDULED_AT_FORMAT_MESSAGE }),
+    IsDefined({ message: REQUIRED_FIELD_MESSAGE }),
+  );
+}
+
 export class UpdateTheoryLessonDto {
   @ApiPropertyOptional({
     example: 'Дорожні знаки: попереджувальні',
@@ -179,10 +193,7 @@ export class RescheduleLessonDto {
       'Новий початок заняття, ISO 8601 з часовим зсувом (Z або ±HH:MM). ' +
       'Щоб змінити лише дату, надішліть новий момент з тим самим місцевим часом у часовому поясі автошколи.',
   })
-  @IsISO8601({ strict: true }, { message: SCHEDULED_AT_FORMAT_MESSAGE })
-  @Matches(ZONED_DATE_TIME_PATTERN, { message: SCHEDULED_AT_FORMAT_MESSAGE })
-  @IsString({ message: SCHEDULED_AT_FORMAT_MESSAGE })
-  @IsDefined({ message: REQUIRED_FIELD_MESSAGE })
+  @IsScheduledAt()
   scheduledAt: string;
 
   @ApiPropertyOptional({
@@ -499,4 +510,97 @@ export class LessonScheduleConflictResponseDto {
 
   @ApiProperty({ type: [LessonConflictDto] })
   conflicts: LessonConflictDto[];
+}
+
+export class CreateTheoryLessonDto {
+  @ApiProperty({
+    format: 'uuid',
+    example: '4c21a0b0-0000-4000-8000-000000000000',
+    description:
+      'Група своєї автошколи зі статусом PLANNED або ACTIVE. Викладач заняття — викладач групи.',
+  })
+  @IsUUID('4', { message: 'groupId має бути UUID.' })
+  @IsDefined({ message: REQUIRED_FIELD_MESSAGE })
+  groupId: string;
+
+  @ApiProperty({
+    example: 'Дорожні знаки',
+    maxLength: LESSON_TOPIC_MAX_LENGTH,
+    description: 'Пробіли по краях обрізаються.',
+  })
+  @Transform(trimString)
+  @IsPlainText()
+  @MaxLength(LESSON_TOPIC_MAX_LENGTH, { message: LESSON_TOPIC_LENGTH_MESSAGE })
+  @IsNotEmpty({ message: REQUIRED_FIELD_MESSAGE })
+  @IsString({ message: 'topic має бути рядком.' })
+  @IsDefined({ message: REQUIRED_FIELD_MESSAGE })
+  topic: string;
+
+  @ApiProperty({
+    format: 'date-time',
+    example: '2026-11-03T18:00:00+02:00',
+    description:
+      'Початок заняття, ISO 8601 з часовим зсувом (Z або ±HH:MM). Має бути в майбутньому і в межах дат групи.',
+  })
+  @IsScheduledAt()
+  scheduledAt: string;
+
+  @ApiPropertyOptional({
+    example: THEORY_DEFAULT_DURATION_MIN,
+    default: THEORY_DEFAULT_DURATION_MIN,
+    minimum: LESSON_MIN_DURATION_MIN,
+    maximum: LESSON_MAX_DURATION_MIN,
+    description: DURATION_DESCRIPTION,
+  })
+  @IsLessonDuration()
+  durationMin?: number;
+}
+
+export class CreatePracticeLessonDto {
+  @ApiProperty({
+    format: 'uuid',
+    example: '77aa0000-0000-4000-8000-000000000000',
+    description: 'Студент своєї автошколи з допуском до практики (PRACTICE).',
+  })
+  @IsUUID('4', { message: 'studentId має бути UUID.' })
+  @IsDefined({ message: REQUIRED_FIELD_MESSAGE })
+  studentId: string;
+
+  @ApiProperty({
+    format: 'date-time',
+    example: '2026-11-03T10:00:00+02:00',
+    description:
+      'Початок заняття, ISO 8601 з часовим зсувом (Z або ±HH:MM). Має бути в майбутньому.',
+  })
+  @IsScheduledAt()
+  scheduledAt: string;
+
+  @ApiPropertyOptional({
+    example: PRACTICE_DEFAULT_DURATION_MIN,
+    default: PRACTICE_DEFAULT_DURATION_MIN,
+    minimum: LESSON_MIN_DURATION_MIN,
+    maximum: LESSON_MAX_DURATION_MIN,
+    description: DURATION_DESCRIPTION,
+  })
+  @IsLessonDuration()
+  durationMin?: number;
+
+  @ApiPropertyOptional({
+    format: 'uuid',
+    description:
+      'Інструктор заняття. За замовчуванням — інструктор, призначений студенту. INSTRUCTOR може передати лише свій id.',
+  })
+  @ValidateIf((_, value) => value !== undefined)
+  @IsUUID('4', { message: 'instructorId має бути UUID.' })
+  instructorId?: string;
+
+  @ApiPropertyOptional({
+    format: 'uuid',
+    description:
+      'Авто заняття: AVAILABLE, призначене інструктору заняття, з категорією й коробкою як у студента. ' +
+      'За замовчуванням — авто, призначене студенту.',
+  })
+  @ValidateIf((_, value) => value !== undefined)
+  @IsUUID('4', { message: 'carId має бути UUID.' })
+  carId?: string;
 }

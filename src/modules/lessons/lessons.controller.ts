@@ -15,6 +15,7 @@ import {
   ApiBadRequestResponse,
   ApiBearerAuth,
   ApiConflictResponse,
+  ApiCreatedResponse,
   ApiForbiddenResponse,
   ApiNotFoundResponse,
   ApiOkResponse,
@@ -30,6 +31,8 @@ import { Roles } from '../auth/roles.decorator';
 import { RolesGuard } from '../auth/roles.guard';
 import {
   CancelLessonDto,
+  CreatePracticeLessonDto,
+  CreateTheoryLessonDto,
   LESSON_MAX_DURATION_MIN,
   LESSON_MIN_DURATION_MIN,
   LessonScheduleConflictResponseDto,
@@ -81,6 +84,17 @@ const PRACTICE_CHECKS =
   'Перевіряється: інструктор ACTIVE і не зайнятий, авто AVAILABLE, призначене інструктору, ' +
   'з категорією й коробкою як у студента, і не зайняте, студент у статусі PRACTICE без іншої практики ' +
   'чи теорії своєї групи в цей час.';
+
+const CREATE_RULES =
+  `Тривалість — ціле число хвилин від ${LESSON_MIN_DURATION_MIN} до ${LESSON_MAX_DURATION_MIN}. ` +
+  'Заняття створюється зі статусом SCHEDULED і має починатися в майбутньому. ' +
+  'Інтервали напіввідкриті: заняття впритул одне до одного не конфліктують. ' +
+  'Конфлікт повертає 409 з переліком усіх занять, з якими перетинається час.';
+
+const CREATE_CONFLICT_DESCRIPTION =
+  'Група закрита, ресурс недоступний (викладач, студент, інструктор, авто), студенту не призначено ' +
+  'інструктора чи авто, або час конфліктує з іншими заняттями ' +
+  '(тіло з conflicts: [{ resource, resourceId, lessonType, lessonId, scheduledAt, endsAt }]).';
 
 const LESSON_CONFLICT_DESCRIPTION =
   'Заняття не SCHEDULED (тіло з currentStatus), група закрита, заняття вже почалося, ' +
@@ -134,6 +148,73 @@ export class LessonsController {
     @Query() query: PersonalScheduleQueryDto,
   ): Promise<PersonalScheduleDto> {
     return this.personalScheduleService.getMySchedule(user, query);
+  }
+
+  @Post('theory')
+  @HttpCode(HttpStatus.CREATED)
+  @Roles(...THEORY_LESSON_EDIT_ROLES)
+  @ApiOperation({
+    summary: 'Створити теоретичне заняття',
+    description:
+      'ADMIN або викладач групи створює заняття групи своєї автошколи. Викладач заняття — викладач групи. ' +
+      `${CREATE_RULES} ${THEORY_CHECKS}`,
+  })
+  @ApiCreatedResponse({ type: TheoryLessonDto })
+  @ApiBadRequestResponse({
+    description:
+      'Некоректне тіло, зайве поле, scheduledAt без зсуву чи в минулому, або день заняття поза датами групи. ' +
+      'Тіло містить errors: [{ field, message }].',
+  })
+  @ApiForbiddenResponse({
+    description:
+      'Роль не ADMIN чи TEACHER, або викладач створює заняття чужої групи.',
+  })
+  @ApiNotFoundResponse({
+    description: 'Групу не знайдено або вона належить іншій автошколі.',
+  })
+  @ApiConflictResponse({
+    type: LessonScheduleConflictResponseDto,
+    description: CREATE_CONFLICT_DESCRIPTION,
+  })
+  createTheory(
+    @CurrentUser() user: User,
+    @Body() body: CreateTheoryLessonDto,
+  ): Promise<TheoryLessonDto> {
+    return this.lessonsService.createTheory(user, body);
+  }
+
+  @Post('practice')
+  @HttpCode(HttpStatus.CREATED)
+  @Roles(...PRACTICE_LESSON_EDIT_ROLES)
+  @ApiOperation({
+    summary: 'Створити практичне заняття',
+    description:
+      'ADMIN створює заняття будь-якому студенту своєї автошколи; інструктор — лише для себе і лише своєму студенту. ' +
+      'Без instructorId і carId беруться інструктор і авто, призначені студенту під час допуску до практики. ' +
+      `${CREATE_RULES} ${PRACTICE_CHECKS}`,
+  })
+  @ApiCreatedResponse({ type: PracticeLessonDto })
+  @ApiBadRequestResponse({
+    description:
+      'Некоректне тіло, зайве поле, або scheduledAt без зсуву чи в минулому. Тіло містить errors: [{ field, message }].',
+  })
+  @ApiForbiddenResponse({
+    description:
+      'Роль не ADMIN чи INSTRUCTOR, інструктор передав чужий instructorId або створює заняття не своєму студенту.',
+  })
+  @ApiNotFoundResponse({
+    description:
+      'Студента, інструктора чи авто не знайдено, або вони належать іншій автошколі.',
+  })
+  @ApiConflictResponse({
+    type: LessonScheduleConflictResponseDto,
+    description: CREATE_CONFLICT_DESCRIPTION,
+  })
+  createPractice(
+    @CurrentUser() user: User,
+    @Body() body: CreatePracticeLessonDto,
+  ): Promise<PracticeLessonDto> {
+    return this.lessonsService.createPractice(user, body);
   }
 
   @Patch('theory/:id')

@@ -34,9 +34,11 @@ import {
   INSTRUCTOR_NOT_FOUND_MESSAGE,
   INSTRUCTOR_ROLE_MESSAGE,
 } from '../cars/cars.service';
+import { GROUP_NOT_FOUND_MESSAGE } from '../groups/groups.service';
 import {
   CAR_NOT_AVAILABLE_MESSAGE,
   INSTRUCTOR_CAR_MISMATCH_MESSAGE,
+  STUDENT_NOT_FOUND_MESSAGE,
 } from '../students/students.service';
 import {
   lessonPersonSelect,
@@ -45,13 +47,18 @@ import {
 } from './lesson-view';
 import {
   CancelLessonDto,
+  CreatePracticeLessonDto,
+  CreateTheoryLessonDto,
+  PRACTICE_DEFAULT_DURATION_MIN,
   PracticeLessonDto,
   RescheduleLessonDto,
+  THEORY_DEFAULT_DURATION_MIN,
   TheoryLessonDto,
   UpdatePracticeLessonDto,
   UpdateTheoryLessonDto,
 } from './lessons.dto';
 import {
+  ScheduleSlot,
   findPracticeConflicts,
   findTheoryConflicts,
   lessonSlot,
@@ -95,11 +102,34 @@ export const LESSON_NOT_CANCELLABLE_MESSAGE =
   'Скасувати можна лише заняття зі статусом SCHEDULED.';
 export const LESSON_CANCEL_STARTED_MESSAGE =
   'Скасувати можна лише заняття, яке ще не почалося.';
+export const LESSON_CREATE_IN_PAST_MESSAGE =
+  'Заняття можна створити лише на майбутній час.';
+export const LESSON_GROUP_NOT_OPEN_MESSAGE =
+  'Заняття можна створити лише для групи зі статусом PLANNED або ACTIVE.';
+export const PRACTICE_INSTRUCTOR_REQUIRED_MESSAGE =
+  'Студенту не призначено інструктора. Передайте instructorId.';
+export const LESSON_INSTRUCTOR_ASSIGN_MESSAGE =
+  'Інструктор може створити заняття лише для себе.';
+export const STUDENT_NOT_ASSIGNED_MESSAGE =
+  'Інструктор може створити заняття лише для свого студента.';
 
 const OPEN_GROUP_STATUSES: GroupStatus[] = [
   GroupStatus.PLANNED,
   GroupStatus.ACTIVE,
 ];
+
+/** Група заняття з полями, потрібними перевіркам розкладу теорії. */
+const lessonGroupSelect = {
+  id: true,
+  name: true,
+  status: true,
+  teacherId: true,
+  startDate: true,
+  endDate: true,
+  teacher: {
+    select: { ...lessonPersonSelect, status: true, deletedAt: true },
+  },
+} satisfies Prisma.GroupSelect;
 
 /** Надмножина theoryLessonViewSelect: решта полів потрібна перевіркам запису. */
 const theoryLessonSelect = {
@@ -112,23 +142,31 @@ const theoryLessonSelect = {
   cancelledAt: true,
   cancellationReason: true,
   updatedAt: true,
-  group: {
-    select: {
-      id: true,
-      name: true,
-      status: true,
-      teacherId: true,
-      startDate: true,
-      endDate: true,
-      teacher: {
-        select: { ...lessonPersonSelect, status: true, deletedAt: true },
-      },
-    },
-  },
+  group: { select: lessonGroupSelect },
 } satisfies Prisma.LessonSelect;
 
 type TheoryLessonRow = Prisma.LessonGetPayload<{
   select: typeof theoryLessonSelect;
+}>;
+
+/** Студент практики з профілем: допуск, категорія, коробка, призначені інструктор і авто. */
+const practiceStudentSelect = {
+  ...lessonPersonSelect,
+  status: true,
+  deletedAt: true,
+  studentProfile: {
+    select: {
+      trainingStatus: true,
+      category: true,
+      transmission: true,
+      instructorId: true,
+      carId: true,
+    },
+  },
+} satisfies Prisma.UserSelect;
+
+type PracticeStudentRow = Prisma.UserGetPayload<{
+  select: typeof practiceStudentSelect;
 }>;
 
 /** Надмножина practiceLessonViewSelect: решта полів потрібна перевіркам запису. */
@@ -151,21 +189,7 @@ const practiceLessonSelect = {
       deletedAt: true,
     },
   },
-  student: {
-    select: {
-      ...lessonPersonSelect,
-      status: true,
-      deletedAt: true,
-      studentProfile: {
-        select: {
-          trainingStatus: true,
-          category: true,
-          transmission: true,
-          carId: true,
-        },
-      },
-    },
-  },
+  student: { select: practiceStudentSelect },
   car: {
     select: { id: true, plateNumber: true, category: true, transmission: true },
   },
@@ -256,6 +280,13 @@ function assertNotStarted(scheduledAt: Date, now: Date): void {
   }
 }
 
+/** Нове заняття створюється лише в майбутньому; перевірка не потребує БД. */
+function assertCreatableAt(scheduledAt: Date, now: Date): void {
+  if (scheduledAt.getTime() <= now.getTime()) {
+    throw fieldError('scheduledAt', LESSON_CREATE_IN_PAST_MESSAGE);
+  }
+}
+
 /** Місцева дата у форматі YYYY-MM-DD (en-CA). */
 function localDate(instant: Date, timeZone: string): string {
   return new Intl.DateTimeFormat('en-CA', {
@@ -307,7 +338,7 @@ function assertInstructorActive(instructor: {
  * isEligibleForPractice у students його приймає: там перевіряється право
  * отримати допуск.
  */
-function requirePracticeProfile(student: PracticeLessonRow['student']) {
+function requirePracticeProfile(student: PracticeStudentRow) {
   const profile = student.studentProfile;
   if (
     student.deletedAt ||
@@ -325,6 +356,151 @@ export class LessonsService {
   private readonly logger = new Logger(LessonsService.name);
 
   constructor(private readonly prisma: PrismaService) {}
+
+  /**
+   * Нове теоретичне заняття групи. Викладач заняття — викладач групи. Порядок
+   * блокувань той самий, що в changeTheory: група (FOR SHARE) → advisory-ключі.
+   */
+  async createTheory(
+    actor: User,
+    payload: CreateTheoryLessonDto,
+  ): Promise<TheoryLessonDto> {
+    assertCanEditTheory(actor);
+    const scheduledAt = new Date(payload.scheduledAt);
+    const durationMin = payload.durationMin ?? THEORY_DEFAULT_DURATION_MIN;
+    assertCreatableAt(scheduledAt, new Date());
+    const organization = await this.requireOrganization(actor.organizationId);
+
+    const saved = await this.prisma.$transaction(async (tx) => {
+      // Закриття групи, що вже йде, завершиться раніше, і нижче ми побачимо
+      // закриту групу.
+      await lockGroup(tx, payload.groupId, actor.organizationId, 'share');
+      const group = await tx.group.findFirst({
+        where: { id: payload.groupId, organizationId: actor.organizationId },
+        select: lessonGroupSelect,
+      });
+      if (!group) {
+        throw new NotFoundException(GROUP_NOT_FOUND_MESSAGE);
+      }
+      if (actor.role === UserRole.TEACHER && group.teacherId !== actor.id) {
+        throw new ForbiddenException('Insufficient permissions');
+      }
+      if (!OPEN_GROUP_STATUSES.includes(group.status)) {
+        throw new ConflictException(LESSON_GROUP_NOT_OPEN_MESSAGE);
+      }
+      assertWithinGroupDates(scheduledAt, group, organization.timezone);
+      assertTeacherActive(group.teacher);
+
+      await this.assertTheorySlotFree(tx, actor, {
+        lessonId: null,
+        groupId: group.id,
+        teacherId: group.teacherId,
+        slot: lessonSlot(scheduledAt, durationMin),
+      });
+
+      return tx.lesson.create({
+        data: {
+          groupId: group.id,
+          topic: payload.topic,
+          scheduledAt,
+          durationMin,
+        },
+        select: theoryLessonSelect,
+      });
+    });
+
+    this.logger.log(
+      `Lesson created type=THEORY lessonId=${saved.id} groupId=${saved.groupId} scheduledAt=${saved.scheduledAt.toISOString()} durationMin=${saved.durationMin} actorId=${actor.id} organizationId=${actor.organizationId}`,
+    );
+    return toTheoryLessonDto(saved);
+  }
+
+  /**
+   * Нове практичне заняття студента. Інструктор і авто без явних id беруться з
+   * допуску студента до практики. INSTRUCTOR створює заняття лише для себе і
+   * лише своєму студенту. Рядка заняття ще немає, тож row-lock не береться.
+   */
+  async createPractice(
+    actor: User,
+    payload: CreatePracticeLessonDto,
+  ): Promise<PracticeLessonDto> {
+    assertCanEditPractice(actor);
+    const isInstructor = actor.role === UserRole.INSTRUCTOR;
+    if (
+      isInstructor &&
+      payload.instructorId !== undefined &&
+      payload.instructorId !== actor.id
+    ) {
+      throw new ForbiddenException(LESSON_INSTRUCTOR_ASSIGN_MESSAGE);
+    }
+    const scheduledAt = new Date(payload.scheduledAt);
+    const durationMin = payload.durationMin ?? PRACTICE_DEFAULT_DURATION_MIN;
+    assertCreatableAt(scheduledAt, new Date());
+    await this.requireOrganization(actor.organizationId);
+
+    const saved = await this.prisma.$transaction(async (tx) => {
+      const student = await tx.user.findFirst({
+        where: {
+          id: payload.studentId,
+          organizationId: actor.organizationId,
+          role: UserRole.STUDENT,
+          deletedAt: null,
+          studentProfile: { is: { organizationId: actor.organizationId } },
+        },
+        select: practiceStudentSelect,
+      });
+      if (!student) {
+        throw new NotFoundException(STUDENT_NOT_FOUND_MESSAGE);
+      }
+      if (isInstructor && student.studentProfile?.instructorId !== actor.id) {
+        throw new ForbiddenException(STUDENT_NOT_ASSIGNED_MESSAGE);
+      }
+      const profile = requirePracticeProfile(student);
+
+      const instructorId = isInstructor
+        ? actor.id
+        : (payload.instructorId ?? profile.instructorId);
+      if (!instructorId) {
+        throw new ConflictException(PRACTICE_INSTRUCTOR_REQUIRED_MESSAGE);
+      }
+      await this.requireInstructor(tx, actor.organizationId, instructorId);
+
+      const carId = payload.carId ?? profile.carId;
+      if (!carId) {
+        throw new ConflictException(PRACTICE_CAR_REQUIRED_MESSAGE);
+      }
+      await this.requirePracticeCar(tx, actor.organizationId, carId, {
+        instructorId,
+        category: profile.category,
+        transmission: profile.transmission,
+      });
+
+      await this.assertPracticeSlotFree(tx, actor, {
+        lessonId: null,
+        instructorId,
+        carId,
+        studentId: student.id,
+        slot: lessonSlot(scheduledAt, durationMin),
+      });
+
+      return tx.drivingLesson.create({
+        data: {
+          organizationId: actor.organizationId,
+          instructorId,
+          studentId: student.id,
+          carId,
+          scheduledAt,
+          durationMin,
+        },
+        select: practiceLessonSelect,
+      });
+    });
+
+    this.logger.log(
+      `Lesson created type=PRACTICE lessonId=${saved.id} instructorId=${saved.instructorId} studentId=${saved.studentId} carId=${saved.carId} scheduledAt=${saved.scheduledAt.toISOString()} durationMin=${saved.durationMin} actorId=${actor.id} organizationId=${actor.organizationId}`,
+    );
+    return toPracticeLessonDto(saved);
+  }
 
   async updateTheory(
     actor: User,
@@ -513,23 +689,12 @@ export class LessonsService {
         );
         assertTeacherActive(lesson.group.teacher);
 
-        await lockScheduleResources(tx, [
-          scheduleLockKey('teacher', lesson.group.teacherId),
-          scheduleLockKey('group', lesson.groupId),
-        ]);
-        const conflicts = await findTheoryConflicts(tx, {
-          organizationId: actor.organizationId,
+        await this.assertTheorySlotFree(tx, actor, {
           lessonId: lesson.id,
           groupId: lesson.groupId,
           teacherId: lesson.group.teacherId,
           slot: lessonSlot(next.scheduledAt, next.durationMin),
         });
-        if (conflicts.length > 0) {
-          this.logger.log(
-            `Lesson schedule conflict type=THEORY lessonId=${lesson.id} conflicts=${conflicts.length} actorId=${actor.id} organizationId=${actor.organizationId}`,
-          );
-          throw scheduleConflict(conflicts);
-        }
       }
 
       const saved = await tx.lesson.update({
@@ -616,32 +781,13 @@ export class LessonsService {
         transmission: profile.transmission,
       });
 
-      // Спільний ключ group: серіалізує практику студента з теорією його групи.
-      const studentGroups = await tx.enrollment.findMany({
-        where: { studentId: lesson.studentId, status: EnrollmentStatus.ACTIVE },
-        select: { groupId: true },
-      });
-      await lockScheduleResources(tx, [
-        scheduleLockKey('instructor', next.instructorId),
-        scheduleLockKey('car', next.carId),
-        scheduleLockKey('student', lesson.studentId),
-        ...studentGroups.map((row) => scheduleLockKey('group', row.groupId)),
-      ]);
-
-      const conflicts = await findPracticeConflicts(tx, {
-        organizationId: actor.organizationId,
+      await this.assertPracticeSlotFree(tx, actor, {
         lessonId: lesson.id,
         instructorId: next.instructorId,
         carId: next.carId,
         studentId: lesson.studentId,
         slot: lessonSlot(next.scheduledAt, next.durationMin),
       });
-      if (conflicts.length > 0) {
-        this.logger.log(
-          `Lesson schedule conflict type=PRACTICE lessonId=${lesson.id} conflicts=${conflicts.length} actorId=${actor.id} organizationId=${actor.organizationId}`,
-        );
-        throw scheduleConflict(conflicts);
-      }
 
       const saved = await tx.drivingLesson.update({
         where: { id: lesson.id },
@@ -657,6 +803,74 @@ export class LessonsService {
       );
     }
     return toPracticeLessonDto(result.lesson);
+  }
+
+  /**
+   * Advisory-ключі викладача й групи → пошук конфліктів теорії. Викликається
+   * після всіх row-lock'ів транзакції. lessonId — null для нового заняття.
+   */
+  private async assertTheorySlotFree(
+    tx: Prisma.TransactionClient,
+    actor: User,
+    input: {
+      lessonId: string | null;
+      groupId: string;
+      teacherId: string;
+      slot: ScheduleSlot;
+    },
+  ): Promise<void> {
+    await lockScheduleResources(tx, [
+      scheduleLockKey('teacher', input.teacherId),
+      scheduleLockKey('group', input.groupId),
+    ]);
+    const conflicts = await findTheoryConflicts(tx, {
+      organizationId: actor.organizationId,
+      ...input,
+    });
+    if (conflicts.length > 0) {
+      this.logger.log(
+        `Lesson schedule conflict type=THEORY lessonId=${input.lessonId ?? 'new'} conflicts=${conflicts.length} actorId=${actor.id} organizationId=${actor.organizationId}`,
+      );
+      throw scheduleConflict(conflicts);
+    }
+  }
+
+  /**
+   * Advisory-ключі інструктора, авто, студента і його відкритих груп → пошук
+   * конфліктів практики. Спільний ключ group: серіалізує практику студента з
+   * теорією його групи.
+   */
+  private async assertPracticeSlotFree(
+    tx: Prisma.TransactionClient,
+    actor: User,
+    input: {
+      lessonId: string | null;
+      instructorId: string;
+      carId: string;
+      studentId: string;
+      slot: ScheduleSlot;
+    },
+  ): Promise<void> {
+    const studentGroups = await tx.enrollment.findMany({
+      where: { studentId: input.studentId, status: EnrollmentStatus.ACTIVE },
+      select: { groupId: true },
+    });
+    await lockScheduleResources(tx, [
+      scheduleLockKey('instructor', input.instructorId),
+      scheduleLockKey('car', input.carId),
+      scheduleLockKey('student', input.studentId),
+      ...studentGroups.map((row) => scheduleLockKey('group', row.groupId)),
+    ]);
+    const conflicts = await findPracticeConflicts(tx, {
+      organizationId: actor.organizationId,
+      ...input,
+    });
+    if (conflicts.length > 0) {
+      this.logger.log(
+        `Lesson schedule conflict type=PRACTICE lessonId=${input.lessonId ?? 'new'} conflicts=${conflicts.length} actorId=${actor.id} organizationId=${actor.organizationId}`,
+      );
+      throw scheduleConflict(conflicts);
+    }
   }
 
   /**
