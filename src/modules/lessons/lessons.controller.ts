@@ -1,9 +1,12 @@
 import {
   Body,
   Controller,
+  HttpCode,
+  HttpStatus,
   Param,
   ParseUUIDPipe,
   Patch,
+  Post,
   UseGuards,
 } from '@nestjs/common';
 import {
@@ -24,6 +27,7 @@ import { CurrentUser } from '../auth/current-user.decorator';
 import { Roles } from '../auth/roles.decorator';
 import { RolesGuard } from '../auth/roles.guard';
 import {
+  CancelLessonDto,
   LESSON_MAX_DURATION_MIN,
   LESSON_MIN_DURATION_MIN,
   LessonScheduleConflictResponseDto,
@@ -59,6 +63,20 @@ const LESSON_CONFLICT_DESCRIPTION =
   'Заняття не SCHEDULED (тіло з currentStatus), група закрита, заняття вже почалося, ' +
   'ресурс недоступний (викладач, інструктор, авто, студент), або новий час конфліктує з іншими заняттями ' +
   '(тіло з conflicts: [{ resource, resourceId, lessonType, lessonId, scheduledAt, endsAt }]).';
+
+const CANCEL_RULES =
+  'Скасувати можна лише заняття зі статусом SCHEDULED, яке ще не почалося. ' +
+  'Заняття не видаляється: статус стає CANCELLED, зберігаються час, автор і причина скасування. ' +
+  'Скасоване заняття не займає час у розкладі й зникає з дашбордів. ' +
+  'Стан ресурсів (викладач, інструктор, авто, студент) не перевіряється.';
+
+const CANCEL_CONFLICT_DESCRIPTION =
+  'Заняття не SCHEDULED (тіло з currentStatus, зокрема повторне скасування), ' +
+  'заняття вже почалося, або група теоретичного заняття закрита.';
+
+const CANCEL_BAD_REQUEST_DESCRIPTION =
+  'id не UUID, зайве поле в тілі, або reason порожній, довший за 500 символів, містить < чи >, або null. ' +
+  'Тіло містить errors: [{ field, message }].';
 
 @ApiTags('lessons')
 @ApiBearerAuth()
@@ -222,5 +240,65 @@ export class LessonsController {
     @Body() body: RescheduleLessonDto,
   ): Promise<PracticeLessonDto> {
     return this.lessonsService.reschedulePractice(user, id, body);
+  }
+
+  @Post('theory/:id/cancel')
+  @HttpCode(HttpStatus.OK)
+  @Roles(...THEORY_LESSON_EDIT_ROLES)
+  @ApiOperation({
+    summary: 'Скасувати теоретичне заняття',
+    description: `ADMIN або викладач групи скасовує заняття своєї автошколи. Тіло необов'язкове. ${CANCEL_RULES}`,
+  })
+  @ApiParam({
+    name: 'id',
+    format: 'uuid',
+    description: 'Id теоретичного заняття.',
+  })
+  @ApiOkResponse({ type: TheoryLessonDto })
+  @ApiBadRequestResponse({ description: CANCEL_BAD_REQUEST_DESCRIPTION })
+  @ApiForbiddenResponse({
+    description:
+      'Роль не ADMIN чи TEACHER, або викладач скасовує заняття чужої групи.',
+  })
+  @ApiNotFoundResponse({
+    description: 'Заняття не знайдено або воно належить іншій автошколі.',
+  })
+  @ApiConflictResponse({ description: CANCEL_CONFLICT_DESCRIPTION })
+  cancelTheory(
+    @CurrentUser() user: User,
+    @Param('id', new ParseUUIDPipe({ version: '4' })) id: string,
+    @Body() body: CancelLessonDto,
+  ): Promise<TheoryLessonDto> {
+    return this.lessonsService.cancelTheory(user, id, body);
+  }
+
+  @Post('practice/:id/cancel')
+  @HttpCode(HttpStatus.OK)
+  @Roles(...PRACTICE_LESSON_EDIT_ROLES)
+  @ApiOperation({
+    summary: 'Скасувати практичне заняття',
+    description: `ADMIN або інструктор заняття скасовує його. Тіло необов'язкове. Інструктор, студент і авто лишаються в занятті. ${CANCEL_RULES}`,
+  })
+  @ApiParam({
+    name: 'id',
+    format: 'uuid',
+    description: 'Id практичного заняття.',
+  })
+  @ApiOkResponse({ type: PracticeLessonDto })
+  @ApiBadRequestResponse({ description: CANCEL_BAD_REQUEST_DESCRIPTION })
+  @ApiForbiddenResponse({
+    description:
+      'Роль не ADMIN чи INSTRUCTOR, або інструктор скасовує чуже заняття.',
+  })
+  @ApiNotFoundResponse({
+    description: 'Заняття не знайдено або воно належить іншій автошколі.',
+  })
+  @ApiConflictResponse({ description: CANCEL_CONFLICT_DESCRIPTION })
+  cancelPractice(
+    @CurrentUser() user: User,
+    @Param('id', new ParseUUIDPipe({ version: '4' })) id: string,
+    @Body() body: CancelLessonDto,
+  ): Promise<PracticeLessonDto> {
+    return this.lessonsService.cancelPractice(user, id, body);
   }
 }

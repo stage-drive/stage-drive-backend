@@ -28,6 +28,7 @@ import {
 import {
   COURSE_ARCHIVED_MESSAGE,
   COURSE_NOT_FOUND_MESSAGE,
+  GROUP_CLOSED_CANCELLATION_REASON,
   GROUP_CLOSED_MESSAGE,
   GROUP_DATE_RANGE_MESSAGE,
   GROUP_NAME_TAKEN_MESSAGE,
@@ -796,7 +797,10 @@ describe('GroupsService', () => {
 
         expect(prisma.lesson.updateMany).toHaveBeenCalledTimes(1);
         const [args] = prisma.lesson.updateMany.mock.calls[0] as [
-          { where: { scheduledAt: { gte: Date } } },
+          {
+            where: { scheduledAt: { gte: Date } };
+            data: { cancelledAt: Date };
+          },
         ];
         expect(args).toEqual({
           where: {
@@ -804,11 +808,18 @@ describe('GroupsService', () => {
             status: LessonStatus.SCHEDULED,
             scheduledAt: { gte: expect.any(Date) },
           },
-          data: { status: LessonStatus.CANCELLED },
+          data: {
+            status: LessonStatus.CANCELLED,
+            cancelledAt: expect.any(Date),
+            cancelledById: 'admin-1',
+            cancellationReason: GROUP_CLOSED_CANCELLATION_REASON,
+          },
         });
         const cutoff = args.where.scheduledAt.gte.getTime();
         expect(cutoff).toBeGreaterThanOrEqual(before);
         expect(cutoff).toBeLessThanOrEqual(after);
+        // Скасовано в той самий момент, що й межа «майбутніх» занять.
+        expect(args.data.cancelledAt.getTime()).toBe(cutoff);
         expect(
           prisma.lesson.updateMany.mock.invocationCallOrder[0],
         ).toBeLessThan(prisma.group.update.mock.invocationCallOrder[0]);

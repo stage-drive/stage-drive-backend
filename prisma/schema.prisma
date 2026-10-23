@@ -170,6 +170,8 @@ model User {
   instructorCars           Car[]                @relation("InstructorCars")
   instructorDrivingLessons DrivingLesson[]      @relation("InstructorDrivingLessons")
   studentDrivingLessons    DrivingLesson[]      @relation("StudentDrivingLessons")
+  cancelledLessons         Lesson[]             @relation("CancelledLessons")
+  cancelledDrivingLessons  DrivingLesson[]      @relation("CancelledDrivingLessons")
 
   @@index([deletedAt])
   @@index([organizationId])
@@ -462,42 +464,54 @@ model Enrollment {
 }
 
 model Lesson {
-  id          String       @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  groupId     String       @map("group_id") @db.Uuid
-  group       Group        @relation(fields: [groupId], references: [id], onDelete: Cascade)
-  topic       String       @db.VarChar(200)
-  scheduledAt DateTime     @map("scheduled_at")
-  durationMin Int          @default(90) @map("duration_min")
-  status      LessonStatus @default(SCHEDULED)
-  createdAt   DateTime     @default(now()) @map("created_at")
-  updatedAt   DateTime     @default(now()) @updatedAt @map("updated_at")
+  id                 String       @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  groupId            String       @map("group_id") @db.Uuid
+  group              Group        @relation(fields: [groupId], references: [id], onDelete: Cascade)
+  topic              String       @db.VarChar(200)
+  scheduledAt        DateTime     @map("scheduled_at")
+  durationMin        Int          @default(90) @map("duration_min")
+  status             LessonStatus @default(SCHEDULED)
+  /// Аудит скасування. CHECK у міграції: cancelledAt є тоді й лише тоді, коли status = CANCELLED.
+  cancelledAt        DateTime?    @map("cancelled_at")
+  cancelledById      String?      @map("cancelled_by_id") @db.Uuid
+  cancelledBy        User?        @relation("CancelledLessons", fields: [cancelledById], references: [id], onDelete: SetNull)
+  cancellationReason String?      @map("cancellation_reason") @db.VarChar(500)
+  createdAt          DateTime     @default(now()) @map("created_at")
+  updatedAt          DateTime     @default(now()) @updatedAt @map("updated_at")
 
   @@index([groupId])
   @@index([scheduledAt])
+  @@index([cancelledById])
   @@map("lessons")
 }
 
 model DrivingLesson {
-  id             String              @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  organizationId String              @map("organization_id") @db.Uuid
-  organization   Organization        @relation(fields: [organizationId], references: [id], onDelete: Cascade)
-  instructorId   String              @map("instructor_id") @db.Uuid
-  instructor     User                @relation("InstructorDrivingLessons", fields: [instructorId], references: [id], onDelete: Cascade)
-  studentId      String              @map("student_id") @db.Uuid
-  student        User                @relation("StudentDrivingLessons", fields: [studentId], references: [id], onDelete: Cascade)
+  id                 String              @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  organizationId     String              @map("organization_id") @db.Uuid
+  organization       Organization        @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  instructorId       String              @map("instructor_id") @db.Uuid
+  instructor         User                @relation("InstructorDrivingLessons", fields: [instructorId], references: [id], onDelete: Cascade)
+  studentId          String              @map("student_id") @db.Uuid
+  student            User                @relation("StudentDrivingLessons", fields: [studentId], references: [id], onDelete: Cascade)
   /// Авто заняття. null лише для старих занять студентів без авто.
-  carId          String?             @map("car_id") @db.Uuid
-  car            Car?                @relation(fields: [carId], references: [id], onDelete: SetNull)
-  scheduledAt    DateTime            @map("scheduled_at")
-  durationMin    Int                 @default(60) @map("duration_min")
-  status         DrivingLessonStatus @default(SCHEDULED)
-  createdAt      DateTime            @default(now()) @map("created_at")
-  updatedAt      DateTime            @default(now()) @updatedAt @map("updated_at")
+  carId              String?             @map("car_id") @db.Uuid
+  car                Car?                @relation(fields: [carId], references: [id], onDelete: SetNull)
+  scheduledAt        DateTime            @map("scheduled_at")
+  durationMin        Int                 @default(60) @map("duration_min")
+  status             DrivingLessonStatus @default(SCHEDULED)
+  /// Аудит скасування. CHECK у міграції: cancelledAt є тоді й лише тоді, коли status = CANCELLED.
+  cancelledAt        DateTime?           @map("cancelled_at")
+  cancelledById      String?             @map("cancelled_by_id") @db.Uuid
+  cancelledBy        User?               @relation("CancelledDrivingLessons", fields: [cancelledById], references: [id], onDelete: SetNull)
+  cancellationReason String?             @map("cancellation_reason") @db.VarChar(500)
+  createdAt          DateTime            @default(now()) @map("created_at")
+  updatedAt          DateTime            @default(now()) @updatedAt @map("updated_at")
 
   @@index([organizationId])
   @@index([instructorId])
   @@index([studentId])
   @@index([carId])
   @@index([scheduledAt])
+  @@index([cancelledById])
   @@map("driving_lessons")
 }

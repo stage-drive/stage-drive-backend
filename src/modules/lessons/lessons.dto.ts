@@ -26,9 +26,12 @@ import { IsPlainText } from '../../common/validators/plain-text.decorator';
 export const LESSON_MIN_DURATION_MIN = 15;
 export const LESSON_MAX_DURATION_MIN = 240;
 export const LESSON_TOPIC_MAX_LENGTH = 200;
+/** Збігається з VarChar(500) колонки cancellation_reason. */
+export const CANCELLATION_REASON_MAX_LENGTH = 500;
 
 export const REQUIRED_FIELD_MESSAGE = "Заповніть обов'язкове поле.";
 export const LESSON_TOPIC_LENGTH_MESSAGE = `Тема має містити не більше ${LESSON_TOPIC_MAX_LENGTH} символів.`;
+export const CANCELLATION_REASON_LENGTH_MESSAGE = `Причина має містити не більше ${CANCELLATION_REASON_MAX_LENGTH} символів.`;
 export const LESSON_DURATION_MESSAGE = `Тривалість має бути цілим числом хвилин від ${LESSON_MIN_DURATION_MIN} до ${LESSON_MAX_DURATION_MIN}.`;
 export const SCHEDULED_AT_FORMAT_MESSAGE =
   'scheduledAt має бути датою й часом ISO 8601 з часовим зсувом, наприклад 2026-11-03T10:00:00+02:00.';
@@ -132,6 +135,24 @@ export class RescheduleLessonDto {
   durationMin?: number;
 }
 
+export class CancelLessonDto {
+  @ApiPropertyOptional({
+    example: 'Викладач захворів',
+    maxLength: CANCELLATION_REASON_MAX_LENGTH,
+    description:
+      'Необов’язкова причина скасування. Пробіли по краях обрізаються.',
+  })
+  @Transform(trimString)
+  @ValidateIf((_, value) => value !== undefined)
+  @IsPlainText()
+  @MaxLength(CANCELLATION_REASON_MAX_LENGTH, {
+    message: CANCELLATION_REASON_LENGTH_MESSAGE,
+  })
+  @IsNotEmpty({ message: REQUIRED_FIELD_MESSAGE })
+  @IsString({ message: 'reason має бути рядком.' })
+  reason?: string;
+}
+
 export class LessonPersonDto {
   @ApiProperty()
   id: string;
@@ -196,6 +217,23 @@ export class TheoryLessonDto {
   @ApiProperty({ type: LessonPersonDto, description: 'Викладач групи.' })
   teacher: LessonPersonDto;
 
+  @ApiProperty({
+    type: Date,
+    nullable: true,
+    example: null,
+    description: 'Коли заняття скасовано; null, якщо не скасоване.',
+  })
+  cancelledAt: Date | null;
+
+  @ApiProperty({
+    type: String,
+    nullable: true,
+    example: null,
+    maxLength: CANCELLATION_REASON_MAX_LENGTH,
+    description: 'Причина скасування; null, якщо її не вказали.',
+  })
+  cancellationReason: string | null;
+
   @ApiProperty()
   updatedAt: Date;
 }
@@ -237,6 +275,23 @@ export class PracticeLessonDto {
     description: 'null лише для старого заняття без авто.',
   })
   car: LessonCarDto | null;
+
+  @ApiProperty({
+    type: Date,
+    nullable: true,
+    example: null,
+    description: 'Коли заняття скасовано; null, якщо не скасоване.',
+  })
+  cancelledAt: Date | null;
+
+  @ApiProperty({
+    type: String,
+    nullable: true,
+    example: null,
+    maxLength: CANCELLATION_REASON_MAX_LENGTH,
+    description: 'Причина скасування; null, якщо її не вказали.',
+  })
+  cancellationReason: string | null;
 
   @ApiProperty()
   updatedAt: Date;

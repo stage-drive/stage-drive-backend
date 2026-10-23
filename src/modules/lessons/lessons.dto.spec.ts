@@ -2,6 +2,9 @@ import { BadRequestException, Type, ValidationPipe } from '@nestjs/common';
 import { validationExceptionFactory } from '../../common/validation/field-error';
 import { UNSAFE_TEXT_MESSAGE } from '../../common/validators/plain-text.decorator';
 import {
+  CANCELLATION_REASON_LENGTH_MESSAGE,
+  CANCELLATION_REASON_MAX_LENGTH,
+  CancelLessonDto,
   LESSON_DURATION_MESSAGE,
   LESSON_TOPIC_LENGTH_MESSAGE,
   LESSON_TOPIC_MAX_LENGTH,
@@ -187,6 +190,58 @@ describe('UpdatePracticeLessonDto', () => {
     async (field) => {
       await expect(
         errorsFor(UpdatePracticeLessonDto, { [field]: 'x' }),
+      ).resolves.toEqual(
+        fieldErrors(field, `property ${field} should not exist`),
+      );
+    },
+  );
+});
+
+describe('CancelLessonDto', () => {
+  it('lets an empty body through', async () => {
+    await expect(validate(CancelLessonDto, {})).resolves.toEqual({});
+  });
+
+  it('lets a missing body through', async () => {
+    await expect(validate(CancelLessonDto, undefined)).resolves.toEqual({});
+  });
+
+  it('trims the reason', async () => {
+    await expect(
+      validate(CancelLessonDto, { reason: '  Викладач захворів  ' }),
+    ).resolves.toEqual({ reason: 'Викладач захворів' });
+  });
+
+  it('accepts a reason of exactly the maximum length', async () => {
+    const reason = 'а'.repeat(CANCELLATION_REASON_MAX_LENGTH);
+
+    await expect(validate(CancelLessonDto, { reason })).resolves.toEqual({
+      reason,
+    });
+  });
+
+  it.each([
+    ['empty', '', REQUIRED_FIELD_MESSAGE],
+    ['whitespace only', '   ', REQUIRED_FIELD_MESSAGE],
+    ['null', null, 'reason має бути рядком.'],
+    ['a number', 123, 'reason має бути рядком.'],
+    [
+      'too long',
+      'а'.repeat(CANCELLATION_REASON_MAX_LENGTH + 1),
+      CANCELLATION_REASON_LENGTH_MESSAGE,
+    ],
+    ['markup', '<b>Захворів</b>', UNSAFE_TEXT_MESSAGE],
+  ])('rejects a reason that is %s', async (_, reason, message) => {
+    await expect(errorsFor(CancelLessonDto, { reason })).resolves.toEqual(
+      fieldErrors('reason', message),
+    );
+  });
+
+  it.each(['status', 'cancelledAt', 'cancelledById'])(
+    'rejects %s in the body',
+    async (field) => {
+      await expect(
+        errorsFor(CancelLessonDto, { [field]: 'x' }),
       ).resolves.toEqual(
         fieldErrors(field, `property ${field} should not exist`),
       );
