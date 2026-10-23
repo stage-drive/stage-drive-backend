@@ -5,11 +5,15 @@ import {
   CANCELLATION_REASON_LENGTH_MESSAGE,
   CANCELLATION_REASON_MAX_LENGTH,
   CancelLessonDto,
+  INCLUDE_CANCELLED_MESSAGE,
   LESSON_DURATION_MESSAGE,
   LESSON_TOPIC_LENGTH_MESSAGE,
   LESSON_TOPIC_MAX_LENGTH,
+  LESSON_TYPE_MESSAGE,
+  PersonalScheduleQueryDto,
   REQUIRED_FIELD_MESSAGE,
   RescheduleLessonDto,
+  SCHEDULE_RANGE_FORMAT_MESSAGE,
   SCHEDULED_AT_FORMAT_MESSAGE,
   UpdatePracticeLessonDto,
   UpdateTheoryLessonDto,
@@ -24,16 +28,23 @@ const pipe = new ValidationPipe({
   exceptionFactory: validationExceptionFactory,
 });
 
-function validate(metatype: Type<unknown>, body: unknown): Promise<unknown> {
-  return pipe.transform(body, { type: 'body', metatype });
+type Source = 'body' | 'query';
+
+function validate(
+  metatype: Type<unknown>,
+  value: unknown,
+  type: Source = 'body',
+): Promise<unknown> {
+  return pipe.transform(value, { type, metatype });
 }
 
 async function errorsFor(
   metatype: Type<unknown>,
-  body: unknown,
+  value: unknown,
+  type: Source = 'body',
 ): Promise<unknown> {
   try {
-    await validate(metatype, body);
+    await validate(metatype, value, type);
   } catch (error) {
     expect(error).toBeInstanceOf(BadRequestException);
     return (error as BadRequestException).getResponse();
@@ -243,6 +254,100 @@ describe('CancelLessonDto', () => {
       await expect(
         errorsFor(CancelLessonDto, { [field]: 'x' }),
       ).resolves.toEqual(
+        fieldErrors(field, `property ${field} should not exist`),
+      );
+    },
+  );
+});
+
+describe('PersonalScheduleQueryDto', () => {
+  // Express hands query values over as strings (arrays when a key repeats).
+  const query = (value: unknown) =>
+    validate(PersonalScheduleQueryDto, value, 'query');
+  const queryErrors = (value: unknown) =>
+    errorsFor(PersonalScheduleQueryDto, value, 'query');
+
+  it('lets an empty query through (the service fills the defaults)', async () => {
+    await expect(query({})).resolves.toEqual({});
+  });
+
+  it('accepts a full query and turns includeCancelled into a boolean', async () => {
+    await expect(
+      query({
+        from: '2026-11-02T00:00:00+02:00',
+        to: '2026-11-09T00:00:00+02:00',
+        type: 'PRACTICE',
+        includeCancelled: 'true',
+      }),
+    ).resolves.toEqual({
+      from: '2026-11-02T00:00:00+02:00',
+      to: '2026-11-09T00:00:00+02:00',
+      type: 'PRACTICE',
+      includeCancelled: true,
+    });
+  });
+
+  describe.each(['from', 'to'])('%s', (field) => {
+    it.each([
+      '2026-11-02T00:00:00+02:00',
+      '2026-11-01T22:00:00Z',
+      '2026-11-01T22:00:00.000Z',
+      '2026-11-01T17:00:00-05:00',
+    ])('accepts %s', async (value) => {
+      await expect(query({ [field]: value })).resolves.toEqual({
+        [field]: value,
+      });
+    });
+
+    it.each([
+      ['without an offset', '2026-11-02T00:00:00'],
+      ['date only', '2026-11-02'],
+      ['without seconds', '2026-11-02T00:00+02:00'],
+      // An unencoded + arrives as a space.
+      ['with + decoded as a space', '2026-11-02T00:00:00 02:00'],
+      ['a non-existent date', '2026-02-30T00:00:00Z'],
+      ['empty', ''],
+      ['a non-ISO format', '02.11.2026 00:00'],
+      ['repeated', ['2026-11-02T00:00:00Z', '2026-11-03T00:00:00Z']],
+    ])('rejects a value %s', async (_, value) => {
+      await expect(queryErrors({ [field]: value })).resolves.toEqual(
+        fieldErrors(field, SCHEDULE_RANGE_FORMAT_MESSAGE),
+      );
+    });
+  });
+
+  it.each(['THEORY', 'PRACTICE'])('accepts type %s', async (type) => {
+    await expect(query({ type })).resolves.toEqual({ type });
+  });
+
+  it.each(['theory', 'ALL', ''])('rejects type %p', async (type) => {
+    await expect(queryErrors({ type })).resolves.toEqual(
+      fieldErrors('type', LESSON_TYPE_MESSAGE),
+    );
+  });
+
+  it.each([
+    ['true', true],
+    ['false', false],
+  ])('turns includeCancelled %p into %p', async (value, expected) => {
+    await expect(query({ includeCancelled: value })).resolves.toEqual({
+      includeCancelled: expected,
+    });
+  });
+
+  it.each(['yes', '1', 'TRUE', ''])(
+    'rejects includeCancelled %p',
+    async (includeCancelled) => {
+      await expect(queryErrors({ includeCancelled })).resolves.toEqual(
+        fieldErrors('includeCancelled', INCLUDE_CANCELLED_MESSAGE),
+      );
+    },
+  );
+
+  it.each(['userId', 'groupId', 'organizationId', 'status'])(
+    'rejects %s: the schedule always belongs to the token owner',
+    async (field) => {
+      await expect(queryErrors({ [field]: 'x' })).resolves.toEqual(
         fieldErrors(field, `property ${field} should not exist`),
       );
     },

@@ -1,5 +1,10 @@
 import { applyDecorators } from '@nestjs/common';
-import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
+import {
+  ApiExtraModels,
+  ApiProperty,
+  ApiPropertyOptional,
+  getSchemaPath,
+} from '@nestjs/swagger';
 import {
   DrivingLessonStatus,
   LessonStatus,
@@ -8,10 +13,13 @@ import {
 } from '@prisma/client';
 import { Transform } from 'class-transformer';
 import {
+  IsBoolean,
   IsDefined,
+  IsIn,
   IsISO8601,
   IsInt,
   IsNotEmpty,
+  IsOptional,
   IsString,
   IsUUID,
   Matches,
@@ -40,10 +48,62 @@ export const SCHEDULED_AT_FORMAT_MESSAGE =
 export const ZONED_DATE_TIME_PATTERN =
   /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{1,3})?(Z|[+-]\d{2}:\d{2})$/;
 
+/** Вікно персонального розкладу: місячний календар (до 42 днів) вміщується з запасом. */
+export const SCHEDULE_DEFAULT_RANGE_DAYS = 30;
+export const SCHEDULE_MAX_RANGE_DAYS = 62;
+
+export const LESSON_TYPES = ['THEORY', 'PRACTICE'] as const;
+export type LessonTypeFilter = (typeof LESSON_TYPES)[number];
+
+export const LESSON_TIMINGS = ['UPCOMING', 'IN_PROGRESS', 'FINISHED'] as const;
+export type LessonTiming = (typeof LESSON_TIMINGS)[number];
+
+export const SCHEDULE_RANGE_FORMAT_MESSAGE =
+  'from і to мають бути датою й часом ISO 8601 з часовим зсувом, наприклад 2026-11-02T00:00:00+02:00. ' +
+  'Знак + у query кодуйте як %2B.';
+export const SCHEDULE_RANGE_ORDER_MESSAGE = 'to має бути пізніше за from.';
+export const SCHEDULE_RANGE_LENGTH_MESSAGE = `Період розкладу має бути не довшим за ${SCHEDULE_MAX_RANGE_DAYS} днів.`;
+export const LESSON_TYPE_MESSAGE = 'type має бути THEORY або PRACTICE.';
+export const INCLUDE_CANCELLED_MESSAGE =
+  'includeCancelled має бути true або false.';
+
 const DURATION_DESCRIPTION = `Тривалість у хвилинах, ціле число від ${LESSON_MIN_DURATION_MIN} до ${LESSON_MAX_DURATION_MIN}.`;
+
+const TIMING_DESCRIPTION =
+  'UPCOMING — ще не почалося, IN_PROGRESS — триває, FINISHED — закінчилося. ' +
+  'Рахується за часом сервера; status минулого заняття зазвичай SCHEDULED.';
 
 function trimString({ value }: { value: unknown }): unknown {
   return typeof value === 'string' ? value.trim() : value;
+}
+
+/**
+ * Query-параметри приходять рядками, а enableImplicitConversion вимкнено.
+ * Усе, крім 'true' і 'false', лишається як є і падає на IsBoolean.
+ */
+function optionalBoolean({ value }: { value: unknown }): unknown {
+  if (value === 'true') {
+    return true;
+  }
+  if (value === 'false') {
+    return false;
+  }
+  return value;
+}
+
+/**
+ * Межа вікна розкладу в query: той самий формат, що scheduledAt. Повторений
+ * параметр приходить масивом і теж відхиляється.
+ */
+function IsScheduleBoundary() {
+  return applyDecorators(
+    IsISO8601({ strict: true }, { message: SCHEDULE_RANGE_FORMAT_MESSAGE }),
+    Matches(ZONED_DATE_TIME_PATTERN, {
+      message: SCHEDULE_RANGE_FORMAT_MESSAGE,
+    }),
+    IsString({ message: SCHEDULE_RANGE_FORMAT_MESSAGE }),
+    IsOptional(),
+  );
 }
 
 /** Необов'язкова тривалість; null відхиляється, як і будь-яке не-ціле число. */
@@ -151,6 +211,47 @@ export class CancelLessonDto {
   @IsNotEmpty({ message: REQUIRED_FIELD_MESSAGE })
   @IsString({ message: 'reason має бути рядком.' })
   reason?: string;
+}
+
+/** Чий розклад, визначає access token: userId, groupId чи organizationId тут немає. */
+export class PersonalScheduleQueryDto {
+  @ApiPropertyOptional({
+    format: 'date-time',
+    example: '2026-11-02T00:00:00+02:00',
+    description:
+      'Початок вікна, ISO 8601 з часовим зсувом (Z або ±HH:MM). За замовчуванням — поточний момент. ' +
+      'Знак + кодуйте як %2B, інакше він прийде пробілом.',
+  })
+  @IsScheduleBoundary()
+  from?: string;
+
+  @ApiPropertyOptional({
+    format: 'date-time',
+    example: '2026-11-09T00:00:00+02:00',
+    description:
+      `Кінець вікна, не включно. За замовчуванням — from + ${SCHEDULE_DEFAULT_RANGE_DAYS} днів. ` +
+      `Має бути пізніше за from, але не більше ніж на ${SCHEDULE_MAX_RANGE_DAYS} днів.`,
+  })
+  @IsScheduleBoundary()
+  to?: string;
+
+  @ApiPropertyOptional({
+    enum: LESSON_TYPES,
+    description: 'Тип занять. Без параметра — обидва типи.',
+  })
+  @IsIn(LESSON_TYPES, { message: LESSON_TYPE_MESSAGE })
+  @IsOptional()
+  type?: LessonTypeFilter;
+
+  @ApiPropertyOptional({
+    type: Boolean,
+    default: false,
+    description: 'true — повернути й скасовані заняття.',
+  })
+  @Transform(optionalBoolean)
+  @IsBoolean({ message: INCLUDE_CANCELLED_MESSAGE })
+  @IsOptional()
+  includeCancelled?: boolean;
 }
 
 export class LessonPersonDto {
@@ -295,6 +396,69 @@ export class PracticeLessonDto {
 
   @ApiProperty()
   updatedAt: Date;
+}
+
+/** @nestjs/swagger успадковує @ApiProperty батьківського класу. */
+export class ScheduleTheoryLessonDto extends TheoryLessonDto {
+  @ApiProperty({
+    enum: LESSON_TIMINGS,
+    example: 'UPCOMING',
+    description: TIMING_DESCRIPTION,
+  })
+  timing: LessonTiming;
+}
+
+export class SchedulePracticeLessonDto extends PracticeLessonDto {
+  @ApiProperty({
+    enum: LESSON_TIMINGS,
+    example: 'FINISHED',
+    description: TIMING_DESCRIPTION,
+  })
+  timing: LessonTiming;
+}
+
+export type PersonalScheduleItemDto =
+  ScheduleTheoryLessonDto | SchedulePracticeLessonDto;
+
+@ApiExtraModels(ScheduleTheoryLessonDto, SchedulePracticeLessonDto)
+export class PersonalScheduleDto {
+  @ApiProperty({
+    example: '2026-11-01T22:00:00.000Z',
+    description: 'Фактичний початок вікна після значень за замовчуванням.',
+  })
+  from: Date;
+
+  @ApiProperty({
+    example: '2026-11-08T22:00:00.000Z',
+    description: 'Фактичний кінець вікна, не включно.',
+  })
+  to: Date;
+
+  @ApiProperty({
+    example: 'Europe/Kyiv',
+    description: 'Часовий пояс автошколи: показуйте час заняття в ньому.',
+  })
+  timezone: string;
+
+  @ApiProperty({
+    type: 'array',
+    description:
+      'Заняття, що перетинають вікно [from, to), за зростанням scheduledAt. Тип визначає поле type.',
+    items: {
+      oneOf: [
+        { $ref: getSchemaPath(ScheduleTheoryLessonDto) },
+        { $ref: getSchemaPath(SchedulePracticeLessonDto) },
+      ],
+      discriminator: {
+        propertyName: 'type',
+        mapping: {
+          THEORY: getSchemaPath(ScheduleTheoryLessonDto),
+          PRACTICE: getSchemaPath(SchedulePracticeLessonDto),
+        },
+      },
+    },
+  })
+  items: PersonalScheduleItemDto[];
 }
 
 export class LessonConflictDto {
