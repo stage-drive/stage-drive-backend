@@ -192,6 +192,16 @@ async function ensureDemoOrganization(db: PrismaClient) {
   return existing;
 }
 
+/** Явний тип: без strictNullChecks null у масиві as const робить instructorId типу any. */
+type DemoCar = {
+  id: string;
+  plateNumber: string;
+  category: LicenseCategory;
+  transmission: Transmission;
+  instructorId: string | null;
+  status: CarStatus;
+};
+
 async function ensureDemoCars(db: PrismaClient, organizationId: string) {
   const instructor = await db.user.findFirst({
     where: {
@@ -205,7 +215,7 @@ async function ensureDemoCars(db: PrismaClient, organizationId: string) {
     return;
   }
 
-  const cars = [
+  const cars: DemoCar[] = [
     {
       id: DEMO_CAR_MANUAL_ID,
       plateNumber: 'AA0001BB',
@@ -246,7 +256,7 @@ async function ensureDemoCars(db: PrismaClient, organizationId: string) {
       instructorId: null,
       status: CarStatus.AVAILABLE,
     },
-  ] as const;
+  ];
 
   for (const car of cars) {
     await db.car.upsert({

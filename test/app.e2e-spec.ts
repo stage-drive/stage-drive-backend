@@ -224,6 +224,12 @@ describe('API (e2e)', () => {
       create: jest.fn(),
       updateMany: jest.fn(),
     },
+    lesson: {
+      findMany: jest.fn(),
+    },
+    drivingLesson: {
+      findMany: jest.fn(),
+    },
     $transaction: jest.fn(),
     organization: {
       findUnique: jest.fn(),
@@ -390,6 +396,10 @@ describe('API (e2e)', () => {
     prismaMock.$transaction.mockReset();
     prismaMock.organization.findUnique.mockReset();
     prismaMock.organization.update.mockReset();
+    prismaMock.lesson.findMany.mockReset();
+    prismaMock.lesson.findMany.mockResolvedValue([]);
+    prismaMock.drivingLesson.findMany.mockReset();
+    prismaMock.drivingLesson.findMany.mockResolvedValue([]);
     prismaMock.oAuthAuthorization.findUnique.mockReset();
     prismaMock.oAuthAuthorization.create.mockReset();
     prismaMock.oAuthAuthorization.deleteMany.mockReset();
@@ -429,7 +439,7 @@ describe('API (e2e)', () => {
     prismaMock.user.findFirst.mockImplementation(
       (args: {
         where: { email?: string | { equals?: string }; id?: string };
-      }) => {
+      }): unknown => {
         const email =
           typeof args.where.email === 'string'
             ? args.where.email
@@ -3616,7 +3626,7 @@ describe('API (e2e)', () => {
   }) {
     const findUnique = prismaMock.user.findUnique.getMockImplementation();
     prismaMock.user.findUnique.mockImplementation(
-      (args: { where: { id?: string; email?: string } }) => {
+      (args: { where: { id?: string; email?: string } }): unknown => {
         if (args.where.id === (record.id ?? practiceInstructorId)) {
           return Promise.resolve({
             id: practiceInstructorId,
@@ -4994,5 +5004,108 @@ describe('API (e2e)', () => {
     const assignment = (paths['/api/cars/{id}/instructor'] ??
       paths['/cars/{id}/instructor']) as { patch?: unknown } | undefined;
     expect(assignment?.patch).toBeDefined();
+  });
+  it('GET /api/lessons/me without token returns 401', () => {
+    return request(app.getHttpServer()).get('/api/lessons/me').expect(401);
+  });
+
+  it('GET /api/lessons/me is forbidden for ADMIN, who has no own lessons', async () => {
+    const response = await request(app.getHttpServer())
+      .get('/api/lessons/me')
+      .set('Authorization', `Bearer ${signAccessToken(admin.id)}`)
+      .expect(403);
+
+    expect(response.body).toMatchObject({
+      statusCode: 403,
+      message: 'Insufficient permissions',
+    });
+    expect(prismaMock.lesson.findMany).not.toHaveBeenCalled();
+  });
+
+  it('GET /api/lessons/me rejects a userId: the schedule belongs to the token owner', async () => {
+    const response = await request(app.getHttpServer())
+      .get('/api/lessons/me')
+      .query({ userId: admin.id })
+      .set('Authorization', `Bearer ${signAccessToken(teacher.id)}`)
+      .expect(400);
+
+    expect(response.body).toMatchObject({
+      statusCode: 400,
+      errors: [
+        { field: 'userId', message: 'property userId should not exist' },
+      ],
+    });
+    expect(prismaMock.lesson.findMany).not.toHaveBeenCalled();
+  });
+
+  it('GET /api/lessons/me reads an unencoded + in the offset as a space', async () => {
+    const response = await request(app.getHttpServer())
+      .get('/api/lessons/me?from=2026-11-02T00:00:00+02:00')
+      .set('Authorization', `Bearer ${signAccessToken(teacher.id)}`)
+      .expect(400);
+
+    expect(response.body).toMatchObject({
+      statusCode: 400,
+      errors: [{ field: 'from' }],
+    });
+  });
+
+  it('GET /api/lessons/me returns the teacher schedule for an offset encoded as %2B', async () => {
+    prismaMock.organization.findUnique.mockResolvedValue({
+      id: organization.id,
+      timezone: 'Europe/Kyiv',
+      deletedAt: null,
+    });
+
+    const response = await request(app.getHttpServer())
+      .get('/api/lessons/me?from=2026-11-02T00:00:00%2B02:00')
+      .set('Authorization', `Bearer ${signAccessToken(teacher.id)}`)
+      .expect(200);
+
+    expect(response.body).toEqual({
+      from: '2026-11-01T22:00:00.000Z',
+      to: '2026-12-01T22:00:00.000Z',
+      timezone: 'Europe/Kyiv',
+      items: [],
+    });
+    const [args] = prismaMock.lesson.findMany.mock.calls[0] as [
+      { where: { AND: unknown[] } },
+    ];
+    expect(args.where.AND[0]).toEqual({
+      group: { organizationId: organization.id, teacherId: teacher.id },
+    });
+    expect(prismaMock.drivingLesson.findMany).not.toHaveBeenCalled();
+  });
+
+  it('OpenAPI documents GET /api/lessons/me with its query and both item types', async () => {
+    const response = await request(app.getHttpServer())
+      .get('/api/docs-json')
+      .expect(200);
+
+    const body = response.body as {
+      paths: Record<string, { get?: { parameters?: { name: string }[] } }>;
+      components: { schemas: Record<string, unknown> };
+    };
+    const operation = (
+      body.paths['/api/lessons/me'] ?? body.paths['/lessons/me']
+    )?.get;
+    expect(operation?.parameters?.map((p) => p.name)).toEqual([
+      'from',
+      'to',
+      'type',
+      'includeCancelled',
+    ]);
+    expect(body.components.schemas.PersonalScheduleDto).toMatchObject({
+      properties: {
+        items: {
+          items: {
+            oneOf: [
+              { $ref: '#/components/schemas/ScheduleTheoryLessonDto' },
+              { $ref: '#/components/schemas/SchedulePracticeLessonDto' },
+            ],
+          },
+        },
+      },
+    });
   });
 });

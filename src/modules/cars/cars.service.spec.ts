@@ -55,7 +55,9 @@ function carRow(
   }> = {},
 ) {
   const instructorId =
-    overrides.instructorId === undefined ? 'instructor-1' : overrides.instructorId;
+    overrides.instructorId === undefined
+      ? 'instructor-1'
+      : overrides.instructorId;
   return {
     id: 'car-1',
     organizationId: 'org-1',
@@ -880,11 +882,9 @@ describe('CarsService', () => {
     it.each([UserRole.OWNER, UserRole.ADMIN] as const)(
       'assigns an available car to an active instructor for %s',
       async (role) => {
-        const result = await service.assignInstructor(
-          actor(role),
-          'car-1',
-          { instructorId: 'instructor-2' },
-        );
+        const result = await service.assignInstructor(actor(role), 'car-1', {
+          instructorId: 'instructor-2',
+        });
 
         expect(prisma.car.update).toHaveBeenCalledWith({
           where: { id: 'car-1' },
@@ -971,12 +971,15 @@ describe('CarsService', () => {
     it('rejects a missing instructorId', async () => {
       await expect(
         service.assignInstructor(actor(UserRole.ADMIN), 'car-1', {
-          instructorId: undefined as unknown as string,
+          instructorId: undefined,
         }),
       ).rejects.toMatchObject({
         response: {
           errors: [
-            { field: 'instructorId', message: INSTRUCTOR_ASSIGNMENT_FIELD_MESSAGE },
+            {
+              field: 'instructorId',
+              message: INSTRUCTOR_ASSIGNMENT_FIELD_MESSAGE,
+            },
           ],
         },
       });
@@ -1077,10 +1080,7 @@ describe('CarsService', () => {
       expect(prisma.car.findMany).toHaveBeenCalledWith(
         expect.objectContaining({
           where: {
-            AND: [
-              { organizationId: 'org-1' },
-              { status: CarStatus.AVAILABLE },
-            ],
+            AND: [{ organizationId: 'org-1' }, { status: CarStatus.AVAILABLE }],
           },
         }),
       );

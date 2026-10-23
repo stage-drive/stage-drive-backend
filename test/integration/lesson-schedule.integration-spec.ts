@@ -34,6 +34,8 @@ import {
   LESSON_NOT_CANCELLABLE_MESSAGE,
   LessonsService,
 } from '../../src/modules/lessons/lessons.service';
+import type { PersonalScheduleDto } from '../../src/modules/lessons/lessons.dto';
+import { PersonalScheduleService } from '../../src/modules/lessons/personal-schedule.service';
 import type { LessonConflict } from '../../src/modules/lessons/schedule-conflicts';
 import { StudentsService } from '../../src/modules/students/students.service';
 import type { PrismaService } from '../../src/prisma/prisma.service';
@@ -99,6 +101,7 @@ describe('Lesson schedule (integration, real Postgres)', () => {
   let lessonsService: LessonsService;
   let groupsService: GroupsService;
   let dashboardService: DashboardService;
+  let scheduleService: PersonalScheduleService;
   let sequence = 0;
 
   beforeAll(async () => {
@@ -122,6 +125,7 @@ describe('Lesson schedule (integration, real Postgres)', () => {
       new StudentsService(service, {} as InvitationEmailQueue),
     );
     dashboardService = new DashboardService(service);
+    scheduleService = new PersonalScheduleService(service);
     jest.spyOn(Logger.prototype, 'log').mockImplementation(() => undefined);
   });
 
@@ -809,6 +813,217 @@ describe('Lesson schedule (integration, real Postgres)', () => {
           cancellationReason: GROUP_CLOSED_CANCELLATION_REASON,
         });
       }
+    });
+  });
+  describe('personal schedule', () => {
+    type School = Awaited<ReturnType<typeof createSchool>>;
+
+    const ids = (schedule: PersonalScheduleDto) =>
+      schedule.items.map((item) => item.id);
+
+    function fromNow(minutes: number): Date {
+      return new Date(Date.now() + minutes * MINUTE_MS);
+    }
+
+    /** A theory lesson of a second group of the same school, with its own teacher. */
+    async function otherGroupLesson(school: School, scheduledAt: Date) {
+      const teacher = await prisma.user.create({
+        data: {
+          organizationId: school.organization.id,
+          email: `other-teacher-${school.group.id}@lessons.example.com`,
+          firstName: 'Other',
+          lastName: 'TEACHER',
+          role: UserRole.TEACHER,
+        },
+      });
+      const group = await prisma.group.create({
+        data: {
+          name: `Інша група ${school.group.id}`,
+          status: GroupStatus.ACTIVE,
+          organizationId: school.organization.id,
+          teacherId: teacher.id,
+        },
+      });
+      return prisma.lesson.create({
+        data: { groupId: group.id, topic: 'Інша група', scheduledAt },
+      });
+    }
+
+    it('gives a student the group theory and own practice only', async () => {
+      const school = await createSchool();
+      const own = await school.practice({ scheduledAt: at(10) });
+      const theory = await school.theory(at(18));
+      await school.practice({
+        studentId: school.student2.id,
+        carId: school.car2.id,
+        scheduledAt: at(12),
+      });
+      await otherGroupLesson(school, at(16));
+
+      const schedule = await scheduleService.getMySchedule(school.student1, {});
+
+      expect(ids(schedule)).toEqual([own.id, theory.id]);
+      expect(schedule.timezone).toBe('Europe/Kyiv');
+    });
+
+    it('gives a teacher the theory of own groups only', async () => {
+      const school = await createSchool();
+      const theory = await school.theory(at(18));
+      await otherGroupLesson(school, at(16));
+      await school.practice({ scheduledAt: at(10) });
+
+      await expect(
+        scheduleService.getMySchedule(school.teacher, {}).then(ids),
+      ).resolves.toEqual([theory.id]);
+    });
+
+    it('gives an instructor own practice only', async () => {
+      const school = await createSchool();
+      const own = await school.practice({ scheduledAt: at(10) });
+      await school.practice({
+        instructorId: school.otherInstructor.id,
+        carId: school.car3.id,
+        studentId: school.student2.id,
+        scheduledAt: at(10),
+      });
+      await school.theory(at(18));
+
+      await expect(
+        scheduleService.getMySchedule(school.instructor, {}).then(ids),
+      ).resolves.toEqual([own.id]);
+    });
+
+    it('never shows lessons of another school, even through a broken enrollment', async () => {
+      const school = await createSchool();
+      const other = await createSchool();
+      await other.theory(at(18));
+      await other.practice({ scheduledAt: at(10) });
+      // An enrollment into another school's group: services never create it,
+      // the organization filter must still hold.
+      await prisma.enrollment.create({
+        data: {
+          groupId: other.group.id,
+          studentId: school.student1.id,
+          status: EnrollmentStatus.ACTIVE,
+        },
+      });
+
+      for (const user of [school.student1, school.teacher, school.instructor]) {
+        await expect(
+          scheduleService.getMySchedule(user, {}).then(ids),
+        ).resolves.toEqual([]);
+      }
+    });
+
+    it('keeps lessons overlapping [from, to) and drops those touching its edges', async () => {
+      const school = await createSchool();
+      await school.practice({ scheduledAt: at(9) }); // ends exactly at from
+      const running = await school.practice({ scheduledAt: at(9, 30) });
+      const inside = await school.practice({ scheduledAt: at(13) });
+      await school.practice({ scheduledAt: at(14) }); // starts exactly at to
+
+      await expect(
+        scheduleService
+          .getMySchedule(school.instructor, {
+            from: at(10).toISOString(),
+            to: at(14).toISOString(),
+          })
+          .then(ids),
+      ).resolves.toEqual([running.id, inside.id]);
+    });
+
+    it('shows the lesson in progress by default', async () => {
+      const school = await createSchool();
+      const lesson = await school.practice({ scheduledAt: fromNow(-30) });
+
+      const { items } = await scheduleService.getMySchedule(
+        school.student1,
+        {},
+      );
+
+      expect(items).toMatchObject([{ id: lesson.id, timing: 'IN_PROGRESS' }]);
+    });
+
+    it('returns finished lessons for a past window: SCHEDULED, but FINISHED', async () => {
+      const school = await createSchool();
+      const theory = await school.theory(fromNow(-2 * 24 * 60));
+
+      const { items } = await scheduleService.getMySchedule(school.student1, {
+        from: fromNow(-3 * 24 * 60).toISOString(),
+        to: fromNow(-24 * 60).toISOString(),
+      });
+
+      expect(items).toMatchObject([
+        {
+          id: theory.id,
+          status: LessonStatus.SCHEDULED,
+          timing: 'FINISHED',
+        },
+      ]);
+    });
+
+    it('hides a cancelled lesson unless includeCancelled is set', async () => {
+      const school = await createSchool();
+      const lesson = await school.practice({ scheduledAt: at(10) });
+      await lessonsService.cancelPractice(school.admin, lesson.id, {
+        reason: 'Авто на ремонті',
+      });
+
+      await expect(
+        scheduleService.getMySchedule(school.student1, {}).then(ids),
+      ).resolves.toEqual([]);
+      const { items } = await scheduleService.getMySchedule(school.student1, {
+        includeCancelled: true,
+      });
+      expect(items).toMatchObject([
+        {
+          id: lesson.id,
+          status: DrivingLessonStatus.CANCELLED,
+          cancellationReason: 'Авто на ремонті',
+        },
+      ]);
+      expect(items[0].cancelledAt).toBeInstanceOf(Date);
+    });
+
+    it('keeps the history of a closed group for its student, but not its cancelled future', async () => {
+      const school = await createSchool();
+      const past = await school.theory(fromNow(-2 * 24 * 60));
+      const future = await school.theory(at(18));
+      await groupsService.changeStatus(school.admin, school.group.id, {
+        status: GroupStatus.COMPLETED,
+      });
+      const window = {
+        from: fromNow(-3 * 24 * 60).toISOString(),
+        to: fromNow(10 * 24 * 60).toISOString(),
+        includeCancelled: true,
+      };
+
+      await expect(
+        scheduleService.getMySchedule(school.student1, window).then(ids),
+      ).resolves.toEqual([past.id]);
+      await expect(
+        scheduleService.getMySchedule(school.teacher, window).then(ids),
+      ).resolves.toEqual([past.id, future.id]);
+    });
+
+    it('drops the group theory of a dropped student but keeps own practice', async () => {
+      const school = await createSchool();
+      await school.theory(fromNow(-2 * 24 * 60));
+      await school.theory(at(18));
+      const practice = await school.practice({ scheduledAt: at(10) });
+      await prisma.enrollment.updateMany({
+        where: { studentId: school.student1.id },
+        data: { status: EnrollmentStatus.DROPPED },
+      });
+
+      await expect(
+        scheduleService
+          .getMySchedule(school.student1, {
+            from: fromNow(-3 * 24 * 60).toISOString(),
+            to: fromNow(10 * 24 * 60).toISOString(),
+          })
+          .then(ids),
+      ).resolves.toEqual([practice.id]);
     });
   });
 });

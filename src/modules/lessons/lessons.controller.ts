@@ -1,12 +1,14 @@
 import {
   Body,
   Controller,
+  Get,
   HttpCode,
   HttpStatus,
   Param,
   ParseUUIDPipe,
   Patch,
   Post,
+  Query,
   UseGuards,
 } from '@nestjs/common';
 import {
@@ -31,8 +33,12 @@ import {
   LESSON_MAX_DURATION_MIN,
   LESSON_MIN_DURATION_MIN,
   LessonScheduleConflictResponseDto,
+  PersonalScheduleDto,
+  PersonalScheduleQueryDto,
   PracticeLessonDto,
   RescheduleLessonDto,
+  SCHEDULE_DEFAULT_RANGE_DAYS,
+  SCHEDULE_MAX_RANGE_DAYS,
   TheoryLessonDto,
   UpdatePracticeLessonDto,
   UpdateTheoryLessonDto,
@@ -42,6 +48,23 @@ import {
   PRACTICE_LESSON_EDIT_ROLES,
   THEORY_LESSON_EDIT_ROLES,
 } from './lessons.service';
+import {
+  PersonalScheduleService,
+  SCHEDULE_VIEW_ROLES,
+} from './personal-schedule.service';
+
+const PERSONAL_SCHEDULE_DESCRIPTION =
+  'Розклад поточного користувача. TEACHER — теорія своїх груп; INSTRUCTOR — свої практичні заняття; ' +
+  'STUDENT — теорія своєї групи і своя практика, а з завершених груп лише заняття, що вже почалися. ' +
+  'Повертаються заняття, що перетинають вікно [from, to): за замовчуванням від поточного моменту ' +
+  `на ${SCHEDULE_DEFAULT_RANGE_DAYS} днів, не довше ${SCHEDULE_MAX_RANGE_DAYS} днів. ` +
+  'Скасовані — лише з includeCancelled=true. timing показує, чи заняття майбутнє, триває або закінчилося. ' +
+  'Заняття інших автошкіл і людей не повертаються.';
+
+const PERSONAL_SCHEDULE_BAD_REQUEST_DESCRIPTION =
+  'from чи to не ISO 8601 з часовим зсувом (знак + кодуйте як %2B), to не пізніше за from, ' +
+  `вікно довше ${SCHEDULE_MAX_RANGE_DAYS} днів, некоректний type чи includeCancelled, ` +
+  'або невідомий параметр (зокрема userId, groupId, organizationId). Тіло містить errors: [{ field, message }].';
 
 const SCHEDULE_RULES =
   `Тривалість — ціле число хвилин від ${LESSON_MIN_DURATION_MIN} до ${LESSON_MAX_DURATION_MIN}. ` +
@@ -84,7 +107,34 @@ const CANCEL_BAD_REQUEST_DESCRIPTION =
 @Controller('lessons')
 @UseGuards(AuthGuard, RolesGuard)
 export class LessonsController {
-  constructor(private readonly lessonsService: LessonsService) {}
+  constructor(
+    private readonly lessonsService: LessonsService,
+    private readonly personalScheduleService: PersonalScheduleService,
+  ) {}
+
+  @Get('me')
+  @Roles(...SCHEDULE_VIEW_ROLES)
+  @ApiOperation({
+    summary: 'Персональний розклад',
+    description: PERSONAL_SCHEDULE_DESCRIPTION,
+  })
+  @ApiOkResponse({ type: PersonalScheduleDto })
+  @ApiBadRequestResponse({
+    description: PERSONAL_SCHEDULE_BAD_REQUEST_DESCRIPTION,
+  })
+  @ApiForbiddenResponse({
+    description:
+      'Роль не TEACHER, INSTRUCTOR чи STUDENT: у OWNER і ADMIN немає власного розкладу.',
+  })
+  @ApiNotFoundResponse({
+    description: 'Автошколу не знайдено або її видалено.',
+  })
+  getMySchedule(
+    @CurrentUser() user: User,
+    @Query() query: PersonalScheduleQueryDto,
+  ): Promise<PersonalScheduleDto> {
+    return this.personalScheduleService.getMySchedule(user, query);
+  }
 
   @Patch('theory/:id')
   @Roles(...THEORY_LESSON_EDIT_ROLES)

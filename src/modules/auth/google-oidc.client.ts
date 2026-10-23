@@ -65,10 +65,7 @@ export class GoogleOidcClient {
     return data.id_token;
   }
 
-  async verifyIdToken(
-    idToken: string,
-    nonce?: string,
-  ): Promise<GoogleProfile> {
+  async verifyIdToken(idToken: string, nonce?: string): Promise<GoogleProfile> {
     return verifyGoogleIdToken(idToken, {
       clientId: this.config.clientId,
       nonce,

@@ -1,5 +1,10 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
-import { GroupStatus, OrganizationStatus, UserRole, UserStatus } from '@prisma/client';
+import {
+  GroupStatus,
+  OrganizationStatus,
+  UserRole,
+  UserStatus,
+} from '@prisma/client';
 
 export class DashboardOrganizationDto {
   @ApiProperty()
@@ -155,7 +160,6 @@ export class AdminDashboardDto {
   invitations: AdminDashboardInvitationsDto;
 }
 
-
 export class TeacherDashboardGroupDto {
   @ApiProperty()
   id: string;
@@ -192,7 +196,8 @@ export class TeacherDashboardStatsDto {
   groupsTotal: number;
 
   @ApiProperty({
-    description: 'Унікальні студенти в усіх групах цього TEACHER (без дублів, якщо студент у двох групах).',
+    description:
+      'Унікальні студенти в усіх групах цього TEACHER (без дублів, якщо студент у двох групах).',
     example: 34,
   })
   studentsTotal: number;
@@ -233,11 +238,11 @@ export class TeacherDashboardDto {
 
   @ApiProperty({
     type: [TeacherDashboardLessonDto],
-    description: 'Наступні 5 запланованих занять цього TEACHER, за зростанням дати.',
+    description:
+      'Наступні 5 запланованих занять цього TEACHER, за зростанням дати.',
   })
   upcomingLessons: TeacherDashboardLessonDto[];
 }
-
 
 export class StudentDashboardProfileDto {
   @ApiProperty()
@@ -369,7 +374,8 @@ export class InstructorDashboardDto {
 
   @ApiProperty({
     type: [InstructorDashboardLessonDto],
-    description: 'Наступні 5 запланованих практичних занять, за зростанням дати.',
+    description:
+      'Наступні 5 запланованих практичних занять, за зростанням дати.',
   })
   upcomingLessons: InstructorDashboardLessonDto[];
 }

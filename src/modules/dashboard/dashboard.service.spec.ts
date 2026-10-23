@@ -317,26 +317,26 @@ describe('DashboardService', () => {
   };
 
   it('returns zero stats and empty lists when the teacher has no groups', async () => {
-    await expect(service.getTeacherDashboard(teacher as never)).resolves.toEqual(
-      {
-        organization: {
-          id: 'org-1',
-          name: 'Stage Drive School',
-          logoUrl: null,
-          timezone: 'Europe/Kyiv',
-        },
-        teacher: {
-          id: 'teacher-1',
-          firstName: 'Ганна',
-          lastName: 'Коваль',
-          email: 'teacher@example.com',
-          status: UserStatus.ACTIVE,
-        },
-        stats: { groupsTotal: 0, studentsTotal: 0, upcomingLessonsTotal: 0 },
-        groups: [],
-        upcomingLessons: [],
+    await expect(
+      service.getTeacherDashboard(teacher as never),
+    ).resolves.toEqual({
+      organization: {
+        id: 'org-1',
+        name: 'Stage Drive School',
+        logoUrl: null,
+        timezone: 'Europe/Kyiv',
       },
-    );
+      teacher: {
+        id: 'teacher-1',
+        firstName: 'Ганна',
+        lastName: 'Коваль',
+        email: 'teacher@example.com',
+        status: UserStatus.ACTIVE,
+      },
+      stats: { groupsTotal: 0, studentsTotal: 0, upcomingLessonsTotal: 0 },
+      groups: [],
+      upcomingLessons: [],
+    });
 
     expect(prisma.group.findMany).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -400,8 +400,18 @@ describe('DashboardService', () => {
 
   it('counts distinct students, not the sum of per-group enrollment counts', async () => {
     prisma.group.findMany.mockResolvedValue([
-      { id: 'group-1', name: 'A', status: GroupStatus.ACTIVE, _count: { enrollments: 2 } },
-      { id: 'group-2', name: 'B', status: GroupStatus.ACTIVE, _count: { enrollments: 2 } },
+      {
+        id: 'group-1',
+        name: 'A',
+        status: GroupStatus.ACTIVE,
+        _count: { enrollments: 2 },
+      },
+      {
+        id: 'group-2',
+        name: 'B',
+        status: GroupStatus.ACTIVE,
+        _count: { enrollments: 2 },
+      },
     ]);
     // A student enrolled in both groups is returned once by the distinct query,
     // even though the per-group counts above sum to 4.
@@ -476,26 +486,26 @@ describe('DashboardService', () => {
   };
 
   it('returns zero stats and empty lists when the student has no active enrollments', async () => {
-    await expect(service.getStudentDashboard(student as never)).resolves.toEqual(
-      {
-        organization: {
-          id: 'org-1',
-          name: 'Stage Drive School',
-          logoUrl: null,
-          timezone: 'Europe/Kyiv',
-        },
-        student: {
-          id: 'student-1',
-          firstName: 'Олена',
-          lastName: 'Петренко',
-          email: 'student@example.com',
-          status: UserStatus.ACTIVE,
-        },
-        stats: { groupsTotal: 0, upcomingLessonsTotal: 0 },
-        groups: [],
-        upcomingLessons: [],
+    await expect(
+      service.getStudentDashboard(student as never),
+    ).resolves.toEqual({
+      organization: {
+        id: 'org-1',
+        name: 'Stage Drive School',
+        logoUrl: null,
+        timezone: 'Europe/Kyiv',
       },
-    );
+      student: {
+        id: 'student-1',
+        firstName: 'Олена',
+        lastName: 'Петренко',
+        email: 'student@example.com',
+        status: UserStatus.ACTIVE,
+      },
+      stats: { groupsTotal: 0, upcomingLessonsTotal: 0 },
+      groups: [],
+      upcomingLessons: [],
+    });
 
     expect(prisma.enrollment.findMany).toHaveBeenCalledWith(
       expect.objectContaining({
