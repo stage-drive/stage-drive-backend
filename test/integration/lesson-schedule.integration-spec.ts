@@ -19,13 +19,19 @@ import {
 } from '@testcontainers/postgresql';
 import { lockGroup } from '../../src/common/prisma/group-lock';
 import {
+  lockPracticeLesson,
   lockScheduleResources,
   scheduleLockKey,
 } from '../../src/common/prisma/schedule-lock';
-import { GroupsService } from '../../src/modules/groups/groups.service';
+import { DashboardService } from '../../src/modules/dashboard/dashboard.service';
+import {
+  GROUP_CLOSED_CANCELLATION_REASON,
+  GroupsService,
+} from '../../src/modules/groups/groups.service';
 import type { InvitationEmailQueue } from '../../src/modules/invitations/invitation-email.queue';
 import {
   LESSON_GROUP_CLOSED_MESSAGE,
+  LESSON_NOT_CANCELLABLE_MESSAGE,
   LessonsService,
 } from '../../src/modules/lessons/lessons.service';
 import type { LessonConflict } from '../../src/modules/lessons/schedule-conflicts';
@@ -92,6 +98,7 @@ describe('Lesson schedule (integration, real Postgres)', () => {
   let prisma: PrismaClient;
   let lessonsService: LessonsService;
   let groupsService: GroupsService;
+  let dashboardService: DashboardService;
   let sequence = 0;
 
   beforeAll(async () => {
@@ -114,6 +121,7 @@ describe('Lesson schedule (integration, real Postgres)', () => {
       service,
       new StudentsService(service, {} as InvitationEmailQueue),
     );
+    dashboardService = new DashboardService(service);
     jest.spyOn(Logger.prototype, 'log').mockImplementation(() => undefined);
   });
 
@@ -145,7 +153,7 @@ describe('Lesson schedule (integration, real Postgres)', () => {
     const admin: User = await prisma.user.create({
       data: userData(UserRole.ADMIN, 'a'),
     });
-    const teacher = await prisma.user.create({
+    const teacher: User = await prisma.user.create({
       data: userData(UserRole.TEACHER, 't'),
     });
     const instructor = await prisma.user.create({
@@ -205,6 +213,7 @@ describe('Lesson schedule (integration, real Postgres)', () => {
       scheduledAt: Date;
       durationMin?: number;
       status?: DrivingLessonStatus;
+      cancelledAt?: Date;
     }) =>
       prisma.drivingLesson.create({
         data: {
@@ -228,6 +237,7 @@ describe('Lesson schedule (integration, real Postgres)', () => {
     return {
       organization,
       admin,
+      teacher,
       instructor,
       otherInstructor,
       car1,
@@ -252,6 +262,42 @@ describe('Lesson schedule (integration, real Postgres)', () => {
       await expect(
         school.practice({ scheduledAt: at(10), durationMin: 240 }),
       ).resolves.toMatchObject({ durationMin: 240 });
+    });
+
+    it('keeps cancelled_at and the reason consistent with the status', async () => {
+      const school = await createSchool();
+      const theory = (data: object) =>
+        prisma.lesson.create({
+          data: {
+            groupId: school.group.id,
+            topic: 'Дорожні знаки',
+            scheduledAt: at(16),
+            ...data,
+          },
+        });
+
+      await expect(
+        school.practice({
+          scheduledAt: at(10),
+          status: DrivingLessonStatus.CANCELLED,
+        }),
+      ).rejects.toThrow();
+      await expect(
+        school.practice({ scheduledAt: at(10), cancelledAt: new Date() }),
+      ).rejects.toThrow();
+      await expect(
+        theory({ status: LessonStatus.CANCELLED }),
+      ).rejects.toThrow();
+      await expect(
+        theory({ cancellationReason: 'Без скасування' }),
+      ).rejects.toThrow();
+      await expect(
+        theory({
+          status: LessonStatus.CANCELLED,
+          cancelledAt: new Date(),
+          cancellationReason: 'Викладач захворів',
+        }),
+      ).resolves.toMatchObject({ status: LessonStatus.CANCELLED });
     });
 
     it('links a driving lesson to an existing car only', async () => {
@@ -373,6 +419,7 @@ describe('Lesson schedule (integration, real Postgres)', () => {
       await school.practice({
         scheduledAt: at(10),
         status: DrivingLessonStatus.CANCELLED,
+        cancelledAt: new Date(),
       });
       const moving = await school.practice({ scheduledAt: at(13) });
 
@@ -555,6 +602,213 @@ describe('Lesson schedule (integration, real Postgres)', () => {
       await expect(
         prisma.lesson.findUniqueOrThrow({ where: { id: lesson.id } }),
       ).resolves.toMatchObject({ status: LessonStatus.CANCELLED });
+    });
+  });
+
+  describe('cancel', () => {
+    it('keeps the row, its people and car, and records who cancelled it', async () => {
+      const school = await createSchool();
+      const lesson = await school.practice({ scheduledAt: at(10) });
+      const countLessons = () =>
+        prisma.drivingLesson.count({
+          where: { organizationId: school.organization.id },
+        });
+      const before = await countLessons();
+
+      await expect(
+        lessonsService.cancelPractice(school.admin, lesson.id, {
+          reason: 'Авто на ремонті',
+        }),
+      ).resolves.toMatchObject({
+        status: DrivingLessonStatus.CANCELLED,
+        cancellationReason: 'Авто на ремонті',
+        car: { id: school.car1.id },
+      });
+
+      await expect(countLessons()).resolves.toBe(before);
+      const row = await prisma.drivingLesson.findUniqueOrThrow({
+        where: { id: lesson.id },
+      });
+      expect(row).toMatchObject({
+        status: DrivingLessonStatus.CANCELLED,
+        cancelledById: school.admin.id,
+        cancellationReason: 'Авто на ремонті',
+        instructorId: school.instructor.id,
+        studentId: school.student1.id,
+        carId: school.car1.id,
+        scheduledAt: at(10),
+      });
+      expect(row.cancelledAt).toBeInstanceOf(Date);
+    });
+
+    it('frees the instructor, car and student for another lesson', async () => {
+      const school = await createSchool();
+      const cancelled = await school.practice({ scheduledAt: at(10) });
+      const moving = await school.practice({ scheduledAt: at(13) });
+      const moveTo10 = () =>
+        lessonsService.reschedulePractice(school.admin, moving.id, {
+          scheduledAt: at(10).toISOString(),
+        });
+
+      await expect(conflictsOf(moveTo10())).resolves.toEqual([
+        'INSTRUCTOR/PRACTICE',
+        'CAR/PRACTICE',
+        'STUDENT/PRACTICE',
+      ]);
+
+      await lessonsService.cancelPractice(school.admin, cancelled.id, {});
+
+      await expect(moveTo10()).resolves.toMatchObject({ scheduledAt: at(10) });
+    });
+
+    it('frees the group theory slot for practice of its student', async () => {
+      const school = await createSchool();
+      const theory = await school.theory(at(18));
+      const moving = await school.practice({ scheduledAt: at(13) });
+      const moveOntoTheory = () =>
+        lessonsService.reschedulePractice(school.admin, moving.id, {
+          scheduledAt: at(18, 30).toISOString(),
+        });
+
+      await expect(conflictsOf(moveOntoTheory())).resolves.toEqual([
+        'STUDENT/THEORY',
+      ]);
+
+      await lessonsService.cancelTheory(school.teacher, theory.id, {
+        reason: 'Викладач захворів',
+      });
+
+      await expect(moveOntoTheory()).resolves.toMatchObject({
+        scheduledAt: at(18, 30),
+      });
+    });
+
+    it('hides a cancelled lesson from the dashboards', async () => {
+      const school = await createSchool();
+      const kept = await school.practice({ scheduledAt: at(10) });
+      const cancelled = await school.practice({
+        carId: school.car2.id,
+        studentId: school.student2.id,
+        scheduledAt: at(13),
+      });
+      const theory = await school.theory(at(18));
+
+      await lessonsService.cancelPractice(school.admin, cancelled.id, {});
+      await lessonsService.cancelTheory(school.admin, theory.id, {});
+
+      const instructor = await dashboardService.getInstructorDashboard(
+        school.instructor,
+      );
+      expect(instructor.upcomingLessons.map((l) => l.id)).toEqual([kept.id]);
+      expect(instructor.stats.studentsTotal).toBe(1);
+      const teacher = await dashboardService.getTeacherDashboard(
+        school.teacher,
+      );
+      expect(teacher.upcomingLessons).toEqual([]);
+    });
+
+    it('refuses a lesson of another school and leaves it untouched', async () => {
+      const school = await createSchool();
+      const other = await createSchool();
+      const lesson = await other.practice({ scheduledAt: at(10) });
+
+      await expect(
+        lessonsService.cancelPractice(school.admin, lesson.id, {}),
+      ).rejects.toBeInstanceOf(NotFoundException);
+      await expect(
+        prisma.drivingLesson.findUniqueOrThrow({ where: { id: lesson.id } }),
+      ).resolves.toMatchObject({
+        status: DrivingLessonStatus.SCHEDULED,
+        cancelledAt: null,
+      });
+    });
+
+    it('makes a cancel wait for an in-flight reschedule of the same lesson', async () => {
+      const school = await createSchool();
+      const lesson = await school.practice({ scheduledAt: at(10) });
+      const moved = deferred();
+      const commit = deferred();
+
+      // In-flight reschedule: holds the lesson row and has moved it to 14:00.
+      const rescheduling = prisma.$transaction(async (tx) => {
+        await lockPracticeLesson(tx, lesson.id, school.organization.id);
+        await tx.drivingLesson.update({
+          where: { id: lesson.id },
+          data: { scheduledAt: at(14) },
+        });
+        moved.resolve();
+        await commit.promise;
+      });
+
+      try {
+        await moved.promise;
+        const cancelling = lessonsService.cancelPractice(
+          school.admin,
+          lesson.id,
+          {},
+        );
+        const state = track(cancelling);
+
+        await delay(LOCK_WAIT_MS);
+        expect(state.settled).toBe(false);
+
+        commit.resolve();
+        await rescheduling;
+
+        await expect(cancelling).resolves.toMatchObject({
+          status: DrivingLessonStatus.CANCELLED,
+          scheduledAt: at(14),
+        });
+      } finally {
+        commit.resolve();
+        await rescheduling.catch(() => undefined);
+      }
+    });
+
+    it('does not deadlock when a group closes while its lesson is cancelled', async () => {
+      const school = await createSchool();
+      const lesson = await school.theory(at(16));
+
+      const settled = Promise.allSettled([
+        groupsService.changeStatus(school.admin, school.group.id, {
+          status: GroupStatus.COMPLETED,
+        }),
+        lessonsService.cancelTheory(school.teacher, lesson.id, {
+          reason: 'Викладач захворів',
+        }),
+      ]);
+      const winner = await Promise.race([
+        settled.then(() => 'settled'),
+        delay(UNBLOCKED_WITHIN_MS).then(() => 'stuck'),
+      ]);
+      expect(winner).toBe('settled');
+
+      const [closing, cancelling] = await settled;
+      expect(closing.status).toBe('fulfilled');
+      const row = await prisma.lesson.findUniqueOrThrow({
+        where: { id: lesson.id },
+      });
+      expect(row.status).toBe(LessonStatus.CANCELLED);
+      expect(row.cancelledAt).toBeInstanceOf(Date);
+      // Whoever came first owns the cancellation; the other sees it.
+      if (cancelling.status === 'fulfilled') {
+        expect(row).toMatchObject({
+          cancelledById: school.teacher.id,
+          cancellationReason: 'Викладач захворів',
+        });
+      } else {
+        expect(cancelling.reason).toBeInstanceOf(ConflictException);
+        expect(
+          (cancelling.reason as ConflictException).getResponse(),
+        ).toMatchObject({
+          message: LESSON_NOT_CANCELLABLE_MESSAGE,
+          currentStatus: LessonStatus.CANCELLED,
+        });
+        expect(row).toMatchObject({
+          cancelledById: school.admin.id,
+          cancellationReason: GROUP_CLOSED_CANCELLATION_REASON,
+        });
+      }
     });
   });
 });

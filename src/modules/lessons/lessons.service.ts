@@ -39,6 +39,7 @@ import {
   INSTRUCTOR_CAR_MISMATCH_MESSAGE,
 } from '../students/students.service';
 import {
+  CancelLessonDto,
   LessonPersonDto,
   PracticeLessonDto,
   RescheduleLessonDto,
@@ -87,6 +88,10 @@ export const NO_THEORY_LESSON_FIELDS_MESSAGE =
   'Немає дозволених полів для оновлення (topic, durationMin).';
 export const NO_PRACTICE_LESSON_FIELDS_MESSAGE =
   'Немає дозволених полів для оновлення (durationMin, instructorId, carId).';
+export const LESSON_NOT_CANCELLABLE_MESSAGE =
+  'Скасувати можна лише заняття зі статусом SCHEDULED.';
+export const LESSON_CANCEL_STARTED_MESSAGE =
+  'Скасувати можна лише заняття, яке ще не почалося.';
 
 const OPEN_GROUP_STATUSES: GroupStatus[] = [
   GroupStatus.PLANNED,
@@ -106,6 +111,8 @@ const theoryLessonSelect = {
   scheduledAt: true,
   durationMin: true,
   status: true,
+  cancelledAt: true,
+  cancellationReason: true,
   updatedAt: true,
   group: {
     select: {
@@ -134,6 +141,8 @@ const practiceLessonSelect = {
   scheduledAt: true,
   durationMin: true,
   status: true,
+  cancelledAt: true,
+  cancellationReason: true,
   updatedAt: true,
   instructor: {
     select: {
@@ -205,11 +214,14 @@ function isEmptyPayload(payload: object): boolean {
   return Object.values(payload).every((value) => value === undefined);
 }
 
-function assertEditable(status: LessonStatus | DrivingLessonStatus): void {
+function assertEditable(
+  status: LessonStatus | DrivingLessonStatus,
+  message: string = LESSON_NOT_EDITABLE_MESSAGE,
+): void {
   if (status !== LessonStatus.SCHEDULED) {
     throw new ConflictException({
       statusCode: 409,
-      message: LESSON_NOT_EDITABLE_MESSAGE,
+      message,
       error: 'Conflict',
       currentStatus: status,
     });
@@ -233,6 +245,16 @@ function assertStartsInFuture(
     throw fieldError('scheduledAt', LESSON_IN_PAST_MESSAGE);
   }
   throw new ConflictException(LESSON_ALREADY_STARTED_MESSAGE);
+}
+
+/**
+ * Скасовується лише розклад. Минуле SCHEDULED-заняття — це облік
+ * відвідування, як і в GroupsService.changeStatus.
+ */
+function assertNotStarted(scheduledAt: Date, now: Date): void {
+  if (scheduledAt.getTime() <= now.getTime()) {
+    throw new ConflictException(LESSON_CANCEL_STARTED_MESSAGE);
+  }
 }
 
 /** Місцева дата у форматі YYYY-MM-DD (en-CA). */
@@ -314,6 +336,8 @@ function toTheoryLessonDto(row: TheoryLessonRow): TheoryLessonDto {
     durationMin: row.durationMin,
     group: { id: row.group.id, name: row.group.name },
     teacher: toPerson(row.group.teacher),
+    cancelledAt: row.cancelledAt,
+    cancellationReason: row.cancellationReason,
     updatedAt: row.updatedAt,
   };
 }
@@ -336,6 +360,8 @@ function toPracticeLessonDto(row: PracticeLessonRow): PracticeLessonDto {
           transmission: row.car.transmission,
         }
       : null,
+    cancelledAt: row.cancelledAt,
+    cancellationReason: row.cancellationReason,
     updatedAt: row.updatedAt,
   };
 }
@@ -405,6 +431,83 @@ export class LessonsService {
   }
 
   /**
+   * Заняття не видаляється: статус стає CANCELLED, і пошук конфліктів та
+   * дашборди перестають його бачити, тож час викладача й групи звільняється.
+   * Стан викладача не перевіряється: заблокований викладач — привід скасувати.
+   */
+  async cancelTheory(
+    actor: User,
+    lessonId: string,
+    payload: CancelLessonDto,
+  ): Promise<TheoryLessonDto> {
+    assertCanEditTheory(actor);
+    await this.requireOrganization(actor.organizationId);
+    const now = new Date();
+
+    const saved = await this.prisma.$transaction(async (tx) => {
+      const lesson = await this.lockTheoryForChange(tx, actor, lessonId);
+      // Спершу статус: повторне скасування завжди повертає currentStatus.
+      assertEditable(lesson.status, LESSON_NOT_CANCELLABLE_MESSAGE);
+      if (!OPEN_GROUP_STATUSES.includes(lesson.group.status)) {
+        throw new ConflictException(LESSON_GROUP_CLOSED_MESSAGE);
+      }
+      assertNotStarted(lesson.scheduledAt, now);
+
+      return tx.lesson.update({
+        where: { id: lesson.id },
+        data: {
+          status: LessonStatus.CANCELLED,
+          cancelledAt: now,
+          cancelledById: actor.id,
+          cancellationReason: payload.reason ?? null,
+        },
+        select: theoryLessonSelect,
+      });
+    });
+
+    this.logger.log(
+      `Lesson cancelled type=THEORY lessonId=${saved.id} scheduledAt=${saved.scheduledAt.toISOString()} actorId=${actor.id} organizationId=${actor.organizationId}`,
+    );
+    return toTheoryLessonDto(saved);
+  }
+
+  /**
+   * Те саме для практики: звільняється час інструктора, авто і студента.
+   * Інструктор, авто і студент лишаються в занятті як історія.
+   */
+  async cancelPractice(
+    actor: User,
+    lessonId: string,
+    payload: CancelLessonDto,
+  ): Promise<PracticeLessonDto> {
+    assertCanEditPractice(actor);
+    await this.requireOrganization(actor.organizationId);
+    const now = new Date();
+
+    const saved = await this.prisma.$transaction(async (tx) => {
+      const lesson = await this.lockPracticeForChange(tx, actor, lessonId);
+      assertEditable(lesson.status, LESSON_NOT_CANCELLABLE_MESSAGE);
+      assertNotStarted(lesson.scheduledAt, now);
+
+      return tx.drivingLesson.update({
+        where: { id: lesson.id },
+        data: {
+          status: DrivingLessonStatus.CANCELLED,
+          cancelledAt: now,
+          cancelledById: actor.id,
+          cancellationReason: payload.reason ?? null,
+        },
+        select: practiceLessonSelect,
+      });
+    });
+
+    this.logger.log(
+      `Lesson cancelled type=PRACTICE lessonId=${saved.id} scheduledAt=${saved.scheduledAt.toISOString()} actorId=${actor.id} organizationId=${actor.organizationId}`,
+    );
+    return toPracticeLessonDto(saved);
+  }
+
+  /**
    * Спільний конвеєр редагування і перенесення теорії. Порядок блокувань:
    * група (FOR SHARE) → заняття (FOR UPDATE) → advisory-ключі. Порядок
    * «група → заняття» той самий, що в GroupsService.changeStatus.
@@ -418,37 +521,7 @@ export class LessonsService {
     const now = new Date();
 
     const result = await this.prisma.$transaction(async (tx) => {
-      const target = await tx.lesson.findFirst({
-        where: {
-          id: lessonId,
-          group: { organizationId: actor.organizationId },
-        },
-        select: { groupId: true },
-      });
-      if (!target) {
-        throw new NotFoundException(LESSON_NOT_FOUND_MESSAGE);
-      }
-
-      // Закриття групи, що вже йде, завершиться раніше, і нижче ми побачимо
-      // закриту групу.
-      await lockGroup(tx, target.groupId, actor.organizationId, 'share');
-      await lockTheoryLesson(tx, lessonId, actor.organizationId);
-      const lesson = await tx.lesson.findFirst({
-        where: {
-          id: lessonId,
-          group: { organizationId: actor.organizationId },
-        },
-        select: theoryLessonSelect,
-      });
-      if (!lesson) {
-        throw new NotFoundException(LESSON_NOT_FOUND_MESSAGE);
-      }
-      if (
-        actor.role === UserRole.TEACHER &&
-        lesson.group.teacherId !== actor.id
-      ) {
-        throw new ForbiddenException('Insufficient permissions');
-      }
+      const lesson = await this.lockTheoryForChange(tx, actor, lessonId);
       assertEditable(lesson.status);
       if (!OPEN_GROUP_STATUSES.includes(lesson.group.status)) {
         throw new ConflictException(LESSON_GROUP_CLOSED_MESSAGE);
@@ -534,21 +607,7 @@ export class LessonsService {
     const now = new Date();
 
     const result = await this.prisma.$transaction(async (tx) => {
-      // Паралельна зміна того самого заняття чекає на цю транзакцію.
-      await lockPracticeLesson(tx, lessonId, actor.organizationId);
-      const lesson = await tx.drivingLesson.findFirst({
-        where: { id: lessonId, organizationId: actor.organizationId },
-        select: practiceLessonSelect,
-      });
-      if (!lesson) {
-        throw new NotFoundException(LESSON_NOT_FOUND_MESSAGE);
-      }
-      if (
-        actor.role === UserRole.INSTRUCTOR &&
-        lesson.instructorId !== actor.id
-      ) {
-        throw new ForbiddenException('Insufficient permissions');
-      }
+      const lesson = await this.lockPracticeForChange(tx, actor, lessonId);
       assertEditable(lesson.status);
 
       // Старе заняття без авто бере авто, призначене студенту.
@@ -644,6 +703,76 @@ export class LessonsService {
       );
     }
     return toPracticeLessonDto(result.lesson);
+  }
+
+  /**
+   * Блокує групу (FOR SHARE), потім заняття (FOR UPDATE) і читає заняття.
+   * Заняття іншої організації — 404, заняття чужої групи для TEACHER — 403.
+   */
+  private async lockTheoryForChange(
+    tx: Prisma.TransactionClient,
+    actor: User,
+    lessonId: string,
+  ): Promise<TheoryLessonRow> {
+    const target = await tx.lesson.findFirst({
+      where: {
+        id: lessonId,
+        group: { organizationId: actor.organizationId },
+      },
+      select: { groupId: true },
+    });
+    if (!target) {
+      throw new NotFoundException(LESSON_NOT_FOUND_MESSAGE);
+    }
+
+    // Закриття групи, що вже йде, завершиться раніше, і нижче ми побачимо
+    // закриту групу.
+    await lockGroup(tx, target.groupId, actor.organizationId, 'share');
+    await lockTheoryLesson(tx, lessonId, actor.organizationId);
+    const lesson = await tx.lesson.findFirst({
+      where: {
+        id: lessonId,
+        group: { organizationId: actor.organizationId },
+      },
+      select: theoryLessonSelect,
+    });
+    if (!lesson) {
+      throw new NotFoundException(LESSON_NOT_FOUND_MESSAGE);
+    }
+    if (
+      actor.role === UserRole.TEACHER &&
+      lesson.group.teacherId !== actor.id
+    ) {
+      throw new ForbiddenException('Insufficient permissions');
+    }
+    return lesson;
+  }
+
+  /**
+   * Блокує заняття (FOR UPDATE) і читає його. Заняття іншої організації — 404,
+   * чуже заняття для INSTRUCTOR — 403.
+   */
+  private async lockPracticeForChange(
+    tx: Prisma.TransactionClient,
+    actor: User,
+    lessonId: string,
+  ): Promise<PracticeLessonRow> {
+    // Паралельна зміна того самого заняття чекає на цю транзакцію.
+    await lockPracticeLesson(tx, lessonId, actor.organizationId);
+    const lesson = await tx.drivingLesson.findFirst({
+      where: { id: lessonId, organizationId: actor.organizationId },
+      select: practiceLessonSelect,
+    });
+    if (!lesson) {
+      throw new NotFoundException(LESSON_NOT_FOUND_MESSAGE);
+    }
+    if (
+      actor.role === UserRole.INSTRUCTOR &&
+      lesson.instructorId !== actor.id
+    ) {
+      throw new ForbiddenException('Insufficient permissions');
+    }
+    return lesson;
   }
 
   /** Те саме правило, що CarsService.requireInstructor. */

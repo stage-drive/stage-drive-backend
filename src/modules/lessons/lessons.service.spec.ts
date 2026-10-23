@@ -32,9 +32,11 @@ import {
 } from '../students/students.service';
 import {
   LESSON_ALREADY_STARTED_MESSAGE,
+  LESSON_CANCEL_STARTED_MESSAGE,
   LESSON_GROUP_CLOSED_MESSAGE,
   LESSON_IN_PAST_MESSAGE,
   LESSON_INSTRUCTOR_CHANGE_MESSAGE,
+  LESSON_NOT_CANCELLABLE_MESSAGE,
   LESSON_NOT_EDITABLE_MESSAGE,
   LESSON_NOT_FOUND_MESSAGE,
   LESSON_OUTSIDE_GROUP_DATES_MESSAGE,
@@ -120,6 +122,8 @@ describe('LessonsService', () => {
       scheduledAt: new Date('2026-11-02T08:00:00.000Z'),
       durationMin: 60,
       status: DrivingLessonStatus.SCHEDULED as DrivingLessonStatus,
+      cancelledAt: null as Date | null,
+      cancellationReason: null as string | null,
       updatedAt: new Date('2026-10-20T09:00:00.000Z'),
       instructor: {
         id: 'instructor-1',
@@ -164,6 +168,8 @@ describe('LessonsService', () => {
       scheduledAt: new Date('2026-11-03T16:00:00.000Z'),
       durationMin: 90,
       status: LessonStatus.SCHEDULED as LessonStatus,
+      cancelledAt: null as Date | null,
+      cancellationReason: null as string | null,
       updatedAt: new Date('2026-10-20T09:00:00.000Z'),
       group: {
         id: 'group-1',
@@ -313,6 +319,8 @@ describe('LessonsService', () => {
           category: LicenseCategory.B,
           transmission: Transmission.MANUAL,
         },
+        cancelledAt: null,
+        cancellationReason: null,
         updatedAt: new Date('2026-10-20T09:00:00.000Z'),
       });
     });
@@ -792,6 +800,8 @@ describe('LessonsService', () => {
         durationMin: 90,
         group: { id: 'group-1', name: 'ПДР — Група А' },
         teacher: { id: 'teacher-1', firstName: 'Ірина', lastName: 'Мельник' },
+        cancelledAt: null,
+        cancellationReason: null,
         updatedAt: new Date('2026-10-20T09:00:00.000Z'),
       });
     });
@@ -1001,6 +1011,356 @@ describe('LessonsService', () => {
         'STUDENT',
       ]);
       expect(prisma.lesson.update).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('cancel', () => {
+    describe('practice', () => {
+      it('cancels a future lesson, keeps its people and car, and returns the saved status', async () => {
+        const result = await service.cancelPractice(
+          admin as never,
+          'lesson-1',
+          { reason: 'Авто на ремонті' },
+        );
+
+        expect(updateData(prisma.drivingLesson.update)).toEqual({
+          status: DrivingLessonStatus.CANCELLED,
+          cancelledAt: NOW,
+          cancelledById: 'admin-1',
+          cancellationReason: 'Авто на ремонті',
+        });
+        expect(result).toEqual({
+          id: 'lesson-1',
+          type: 'PRACTICE',
+          status: DrivingLessonStatus.CANCELLED,
+          scheduledAt: new Date('2026-11-02T08:00:00.000Z'),
+          endsAt: new Date('2026-11-02T09:00:00.000Z'),
+          durationMin: 60,
+          instructor: {
+            id: 'instructor-1',
+            firstName: 'Олег',
+            lastName: 'Ткаченко',
+          },
+          student: { id: 'student-1', firstName: 'Марія', lastName: 'Коваль' },
+          car: {
+            id: 'car-1',
+            plateNumber: 'AA1234BB',
+            category: LicenseCategory.B,
+            transmission: Transmission.MANUAL,
+          },
+          cancelledAt: NOW,
+          cancellationReason: 'Авто на ремонті',
+          updatedAt: new Date('2026-10-20T09:00:00.000Z'),
+        });
+      });
+
+      it('stores null when no reason is given', async () => {
+        await service.cancelPractice(admin as never, 'lesson-1', {});
+
+        expect(updateData(prisma.drivingLesson.update)).toMatchObject({
+          cancellationReason: null,
+        });
+      });
+
+      it('lets an instructor cancel their own lesson', async () => {
+        await service.cancelPractice(instructorActor as never, 'lesson-1', {});
+
+        expect(updateData(prisma.drivingLesson.update)).toMatchObject({
+          cancelledById: 'instructor-1',
+        });
+      });
+
+      it('forbids an instructor from cancelling another instructor lesson', async () => {
+        givenPractice(
+          practiceRow({ lesson: { instructorId: 'instructor-2' } }),
+        );
+
+        const error = await caught(
+          service.cancelPractice(instructorActor as never, 'lesson-1', {}),
+        );
+
+        expect(error).toBeInstanceOf(ForbiddenException);
+        expect(prisma.drivingLesson.update).not.toHaveBeenCalled();
+      });
+
+      it.each([
+        ['TEACHER', teacherActor],
+        ['STUDENT', studentActor],
+        ['OWNER', ownerActor],
+      ])('forbids %s without touching the database', async (_, actor) => {
+        const error = await caught(
+          service.cancelPractice(actor as never, 'lesson-1', {}),
+        );
+
+        expect(error).toBeInstanceOf(ForbiddenException);
+        expect(prisma.organization.findUnique).not.toHaveBeenCalled();
+        expect(prisma.$transaction).not.toHaveBeenCalled();
+      });
+
+      it('returns 404 for a lesson of another organization', async () => {
+        prisma.drivingLesson.findFirst.mockResolvedValue(null);
+
+        const error = await caught(
+          service.cancelPractice(admin as never, 'lesson-1', {}),
+        );
+
+        expect(error).toBeInstanceOf(NotFoundException);
+        expect(error.message).toBe(LESSON_NOT_FOUND_MESSAGE);
+        expect(prisma.drivingLesson.findFirst).toHaveBeenCalledWith(
+          expect.objectContaining({
+            where: { id: 'lesson-1', organizationId: 'org-1' },
+          }),
+        );
+        expect(rawSql(prisma.$queryRaw, 0)).toContain(
+          'WHERE id = $1::uuid AND organization_id = $2::uuid FOR UPDATE',
+        );
+        expect(prisma.drivingLesson.update).not.toHaveBeenCalled();
+      });
+
+      it.each([DrivingLessonStatus.COMPLETED, DrivingLessonStatus.CANCELLED])(
+        'refuses a %s lesson and reports its status',
+        async (status) => {
+          givenPractice(practiceRow({ lesson: { status } }));
+
+          const error = await caught(
+            service.cancelPractice(admin as never, 'lesson-1', {}),
+          );
+
+          expect(error).toBeInstanceOf(ConflictException);
+          expect(error.getResponse()).toEqual({
+            statusCode: 409,
+            message: LESSON_NOT_CANCELLABLE_MESSAGE,
+            error: 'Conflict',
+            currentStatus: status,
+          });
+          expect(prisma.drivingLesson.update).not.toHaveBeenCalled();
+        },
+      );
+
+      it('reports the status, not the time, for a past cancelled lesson', async () => {
+        givenPractice(
+          practiceRow({
+            lesson: {
+              status: DrivingLessonStatus.CANCELLED,
+              scheduledAt: new Date('2026-10-20T08:00:00.000Z'),
+            },
+          }),
+        );
+
+        const error = await caught(
+          service.cancelPractice(admin as never, 'lesson-1', {}),
+        );
+
+        expect(error.message).toBe(LESSON_NOT_CANCELLABLE_MESSAGE);
+      });
+
+      it.each([
+        ['already started', '2026-10-21T09:30:00.000Z'],
+        ['starting right now', NOW.toISOString()],
+      ])('refuses a lesson that is %s', async (_, scheduledAt) => {
+        givenPractice(
+          practiceRow({ lesson: { scheduledAt: new Date(scheduledAt) } }),
+        );
+
+        const error = await caught(
+          service.cancelPractice(admin as never, 'lesson-1', {}),
+        );
+
+        expect(error).toBeInstanceOf(ConflictException);
+        expect(error.message).toBe(LESSON_CANCEL_STARTED_MESSAGE);
+        expect(prisma.drivingLesson.update).not.toHaveBeenCalled();
+      });
+
+      it.each([
+        [
+          'a blocked instructor',
+          { instructor: { status: UserStatus.BLOCKED } },
+        ],
+        [
+          'a dropped student',
+          { profile: { trainingStatus: TrainingStatus.DROPPED } },
+        ],
+      ])('still cancels a lesson with %s', async (_, overrides) => {
+        givenPractice(practiceRow(overrides));
+
+        await service.cancelPractice(admin as never, 'lesson-1', {});
+
+        expect(prisma.drivingLesson.update).toHaveBeenCalledTimes(1);
+      });
+
+      it('does not check the car, conflicts or schedule locks', async () => {
+        prisma.car.findUnique.mockResolvedValue({
+          ...availableCar,
+          status: CarStatus.MAINTENANCE,
+        });
+
+        await service.cancelPractice(admin as never, 'lesson-1', {});
+
+        expect(prisma.car.findUnique).not.toHaveBeenCalled();
+        expect(prisma.drivingLesson.findMany).not.toHaveBeenCalled();
+        expect(prisma.lesson.findMany).not.toHaveBeenCalled();
+        expect(prisma.$executeRaw).not.toHaveBeenCalled();
+        expect(prisma.drivingLesson.update).toHaveBeenCalledTimes(1);
+      });
+
+      it('logs ids without the reason or personal data', async () => {
+        await service.cancelPractice(admin as never, 'lesson-1', {
+          reason: 'Марія захворіла',
+        });
+
+        expect(log).toHaveBeenCalledWith(
+          'Lesson cancelled type=PRACTICE lessonId=lesson-1 ' +
+            'scheduledAt=2026-11-02T08:00:00.000Z actorId=admin-1 organizationId=org-1',
+        );
+        const logged = log.mock.calls.flat().join(' ');
+        expect(logged).not.toContain('захворіла');
+        expect(logged).not.toContain('Марія');
+      });
+    });
+
+    describe('theory', () => {
+      it('lets the group teacher cancel a future lesson', async () => {
+        const result = await service.cancelTheory(
+          teacherActor as never,
+          'lesson-t1',
+          { reason: 'Викладач захворів' },
+        );
+
+        expect(updateData(prisma.lesson.update)).toEqual({
+          status: LessonStatus.CANCELLED,
+          cancelledAt: NOW,
+          cancelledById: 'teacher-1',
+          cancellationReason: 'Викладач захворів',
+        });
+        expect(result).toMatchObject({
+          id: 'lesson-t1',
+          type: 'THEORY',
+          status: LessonStatus.CANCELLED,
+          cancelledAt: NOW,
+          cancellationReason: 'Викладач захворів',
+          group: { id: 'group-1', name: 'ПДР — Група А' },
+        });
+        expect(log).toHaveBeenCalledWith(
+          'Lesson cancelled type=THEORY lessonId=lesson-t1 ' +
+            'scheduledAt=2026-11-03T16:00:00.000Z actorId=teacher-1 organizationId=org-1',
+        );
+      });
+
+      it('forbids a teacher of another group', async () => {
+        givenTheory(theoryRow({ group: { teacherId: 'teacher-2' } }));
+
+        const error = await caught(
+          service.cancelTheory(teacherActor as never, 'lesson-t1', {}),
+        );
+
+        expect(error).toBeInstanceOf(ForbiddenException);
+        expect(prisma.lesson.update).not.toHaveBeenCalled();
+      });
+
+      it.each([
+        ['INSTRUCTOR', instructorActor],
+        ['STUDENT', studentActor],
+        ['OWNER', ownerActor],
+      ])('forbids %s without touching the database', async (_, actor) => {
+        const error = await caught(
+          service.cancelTheory(actor as never, 'lesson-t1', {}),
+        );
+
+        expect(error).toBeInstanceOf(ForbiddenException);
+        expect(prisma.$transaction).not.toHaveBeenCalled();
+      });
+
+      it('returns 404 for a lesson of another organization without locking', async () => {
+        prisma.lesson.findFirst.mockResolvedValue(null);
+
+        const error = await caught(
+          service.cancelTheory(admin as never, 'lesson-t1', {}),
+        );
+
+        expect(error).toBeInstanceOf(NotFoundException);
+        expect(prisma.lesson.findFirst).toHaveBeenCalledWith(
+          expect.objectContaining({
+            where: { id: 'lesson-t1', group: { organizationId: 'org-1' } },
+          }),
+        );
+        expect(prisma.$queryRaw).not.toHaveBeenCalled();
+      });
+
+      it('locks the group, then the lesson, then writes without schedule locks', async () => {
+        await service.cancelTheory(admin as never, 'lesson-t1', {});
+
+        expect(rawSql(prisma.$queryRaw, 0)).toBe(
+          'SELECT id FROM groups WHERE id = $1::uuid AND organization_id = $2::uuid FOR SHARE',
+        );
+        expect(rawSql(prisma.$queryRaw, 1)).toContain('FOR UPDATE OF l');
+        const order = [
+          prisma.$queryRaw.mock.invocationCallOrder[0],
+          prisma.$queryRaw.mock.invocationCallOrder[1],
+          prisma.lesson.findFirst.mock.invocationCallOrder[1],
+          prisma.lesson.update.mock.invocationCallOrder[0],
+        ];
+        expect(order).toEqual([...order].sort((a, b) => a - b));
+        expect(prisma.$executeRaw).not.toHaveBeenCalled();
+        expect(prisma.lesson.findMany).not.toHaveBeenCalled();
+        expect(prisma.drivingLesson.findMany).not.toHaveBeenCalled();
+      });
+
+      it.each([LessonStatus.COMPLETED, LessonStatus.CANCELLED])(
+        'refuses a %s lesson and reports its status',
+        async (status) => {
+          givenTheory(theoryRow({ lesson: { status } }));
+
+          const error = await caught(
+            service.cancelTheory(admin as never, 'lesson-t1', {}),
+          );
+
+          expect(error.getResponse()).toEqual({
+            statusCode: 409,
+            message: LESSON_NOT_CANCELLABLE_MESSAGE,
+            error: 'Conflict',
+            currentStatus: status,
+          });
+          expect(prisma.lesson.update).not.toHaveBeenCalled();
+        },
+      );
+
+      it.each([GroupStatus.COMPLETED, GroupStatus.ARCHIVED])(
+        'refuses a lesson of a %s group',
+        async (status) => {
+          givenTheory(theoryRow({ group: { status } }));
+
+          const error = await caught(
+            service.cancelTheory(admin as never, 'lesson-t1', {}),
+          );
+
+          expect(error).toBeInstanceOf(ConflictException);
+          expect(error.message).toBe(LESSON_GROUP_CLOSED_MESSAGE);
+          expect(prisma.lesson.update).not.toHaveBeenCalled();
+        },
+      );
+
+      it('refuses a lesson that already started', async () => {
+        givenTheory(
+          theoryRow({
+            lesson: { scheduledAt: new Date('2026-10-21T09:00:00.000Z') },
+          }),
+        );
+
+        const error = await caught(
+          service.cancelTheory(admin as never, 'lesson-t1', {}),
+        );
+
+        expect(error).toBeInstanceOf(ConflictException);
+        expect(error.message).toBe(LESSON_CANCEL_STARTED_MESSAGE);
+      });
+
+      it('still cancels when the teacher is blocked', async () => {
+        givenTheory(theoryRow({ teacher: { status: UserStatus.BLOCKED } }));
+
+        await service.cancelTheory(admin as never, 'lesson-t1', {});
+
+        expect(prisma.lesson.update).toHaveBeenCalledTimes(1);
+      });
     });
   });
 });

@@ -51,6 +51,8 @@ export const NO_GROUP_FIELDS_MESSAGE =
 export const GROUP_STATUS_TRANSITION_MESSAGE =
   'Недозволений перехід статусу групи.';
 export const COURSE_NOT_FOUND_MESSAGE = 'Course not found';
+export const GROUP_CLOSED_CANCELLATION_REASON =
+  'Групу завершено або архівовано.';
 export const COURSE_ARCHIVED_MESSAGE =
   'Архівований курс не можна призначити групі.';
 
@@ -328,13 +330,19 @@ export class GroupsService {
         completedEnrollments = enrollments.count;
 
         // Минулі SCHEDULED-заняття не чіпаємо: це облік відвідування, а не розклад.
+        const now = new Date();
         const lessons = await tx.lesson.updateMany({
           where: {
             groupId: existing.id,
             status: LessonStatus.SCHEDULED,
-            scheduledAt: { gte: new Date() },
+            scheduledAt: { gte: now },
           },
-          data: { status: LessonStatus.CANCELLED },
+          data: {
+            status: LessonStatus.CANCELLED,
+            cancelledAt: now,
+            cancelledById: actor.id,
+            cancellationReason: GROUP_CLOSED_CANCELLATION_REASON,
+          },
         });
         cancelledLessons = lessons.count;
       }
