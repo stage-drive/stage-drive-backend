@@ -18,6 +18,8 @@ describe('LessonsController', () => {
   });
 
   it.each([
+    ['createTheory', [UserRole.ADMIN, UserRole.TEACHER]],
+    ['createPractice', [UserRole.ADMIN, UserRole.INSTRUCTOR]],
     ['updateTheory', [UserRole.ADMIN, UserRole.TEACHER]],
     ['rescheduleTheory', [UserRole.ADMIN, UserRole.TEACHER]],
     ['updatePractice', [UserRole.ADMIN, UserRole.INSTRUCTOR]],
@@ -51,11 +53,26 @@ describe('LessonsController', () => {
     },
   );
 
+  it.each(['createTheory', 'createPractice'] as const)(
+    '%s answers 201',
+    (method) => {
+      expect(
+        Reflect.getMetadata(
+          HTTP_CODE_METADATA,
+          // eslint-disable-next-line @typescript-eslint/unbound-method -- only reads decorator metadata, never invoked
+          LessonsController.prototype[method],
+        ),
+      ).toBe(HttpStatus.CREATED);
+    },
+  );
+
   describe('endpoints', () => {
     const user = { id: 'admin-1', organizationId: 'org-1' };
     const id = 'lesson-1';
     const response = { id };
     const lessonsService = {
+      createTheory: jest.fn().mockResolvedValue(response),
+      createPractice: jest.fn().mockResolvedValue(response),
       updateTheory: jest.fn().mockResolvedValue(response),
       rescheduleTheory: jest.fn().mockResolvedValue(response),
       updatePractice: jest.fn().mockResolvedValue(response),
@@ -85,6 +102,29 @@ describe('LessonsController', () => {
           controller[method](user as never, id, body as never),
         ).resolves.toBe(response);
         expect(lessonsService[method]).toHaveBeenCalledWith(user, id, body);
+      },
+    );
+
+    it.each([
+      [
+        'createTheory',
+        {
+          groupId: 'group-1',
+          topic: 'Дорожні знаки',
+          scheduledAt: '2026-11-03T18:00:00+02:00',
+        },
+      ],
+      [
+        'createPractice',
+        { studentId: 'student-1', scheduledAt: '2026-11-03T10:00:00+02:00' },
+      ],
+    ] as const)(
+      '%s passes the current user and body to the service',
+      async (method, body) => {
+        await expect(
+          controller[method](user as never, body as never),
+        ).resolves.toBe(response);
+        expect(lessonsService[method]).toHaveBeenCalledWith(user, body);
       },
     );
 

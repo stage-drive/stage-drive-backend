@@ -26,15 +26,20 @@ import {
   INSTRUCTOR_NOT_FOUND_MESSAGE,
   INSTRUCTOR_ROLE_MESSAGE,
 } from '../cars/cars.service';
+import { GROUP_NOT_FOUND_MESSAGE } from '../groups/groups.service';
 import {
   CAR_NOT_AVAILABLE_MESSAGE,
   INSTRUCTOR_CAR_MISMATCH_MESSAGE,
+  STUDENT_NOT_FOUND_MESSAGE,
 } from '../students/students.service';
 import {
   LESSON_ALREADY_STARTED_MESSAGE,
   LESSON_CANCEL_STARTED_MESSAGE,
+  LESSON_CREATE_IN_PAST_MESSAGE,
   LESSON_GROUP_CLOSED_MESSAGE,
+  LESSON_GROUP_NOT_OPEN_MESSAGE,
   LESSON_IN_PAST_MESSAGE,
+  LESSON_INSTRUCTOR_ASSIGN_MESSAGE,
   LESSON_INSTRUCTOR_CHANGE_MESSAGE,
   LESSON_NOT_CANCELLABLE_MESSAGE,
   LESSON_NOT_EDITABLE_MESSAGE,
@@ -45,6 +50,8 @@ import {
   NO_PRACTICE_LESSON_FIELDS_MESSAGE,
   NO_THEORY_LESSON_FIELDS_MESSAGE,
   PRACTICE_CAR_REQUIRED_MESSAGE,
+  PRACTICE_INSTRUCTOR_REQUIRED_MESSAGE,
+  STUDENT_NOT_ASSIGNED_MESSAGE,
   STUDENT_NOT_IN_PRACTICE_MESSAGE,
 } from './lessons.service';
 import { LESSON_SCHEDULE_CONFLICT_MESSAGE } from './schedule-conflicts';
@@ -209,14 +216,21 @@ describe('LessonsService', () => {
 
   const prisma = {
     organization: { findUnique: jest.fn() },
-    lesson: { findFirst: jest.fn(), findMany: jest.fn(), update: jest.fn() },
+    group: { findFirst: jest.fn() },
+    lesson: {
+      findFirst: jest.fn(),
+      findMany: jest.fn(),
+      update: jest.fn(),
+      create: jest.fn(),
+    },
     drivingLesson: {
       findFirst: jest.fn(),
       findMany: jest.fn(),
       update: jest.fn(),
+      create: jest.fn(),
     },
     enrollment: { findMany: jest.fn() },
-    user: { findUnique: jest.fn() },
+    user: { findUnique: jest.fn(), findFirst: jest.fn() },
     car: { findUnique: jest.fn() },
     $queryRaw: jest.fn(),
     $executeRaw: jest.fn(),
@@ -1360,6 +1374,646 @@ describe('LessonsService', () => {
         await service.cancelTheory(admin as never, 'lesson-t1', {});
 
         expect(prisma.lesson.update).toHaveBeenCalledTimes(1);
+      });
+    });
+  });
+
+  describe('create', () => {
+    function studentRow(
+      overrides: { student?: object; profile?: object } = {},
+    ) {
+      return {
+        id: 'student-1',
+        firstName: 'Марія',
+        lastName: 'Коваль',
+        status: UserStatus.ACTIVE as UserStatus,
+        deletedAt: null as Date | null,
+        studentProfile: {
+          trainingStatus: TrainingStatus.PRACTICE as TrainingStatus,
+          category: LicenseCategory.B as LicenseCategory | null,
+          transmission: Transmission.MANUAL as Transmission | null,
+          instructorId: 'instructor-1' as string | null,
+          carId: 'car-1' as string | null,
+          ...overrides.profile,
+        },
+        ...overrides.student,
+      };
+    }
+
+    function givenGroup(group: ReturnType<typeof theoryRow>['group'] | null) {
+      prisma.group.findFirst.mockResolvedValue(group);
+    }
+
+    function createData(mock: jest.Mock): unknown {
+      expect(mock).toHaveBeenCalledTimes(1);
+      return (mock.mock.calls[0] as [{ data: unknown }])[0].data;
+    }
+
+    beforeEach(() => {
+      givenGroup(theoryRow().group);
+      prisma.lesson.create.mockImplementation(({ data }: { data: object }) =>
+        Promise.resolve({
+          ...theoryRow({ lesson: { id: 'lesson-new' } }),
+          ...data,
+        }),
+      );
+      prisma.user.findFirst.mockResolvedValue(studentRow());
+      prisma.drivingLesson.create.mockImplementation(
+        ({ data }: { data: object }) =>
+          Promise.resolve({
+            ...practiceRow({ lesson: { id: 'lesson-new' } }),
+            ...data,
+          }),
+      );
+    });
+
+    describe('theory', () => {
+      const payload = {
+        groupId: 'group-1',
+        topic: 'Дорожні знаки',
+        scheduledAt: '2026-11-03T18:00:00+02:00',
+      };
+
+      it('creates a lesson of the group and returns it', async () => {
+        const result = await service.createTheory(admin as never, payload);
+
+        expect(createData(prisma.lesson.create)).toEqual({
+          groupId: 'group-1',
+          topic: 'Дорожні знаки',
+          scheduledAt: new Date('2026-11-03T16:00:00.000Z'),
+          durationMin: 90,
+        });
+        expect(result).toEqual({
+          id: 'lesson-new',
+          type: 'THEORY',
+          status: LessonStatus.SCHEDULED,
+          topic: 'Дорожні знаки',
+          scheduledAt: new Date('2026-11-03T16:00:00.000Z'),
+          endsAt: new Date('2026-11-03T17:30:00.000Z'),
+          durationMin: 90,
+          group: { id: 'group-1', name: 'ПДР — Група А' },
+          teacher: { id: 'teacher-1', firstName: 'Ірина', lastName: 'Мельник' },
+          cancelledAt: null,
+          cancellationReason: null,
+          updatedAt: new Date('2026-10-20T09:00:00.000Z'),
+        });
+      });
+
+      it('checks conflicts for the default 90 minutes, or for the given duration', async () => {
+        // Інше заняття групи о 17:00 UTC: перетинає 16:00–17:30, але не 16:00–16:45.
+        prisma.lesson.findMany.mockResolvedValue([
+          {
+            id: 'lesson-t2',
+            groupId: 'group-1',
+            scheduledAt: new Date('2026-11-03T17:00:00.000Z'),
+            durationMin: 60,
+            group: { teacherId: 'teacher-1' },
+          },
+        ]);
+
+        const error = await caught(
+          service.createTheory(admin as never, payload),
+        );
+        expect(error).toBeInstanceOf(ConflictException);
+
+        await service.createTheory(admin as never, {
+          ...payload,
+          durationMin: 45,
+        });
+        expect(createData(prisma.lesson.create)).toMatchObject({
+          durationMin: 45,
+        });
+      });
+
+      it('lets the group teacher create a lesson', async () => {
+        await service.createTheory(teacherActor as never, payload);
+
+        expect(prisma.lesson.create).toHaveBeenCalledTimes(1);
+      });
+
+      it('forbids a teacher of another group', async () => {
+        givenGroup(theoryRow({ group: { teacherId: 'teacher-2' } }).group);
+
+        const error = await caught(
+          service.createTheory(teacherActor as never, payload),
+        );
+
+        expect(error).toBeInstanceOf(ForbiddenException);
+        expect(prisma.lesson.create).not.toHaveBeenCalled();
+      });
+
+      it.each([
+        ['INSTRUCTOR', instructorActor],
+        ['STUDENT', studentActor],
+        ['OWNER', ownerActor],
+      ])('forbids %s without touching the database', async (_, actor) => {
+        const error = await caught(
+          service.createTheory(actor as never, payload),
+        );
+
+        expect(error).toBeInstanceOf(ForbiddenException);
+        expect(prisma.organization.findUnique).not.toHaveBeenCalled();
+        expect(prisma.$transaction).not.toHaveBeenCalled();
+      });
+
+      it('returns 404 for a group of another organization', async () => {
+        givenGroup(null);
+
+        const error = await caught(
+          service.createTheory(admin as never, payload),
+        );
+
+        expect(error).toBeInstanceOf(NotFoundException);
+        expect(error.message).toBe(GROUP_NOT_FOUND_MESSAGE);
+        expect(prisma.group.findFirst).toHaveBeenCalledWith(
+          expect.objectContaining({
+            where: { id: 'group-1', organizationId: 'org-1' },
+          }),
+        );
+        expect(prisma.lesson.create).not.toHaveBeenCalled();
+      });
+
+      it.each([GroupStatus.COMPLETED, GroupStatus.ARCHIVED])(
+        'refuses a %s group',
+        async (status) => {
+          givenGroup(theoryRow({ group: { status } }).group);
+
+          const error = await caught(
+            service.createTheory(admin as never, payload),
+          );
+
+          expect(error).toBeInstanceOf(ConflictException);
+          expect(error.message).toBe(LESSON_GROUP_NOT_OPEN_MESSAGE);
+          expect(prisma.lesson.create).not.toHaveBeenCalled();
+        },
+      );
+
+      it('accepts a PLANNED group', async () => {
+        givenGroup(theoryRow({ group: { status: GroupStatus.PLANNED } }).group);
+
+        await service.createTheory(admin as never, payload);
+
+        expect(prisma.lesson.create).toHaveBeenCalledTimes(1);
+      });
+
+      it.each([
+        ['in the past', '2026-10-20T10:00:00Z'],
+        ['exactly now', '2026-10-21T10:00:00Z'],
+      ])(
+        'rejects a start %s as a scheduledAt error before any query',
+        async (_, scheduledAt) => {
+          const error = await caught(
+            service.createTheory(admin as never, { ...payload, scheduledAt }),
+          );
+
+          expect(error).toBeInstanceOf(BadRequestException);
+          expect(error.getResponse()).toEqual({
+            statusCode: 400,
+            errors: [
+              { field: 'scheduledAt', message: LESSON_CREATE_IN_PAST_MESSAGE },
+            ],
+          });
+          expect(prisma.organization.findUnique).not.toHaveBeenCalled();
+          expect(prisma.$transaction).not.toHaveBeenCalled();
+        },
+      );
+
+      it('rejects a day outside the group dates', async () => {
+        givenGroup(
+          theoryRow({
+            group: {
+              startDate: new Date('2026-09-01T00:00:00.000Z'),
+              endDate: new Date('2026-11-02T00:00:00.000Z'),
+            },
+          }).group,
+        );
+
+        const error = await caught(
+          service.createTheory(admin as never, payload),
+        );
+
+        expect(error).toBeInstanceOf(BadRequestException);
+        expect(error.getResponse()).toEqual({
+          statusCode: 400,
+          errors: [
+            {
+              field: 'scheduledAt',
+              message: LESSON_OUTSIDE_GROUP_DATES_MESSAGE,
+            },
+          ],
+        });
+      });
+
+      it('requires an active teacher', async () => {
+        givenGroup(
+          theoryRow({ teacher: { status: UserStatus.BLOCKED } }).group,
+        );
+
+        const error = await caught(
+          service.createTheory(admin as never, payload),
+        );
+
+        expect(error).toBeInstanceOf(ConflictException);
+        expect(error.message).toBe(LESSON_TEACHER_NOT_ACTIVE_MESSAGE);
+      });
+
+      it('refuses a conflicting slot and logs it as a new lesson', async () => {
+        prisma.drivingLesson.findMany.mockResolvedValue([
+          {
+            id: 'practice-1',
+            studentId: 'student-7',
+            scheduledAt: new Date('2026-11-03T16:30:00.000Z'),
+            durationMin: 60,
+          },
+        ]);
+
+        const error = await caught(
+          service.createTheory(admin as never, payload),
+        );
+
+        expect(error).toBeInstanceOf(ConflictException);
+        const body = error.getResponse() as {
+          conflicts: { resource: string; lessonId: string }[];
+        };
+        expect(body.conflicts).toMatchObject([
+          { resource: 'STUDENT', lessonId: 'practice-1' },
+        ]);
+        expect(prisma.lesson.create).not.toHaveBeenCalled();
+        expect(log).toHaveBeenCalledWith(
+          'Lesson schedule conflict type=THEORY lessonId=new conflicts=1 actorId=admin-1 organizationId=org-1',
+        );
+      });
+
+      it('locks the group, then reads it, then the resources, then writes', async () => {
+        await service.createTheory(admin as never, payload);
+
+        expect(rawSql(prisma.$queryRaw, 0)).toBe(
+          'SELECT id FROM groups WHERE id = $1::uuid AND organization_id = $2::uuid FOR SHARE',
+        );
+        expect(advisoryKeys()).toEqual(['group:group-1', 'teacher:teacher-1']);
+        const order = [
+          prisma.$queryRaw.mock.invocationCallOrder[0],
+          prisma.group.findFirst.mock.invocationCallOrder[0],
+          prisma.$executeRaw.mock.invocationCallOrder[0],
+          prisma.lesson.findMany.mock.invocationCallOrder[0],
+          prisma.lesson.create.mock.invocationCallOrder[0],
+        ];
+        expect(order).toEqual([...order].sort((a, b) => a - b));
+        const [theoryArgs] = prisma.lesson.findMany.mock.calls[0] as [
+          { where: object },
+        ];
+        expect(theoryArgs.where).not.toHaveProperty('id');
+      });
+
+      it('logs ids without the topic or personal data', async () => {
+        await service.createTheory(admin as never, payload);
+
+        expect(log).toHaveBeenCalledWith(
+          'Lesson created type=THEORY lessonId=lesson-new groupId=group-1 ' +
+            'scheduledAt=2026-11-03T16:00:00.000Z durationMin=90 actorId=admin-1 organizationId=org-1',
+        );
+        const logged = log.mock.calls.flat().join(' ');
+        expect(logged).not.toContain('Дорожні знаки');
+        expect(logged).not.toContain('Ірина');
+      });
+    });
+
+    describe('practice', () => {
+      const payload = {
+        studentId: 'student-1',
+        scheduledAt: '2026-11-03T10:00:00+02:00',
+      };
+
+      it("takes the instructor and car from the student's practice access", async () => {
+        const result = await service.createPractice(admin as never, payload);
+
+        expect(createData(prisma.drivingLesson.create)).toEqual({
+          organizationId: 'org-1',
+          instructorId: 'instructor-1',
+          studentId: 'student-1',
+          carId: 'car-1',
+          scheduledAt: new Date('2026-11-03T08:00:00.000Z'),
+          durationMin: 60,
+        });
+        expect(result).toMatchObject({
+          id: 'lesson-new',
+          type: 'PRACTICE',
+          status: DrivingLessonStatus.SCHEDULED,
+          scheduledAt: new Date('2026-11-03T08:00:00.000Z'),
+          endsAt: new Date('2026-11-03T09:00:00.000Z'),
+          durationMin: 60,
+          student: { id: 'student-1', firstName: 'Марія', lastName: 'Коваль' },
+          car: { id: 'car-1', plateNumber: 'AA1234BB' },
+        });
+      });
+
+      it('looks the student up only in the actor organization', async () => {
+        await service.createPractice(admin as never, payload);
+
+        expect(prisma.user.findFirst).toHaveBeenCalledWith(
+          expect.objectContaining({
+            where: {
+              id: 'student-1',
+              organizationId: 'org-1',
+              role: UserRole.STUDENT,
+              deletedAt: null,
+              studentProfile: { is: { organizationId: 'org-1' } },
+            },
+          }),
+        );
+      });
+
+      it('uses the instructor, car and duration from the request', async () => {
+        prisma.car.findUnique.mockResolvedValue({
+          ...availableCar,
+          instructorId: 'instructor-2',
+        });
+
+        await service.createPractice(admin as never, {
+          ...payload,
+          instructorId: 'instructor-2',
+          carId: 'car-2',
+          durationMin: 90,
+        });
+
+        expect(createData(prisma.drivingLesson.create)).toMatchObject({
+          instructorId: 'instructor-2',
+          carId: 'car-2',
+          durationMin: 90,
+        });
+      });
+
+      it("refuses another instructor with the student's car", async () => {
+        const error = await caught(
+          service.createPractice(admin as never, {
+            ...payload,
+            instructorId: 'instructor-2',
+          }),
+        );
+
+        expect(error).toBeInstanceOf(ConflictException);
+        expect(error.message).toBe(INSTRUCTOR_CAR_MISMATCH_MESSAGE);
+        expect(prisma.drivingLesson.create).not.toHaveBeenCalled();
+      });
+
+      it.each([
+        [
+          'an instructor',
+          { instructorId: null },
+          PRACTICE_INSTRUCTOR_REQUIRED_MESSAGE,
+        ],
+        ['a car', { carId: null }, PRACTICE_CAR_REQUIRED_MESSAGE],
+      ])(
+        'requires %s when neither the request nor the student has one',
+        async (_, profile, message) => {
+          prisma.user.findFirst.mockResolvedValue(studentRow({ profile }));
+
+          const error = await caught(
+            service.createPractice(admin as never, payload),
+          );
+
+          expect(error).toBeInstanceOf(ConflictException);
+          expect(error.message).toBe(message);
+          expect(prisma.drivingLesson.create).not.toHaveBeenCalled();
+        },
+      );
+
+      it('makes the instructor actor the instructor of the lesson', async () => {
+        await service.createPractice(instructorActor as never, payload);
+
+        expect(createData(prisma.drivingLesson.create)).toMatchObject({
+          instructorId: 'instructor-1',
+        });
+      });
+
+      it('lets an instructor pass their own id', async () => {
+        await service.createPractice(instructorActor as never, {
+          ...payload,
+          instructorId: 'instructor-1',
+        });
+
+        expect(prisma.drivingLesson.create).toHaveBeenCalledTimes(1);
+      });
+
+      it('forbids an instructor from booking another instructor before the transaction', async () => {
+        const error = await caught(
+          service.createPractice(instructorActor as never, {
+            ...payload,
+            instructorId: 'instructor-2',
+          }),
+        );
+
+        expect(error).toBeInstanceOf(ForbiddenException);
+        expect(error.message).toBe(LESSON_INSTRUCTOR_ASSIGN_MESSAGE);
+        expect(prisma.organization.findUnique).not.toHaveBeenCalled();
+        expect(prisma.$transaction).not.toHaveBeenCalled();
+      });
+
+      it('forbids an instructor from booking a student of another instructor', async () => {
+        prisma.user.findFirst.mockResolvedValue(
+          studentRow({ profile: { instructorId: 'instructor-2' } }),
+        );
+
+        const error = await caught(
+          service.createPractice(instructorActor as never, payload),
+        );
+
+        expect(error).toBeInstanceOf(ForbiddenException);
+        expect(error.message).toBe(STUDENT_NOT_ASSIGNED_MESSAGE);
+        expect(prisma.drivingLesson.create).not.toHaveBeenCalled();
+      });
+
+      it.each([
+        ['TEACHER', teacherActor],
+        ['STUDENT', studentActor],
+        ['OWNER', ownerActor],
+      ])('forbids %s without touching the database', async (_, actor) => {
+        const error = await caught(
+          service.createPractice(actor as never, payload),
+        );
+
+        expect(error).toBeInstanceOf(ForbiddenException);
+        expect(prisma.organization.findUnique).not.toHaveBeenCalled();
+        expect(prisma.$transaction).not.toHaveBeenCalled();
+      });
+
+      it('returns 404 for a student of another organization', async () => {
+        prisma.user.findFirst.mockResolvedValue(null);
+
+        const error = await caught(
+          service.createPractice(admin as never, payload),
+        );
+
+        expect(error).toBeInstanceOf(NotFoundException);
+        expect(error.message).toBe(STUDENT_NOT_FOUND_MESSAGE);
+      });
+
+      it.each([
+        [
+          'without practice access',
+          { profile: { trainingStatus: TrainingStatus.ACTIVE } },
+        ],
+        ['blocked', { student: { status: UserStatus.BLOCKED } }],
+      ])('refuses a student %s', async (_, overrides) => {
+        prisma.user.findFirst.mockResolvedValue(studentRow(overrides));
+
+        const error = await caught(
+          service.createPractice(admin as never, payload),
+        );
+
+        expect(error).toBeInstanceOf(ConflictException);
+        expect(error.message).toBe(STUDENT_NOT_IN_PRACTICE_MESSAGE);
+      });
+
+      it.each([
+        [
+          'an instructor of another organization',
+          () =>
+            prisma.user.findUnique.mockResolvedValue({
+              ...activeInstructor,
+              organizationId: 'org-2',
+            }),
+          NotFoundException,
+          INSTRUCTOR_NOT_FOUND_MESSAGE,
+        ],
+        [
+          'a blocked instructor',
+          () =>
+            prisma.user.findUnique.mockResolvedValue({
+              ...activeInstructor,
+              status: UserStatus.BLOCKED,
+            }),
+          ConflictException,
+          INSTRUCTOR_NOT_ACTIVE_MESSAGE,
+        ],
+        [
+          'a user who is not an instructor',
+          () =>
+            prisma.user.findUnique.mockResolvedValue({
+              ...activeInstructor,
+              role: UserRole.TEACHER,
+            }),
+          ConflictException,
+          INSTRUCTOR_ROLE_MESSAGE,
+        ],
+        [
+          'a car of another organization',
+          () =>
+            prisma.car.findUnique.mockResolvedValue({
+              ...availableCar,
+              organizationId: 'org-2',
+            }),
+          NotFoundException,
+          CAR_NOT_FOUND_MESSAGE,
+        ],
+        [
+          'a car in maintenance',
+          () =>
+            prisma.car.findUnique.mockResolvedValue({
+              ...availableCar,
+              status: CarStatus.MAINTENANCE,
+            }),
+          ConflictException,
+          CAR_NOT_AVAILABLE_MESSAGE,
+        ],
+      ])('refuses %s', async (_, given, type, message) => {
+        given();
+
+        const error = await caught(
+          service.createPractice(admin as never, payload),
+        );
+
+        expect(error).toBeInstanceOf(type);
+        expect(error.message).toBe(message);
+        expect(prisma.drivingLesson.create).not.toHaveBeenCalled();
+      });
+
+      it.each([
+        ['in the past', '2026-10-20T10:00:00Z'],
+        ['exactly now', '2026-10-21T10:00:00Z'],
+      ])(
+        'rejects a start %s as a scheduledAt error before any query',
+        async (_, scheduledAt) => {
+          const error = await caught(
+            service.createPractice(admin as never, { ...payload, scheduledAt }),
+          );
+
+          expect(error).toBeInstanceOf(BadRequestException);
+          expect(error.getResponse()).toEqual({
+            statusCode: 400,
+            errors: [
+              { field: 'scheduledAt', message: LESSON_CREATE_IN_PAST_MESSAGE },
+            ],
+          });
+          expect(prisma.organization.findUnique).not.toHaveBeenCalled();
+          expect(prisma.$transaction).not.toHaveBeenCalled();
+        },
+      );
+
+      it("locks the instructor, car, student and the student's open groups", async () => {
+        prisma.enrollment.findMany.mockResolvedValue([
+          { groupId: 'group-1' },
+          { groupId: 'group-2' },
+        ]);
+
+        await service.createPractice(admin as never, payload);
+
+        expect(advisoryKeys()).toEqual([
+          'car:car-1',
+          'group:group-1',
+          'group:group-2',
+          'instructor:instructor-1',
+          'student:student-1',
+        ]);
+        expect(prisma.$queryRaw).not.toHaveBeenCalled();
+        const order = [
+          prisma.user.findFirst.mock.invocationCallOrder[0],
+          prisma.$executeRaw.mock.invocationCallOrder[0],
+          prisma.drivingLesson.findMany.mock.invocationCallOrder[0],
+          prisma.drivingLesson.create.mock.invocationCallOrder[0],
+        ];
+        expect(order).toEqual([...order].sort((a, b) => a - b));
+      });
+
+      it('refuses a conflicting slot and logs it as a new lesson', async () => {
+        prisma.drivingLesson.findMany.mockResolvedValue([
+          {
+            id: 'lesson-2',
+            instructorId: 'instructor-1',
+            carId: 'car-9',
+            studentId: 'student-2',
+            scheduledAt: new Date('2026-11-03T08:30:00.000Z'),
+            durationMin: 60,
+          },
+        ]);
+
+        const error = await caught(
+          service.createPractice(admin as never, payload),
+        );
+
+        expect(error).toBeInstanceOf(ConflictException);
+        const body = error.getResponse() as {
+          conflicts: { resource: string; lessonId: string }[];
+        };
+        expect(body.conflicts).toMatchObject([
+          { resource: 'INSTRUCTOR', lessonId: 'lesson-2' },
+        ]);
+        expect(prisma.drivingLesson.create).not.toHaveBeenCalled();
+        expect(log).toHaveBeenCalledWith(
+          'Lesson schedule conflict type=PRACTICE lessonId=new conflicts=1 actorId=admin-1 organizationId=org-1',
+        );
+      });
+
+      it('logs ids without personal data', async () => {
+        await service.createPractice(admin as never, payload);
+
+        expect(log).toHaveBeenCalledWith(
+          'Lesson created type=PRACTICE lessonId=lesson-new instructorId=instructor-1 studentId=student-1 ' +
+            'carId=car-1 scheduledAt=2026-11-03T08:00:00.000Z durationMin=60 actorId=admin-1 organizationId=org-1',
+        );
+        const logged = log.mock.calls.flat().join(' ');
+        expect(logged).not.toContain('Марія');
+        expect(logged).not.toContain('Олег');
       });
     });
   });

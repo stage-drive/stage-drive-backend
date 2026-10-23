@@ -5,6 +5,8 @@ import {
   CANCELLATION_REASON_LENGTH_MESSAGE,
   CANCELLATION_REASON_MAX_LENGTH,
   CancelLessonDto,
+  CreatePracticeLessonDto,
+  CreateTheoryLessonDto,
   INCLUDE_CANCELLED_MESSAGE,
   LESSON_DURATION_MESSAGE,
   LESSON_TOPIC_LENGTH_MESSAGE,
@@ -58,6 +60,8 @@ function fieldErrors(field: string, message: string) {
 
 const INSTRUCTOR_ID = 'a3b2c1d0-0000-4000-8000-000000000000';
 const CAR_ID = 'c7d2e1f0-0000-4000-8000-000000000000';
+const GROUP_ID = '4c21a0b0-0000-4000-8000-000000000000';
+const STUDENT_ID = '77aa0000-0000-4000-8000-000000000000';
 
 describe('RescheduleLessonDto', () => {
   it.each([
@@ -253,6 +257,131 @@ describe('CancelLessonDto', () => {
     async (field) => {
       await expect(
         errorsFor(CancelLessonDto, { [field]: 'x' }),
+      ).resolves.toEqual(
+        fieldErrors(field, `property ${field} should not exist`),
+      );
+    },
+  );
+});
+
+describe('CreateTheoryLessonDto', () => {
+  const body = {
+    groupId: GROUP_ID,
+    topic: 'Дорожні знаки',
+    scheduledAt: '2026-11-03T18:00:00+02:00',
+  };
+
+  it('accepts a body without durationMin and leaves it undefined', async () => {
+    await expect(validate(CreateTheoryLessonDto, body)).resolves.toEqual(body);
+  });
+
+  it('trims the topic and keeps durationMin', async () => {
+    await expect(
+      validate(CreateTheoryLessonDto, {
+        ...body,
+        topic: '  Дорожні знаки  ',
+        durationMin: 45,
+      }),
+    ).resolves.toEqual({ ...body, durationMin: 45 });
+  });
+
+  it.each(['groupId', 'topic', 'scheduledAt'])('requires %s', async (field) => {
+    const rest: Record<string, unknown> = { ...body };
+    delete rest[field];
+
+    await expect(errorsFor(CreateTheoryLessonDto, rest)).resolves.toEqual(
+      fieldErrors(field, REQUIRED_FIELD_MESSAGE),
+    );
+  });
+
+  it.each(['groupId', 'topic', 'scheduledAt'])(
+    'rejects a null %s',
+    async (field) => {
+      await expect(
+        errorsFor(CreateTheoryLessonDto, { ...body, [field]: null }),
+      ).resolves.toEqual(fieldErrors(field, REQUIRED_FIELD_MESSAGE));
+    },
+  );
+
+  it.each([
+    ['groupId', 'abc', 'groupId має бути UUID.'],
+    ['topic', '', REQUIRED_FIELD_MESSAGE],
+    ['topic', '   ', REQUIRED_FIELD_MESSAGE],
+    [
+      'topic',
+      'а'.repeat(LESSON_TOPIC_MAX_LENGTH + 1),
+      LESSON_TOPIC_LENGTH_MESSAGE,
+    ],
+    ['topic', '<b>Знаки</b>', UNSAFE_TEXT_MESSAGE],
+    ['scheduledAt', '2026-11-03T18:00:00', SCHEDULED_AT_FORMAT_MESSAGE],
+    ['durationMin', 14, LESSON_DURATION_MESSAGE],
+    ['durationMin', 241, LESSON_DURATION_MESSAGE],
+    ['durationMin', '90', LESSON_DURATION_MESSAGE],
+    ['durationMin', null, LESSON_DURATION_MESSAGE],
+  ])('rejects %s = %p', async (field, value, message) => {
+    await expect(
+      errorsFor(CreateTheoryLessonDto, { ...body, [field]: value }),
+    ).resolves.toEqual(fieldErrors(field, message));
+  });
+
+  it.each(['status', 'organizationId', 'teacherId'])(
+    'rejects %s in the body',
+    async (field) => {
+      await expect(
+        errorsFor(CreateTheoryLessonDto, { ...body, [field]: 'x' }),
+      ).resolves.toEqual(
+        fieldErrors(field, `property ${field} should not exist`),
+      );
+    },
+  );
+});
+
+describe('CreatePracticeLessonDto', () => {
+  const body = {
+    studentId: STUDENT_ID,
+    scheduledAt: '2026-11-03T10:00:00+02:00',
+  };
+
+  it('accepts only studentId and scheduledAt', async () => {
+    await expect(validate(CreatePracticeLessonDto, body)).resolves.toEqual(
+      body,
+    );
+  });
+
+  it('accepts instructorId, carId and durationMin', async () => {
+    const full = {
+      ...body,
+      instructorId: INSTRUCTOR_ID,
+      carId: CAR_ID,
+      durationMin: 90,
+    };
+
+    await expect(validate(CreatePracticeLessonDto, full)).resolves.toEqual(
+      full,
+    );
+  });
+
+  it.each([
+    ['studentId', undefined, REQUIRED_FIELD_MESSAGE],
+    ['studentId', null, REQUIRED_FIELD_MESSAGE],
+    ['studentId', 'abc', 'studentId має бути UUID.'],
+    ['scheduledAt', undefined, REQUIRED_FIELD_MESSAGE],
+    ['scheduledAt', '2026-11-03', SCHEDULED_AT_FORMAT_MESSAGE],
+    ['instructorId', null, 'instructorId має бути UUID.'],
+    ['instructorId', 'abc', 'instructorId має бути UUID.'],
+    ['carId', null, 'carId має бути UUID.'],
+    ['durationMin', 60.5, LESSON_DURATION_MESSAGE],
+  ])('rejects %s = %p', async (field, value, message) => {
+    await expect(
+      errorsFor(CreatePracticeLessonDto, { ...body, [field]: value }),
+    ).resolves.toEqual(fieldErrors(field, message));
+  });
+
+  it.each(['organizationId', 'groupId', 'status'])(
+    'rejects %s in the body',
+    async (field) => {
+      await expect(
+        errorsFor(CreatePracticeLessonDto, { ...body, [field]: 'x' }),
       ).resolves.toEqual(
         fieldErrors(field, `property ${field} should not exist`),
       );

@@ -156,6 +156,17 @@ describe('findPracticeConflicts', () => {
     });
   });
 
+  it('excludes nothing for a new lesson', async () => {
+    await findPracticeConflicts(tx as never, { ...input, lessonId: null });
+
+    const [practiceArgs] = tx.drivingLesson.findMany.mock.calls[0];
+    expect(practiceArgs.where).not.toHaveProperty('id');
+    expect(practiceArgs.where).toMatchObject({
+      organizationId: 'org-1',
+      status: DrivingLessonStatus.SCHEDULED,
+    });
+  });
+
   it('returns no conflicts when nothing overlaps', async () => {
     await expect(findPracticeConflicts(tx as never, input)).resolves.toEqual(
       [],
@@ -274,6 +285,17 @@ describe('findTheoryConflicts', () => {
           some: { groupId: 'group-1', status: EnrollmentStatus.ACTIVE },
         },
       },
+    });
+  });
+
+  it('excludes nothing for a new lesson', async () => {
+    await findTheoryConflicts(tx as never, { ...input, lessonId: null });
+
+    const [theoryArgs] = tx.lesson.findMany.mock.calls[0];
+    expect(theoryArgs.where).not.toHaveProperty('id');
+    expect(theoryArgs.where).toMatchObject({
+      status: LessonStatus.SCHEDULED,
+      group: { organizationId: 'org-1' },
     });
   });
 

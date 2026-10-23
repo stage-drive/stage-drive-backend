@@ -98,6 +98,11 @@ export function sortConflicts(conflicts: LessonConflict[]): LessonConflict[] {
   );
 }
 
+/** Нове заняття ще не має id, тож нічого не виключається. */
+function excludeLesson(lessonId: string | null): { id?: { not: string } } {
+  return lessonId === null ? {} : { id: { not: lessonId } };
+}
+
 export function scheduleConflict(
   conflicts: LessonConflict[],
 ): ConflictException {
@@ -117,7 +122,8 @@ export async function findTheoryConflicts(
   tx: Prisma.TransactionClient,
   input: {
     organizationId: string;
-    lessonId: string;
+    /** Заняття, що змінюється; null для нового. */
+    lessonId: string | null;
     groupId: string;
     teacherId: string;
     slot: ScheduleSlot;
@@ -127,7 +133,7 @@ export async function findTheoryConflicts(
 
   const theory = await tx.lesson.findMany({
     where: {
-      id: { not: input.lessonId },
+      ...excludeLesson(input.lessonId),
       status: LessonStatus.SCHEDULED,
       scheduledAt: window,
       group: { organizationId: input.organizationId },
@@ -182,7 +188,8 @@ export async function findPracticeConflicts(
   tx: Prisma.TransactionClient,
   input: {
     organizationId: string;
-    lessonId: string;
+    /** Заняття, що змінюється; null для нового. */
+    lessonId: string | null;
     instructorId: string;
     carId: string;
     studentId: string;
@@ -193,7 +200,7 @@ export async function findPracticeConflicts(
 
   const practice = await tx.drivingLesson.findMany({
     where: {
-      id: { not: input.lessonId },
+      ...excludeLesson(input.lessonId),
       organizationId: input.organizationId,
       status: DrivingLessonStatus.SCHEDULED,
       scheduledAt: window,

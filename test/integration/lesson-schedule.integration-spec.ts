@@ -31,6 +31,7 @@ import {
 import type { InvitationEmailQueue } from '../../src/modules/invitations/invitation-email.queue';
 import {
   LESSON_GROUP_CLOSED_MESSAGE,
+  LESSON_GROUP_NOT_OPEN_MESSAGE,
   LESSON_NOT_CANCELLABLE_MESSAGE,
   LessonsService,
 } from '../../src/modules/lessons/lessons.service';
@@ -815,6 +816,320 @@ describe('Lesson schedule (integration, real Postgres)', () => {
       }
     });
   });
+  describe('create', () => {
+    type School = Awaited<ReturnType<typeof createSchool>>;
+
+    const theoryAt = (school: School, scheduledAt: Date) =>
+      lessonsService.createTheory(school.admin, {
+        groupId: school.group.id,
+        topic: 'Дорожні знаки',
+        scheduledAt: scheduledAt.toISOString(),
+      });
+
+    const practiceAt = (school: School, studentId: string, scheduledAt: Date) =>
+      lessonsService.createPractice(school.admin, {
+        studentId,
+        scheduledAt: scheduledAt.toISOString(),
+      });
+
+    it('stores a theory lesson of the group and shows it in the schedules', async () => {
+      const school = await createSchool();
+
+      const created = await lessonsService.createTheory(school.teacher, {
+        groupId: school.group.id,
+        topic: 'Дорожні знаки',
+        scheduledAt: at(16).toISOString(),
+      });
+
+      await expect(
+        prisma.lesson.findUniqueOrThrow({ where: { id: created.id } }),
+      ).resolves.toMatchObject({
+        groupId: school.group.id,
+        topic: 'Дорожні знаки',
+        scheduledAt: at(16),
+        durationMin: 90,
+        status: LessonStatus.SCHEDULED,
+        cancelledAt: null,
+      });
+      for (const user of [school.teacher, school.student1, school.student2]) {
+        const schedule = await scheduleService.getMySchedule(user, {});
+        expect(schedule.items.map((item) => item.id)).toContain(created.id);
+      }
+    });
+
+    it("stores a practice lesson with the student's instructor and car", async () => {
+      const school = await createSchool();
+
+      const created = await practiceAt(school, school.student1.id, at(10));
+
+      await expect(
+        prisma.drivingLesson.findUniqueOrThrow({ where: { id: created.id } }),
+      ).resolves.toMatchObject({
+        organizationId: school.organization.id,
+        instructorId: school.instructor.id,
+        studentId: school.student1.id,
+        carId: school.car1.id,
+        scheduledAt: at(10),
+        durationMin: 60,
+        status: DrivingLessonStatus.SCHEDULED,
+      });
+      const dashboard = await dashboardService.getInstructorDashboard(
+        school.instructor,
+      );
+      expect(dashboard.upcomingLessons.map((l) => l.id)).toEqual([created.id]);
+    });
+
+    it('refuses a slot taken by the instructor, the student or the group', async () => {
+      const school = await createSchool();
+      await school.practice({ scheduledAt: at(10) });
+      await school.theory(at(16));
+
+      // Той самий інструктор, інший студент і авто.
+      await expect(
+        conflictsOf(practiceAt(school, school.student2.id, at(10, 30))),
+      ).resolves.toEqual(['INSTRUCTOR/PRACTICE']);
+      // Теорія групи на час практики її студента.
+      await expect(conflictsOf(theoryAt(school, at(10)))).resolves.toEqual([
+        'STUDENT/PRACTICE',
+      ]);
+      // Практика студента на час теорії його групи.
+      await expect(
+        conflictsOf(practiceAt(school, school.student2.id, at(16, 30))),
+      ).resolves.toEqual(['STUDENT/THEORY']);
+      // Друга теорія групи поверх першої.
+      await expect(conflictsOf(theoryAt(school, at(17)))).resolves.toEqual([
+        'TEACHER/THEORY',
+        'GROUP/THEORY',
+      ]);
+    });
+
+    it('allows a lesson right after another one and over a cancelled one', async () => {
+      const school = await createSchool();
+      await school.practice({ scheduledAt: at(10) });
+      await school.practice({
+        scheduledAt: at(12),
+        status: DrivingLessonStatus.CANCELLED,
+        cancelledAt: new Date(),
+      });
+
+      await expect(
+        practiceAt(school, school.student1.id, at(11)),
+      ).resolves.toMatchObject({ scheduledAt: at(11) });
+      await expect(
+        practiceAt(school, school.student1.id, at(12)),
+      ).resolves.toMatchObject({ scheduledAt: at(12) });
+    });
+
+    it('refuses the same request twice and keeps one lesson', async () => {
+      const school = await createSchool();
+
+      await practiceAt(school, school.student1.id, at(10));
+
+      await expect(
+        conflictsOf(practiceAt(school, school.student1.id, at(10))),
+      ).resolves.toEqual([
+        'INSTRUCTOR/PRACTICE',
+        'CAR/PRACTICE',
+        'STUDENT/PRACTICE',
+      ]);
+      await expect(
+        prisma.drivingLesson.count({
+          where: { studentId: school.student1.id },
+        }),
+      ).resolves.toBe(1);
+    });
+
+    it('refuses a group, student, instructor or car of another school and writes nothing', async () => {
+      const school = await createSchool();
+      const other = await createSchool();
+      const scheduledAt = at(10).toISOString();
+
+      await expect(
+        lessonsService.createTheory(school.admin, {
+          groupId: other.group.id,
+          topic: 'Дорожні знаки',
+          scheduledAt,
+        }),
+      ).rejects.toBeInstanceOf(NotFoundException);
+      await expect(
+        lessonsService.createPractice(school.admin, {
+          studentId: other.student1.id,
+          scheduledAt,
+        }),
+      ).rejects.toBeInstanceOf(NotFoundException);
+      await expect(
+        lessonsService.createPractice(school.admin, {
+          studentId: school.student1.id,
+          instructorId: other.instructor.id,
+          scheduledAt,
+        }),
+      ).rejects.toBeInstanceOf(NotFoundException);
+      await expect(
+        lessonsService.createPractice(school.admin, {
+          studentId: school.student1.id,
+          carId: other.car1.id,
+          scheduledAt,
+        }),
+      ).rejects.toBeInstanceOf(NotFoundException);
+
+      await expect(
+        prisma.lesson.count({
+          where: { groupId: { in: [school.group.id, other.group.id] } },
+        }),
+      ).resolves.toBe(0);
+      await expect(
+        prisma.drivingLesson.count({
+          where: {
+            organizationId: {
+              in: [school.organization.id, other.organization.id],
+            },
+          },
+        }),
+      ).resolves.toBe(0);
+    });
+
+    it('makes a create wait for a booking of the same instructor and see it', async () => {
+      const school = await createSchool();
+      const booked = deferred();
+      const commit = deferred();
+
+      // In-flight booking: holds the instructor key and has inserted 10:00.
+      const booking = prisma.$transaction(async (tx) => {
+        await lockScheduleResources(tx, [
+          scheduleLockKey('instructor', school.instructor.id),
+        ]);
+        await tx.drivingLesson.create({
+          data: {
+            organizationId: school.organization.id,
+            instructorId: school.instructor.id,
+            carId: school.car1.id,
+            studentId: school.student1.id,
+            scheduledAt: at(10),
+          },
+        });
+        booked.resolve();
+        await commit.promise;
+      });
+
+      try {
+        await booked.promise;
+        const creating = practiceAt(school, school.student2.id, at(10));
+        const state = track(creating);
+
+        await delay(LOCK_WAIT_MS);
+        expect(state.settled).toBe(false);
+
+        commit.resolve();
+        await booking;
+
+        await expect(conflictsOf(creating)).resolves.toEqual([
+          'INSTRUCTOR/PRACTICE',
+        ]);
+        await expect(
+          prisma.drivingLesson.count({
+            where: { studentId: school.student2.id },
+          }),
+        ).resolves.toBe(0);
+      } finally {
+        commit.resolve();
+        await booking.catch(() => undefined);
+      }
+    });
+
+    it('lets only one of two parallel creates into the same slot win', async () => {
+      const school = await createSchool();
+
+      const results = await Promise.allSettled([
+        practiceAt(school, school.student1.id, at(10)),
+        practiceAt(school, school.student2.id, at(10)),
+      ]);
+
+      expect(results.map((r) => r.status).sort()).toEqual([
+        'fulfilled',
+        'rejected',
+      ]);
+      const rejected = results.find((r) => r.status === 'rejected');
+      expect(rejected?.reason).toBeInstanceOf(ConflictException);
+      await expect(
+        prisma.drivingLesson.count({
+          where: { instructorId: school.instructor.id, scheduledAt: at(10) },
+        }),
+      ).resolves.toBe(1);
+    });
+
+    it('makes a theory create wait for the group to close and then refuse', async () => {
+      const school = await createSchool();
+      const closed = deferred();
+      const commit = deferred();
+
+      // In-flight changeStatus: holds FOR UPDATE and has saved COMPLETED.
+      const closing = prisma.$transaction(async (tx) => {
+        await lockGroup(tx, school.group.id, school.organization.id, 'update');
+        await tx.group.update({
+          where: { id: school.group.id },
+          data: { status: GroupStatus.COMPLETED },
+        });
+        closed.resolve();
+        await commit.promise;
+      });
+
+      try {
+        await closed.promise;
+        const creating = theoryAt(school, at(16));
+        const state = track(creating);
+
+        await delay(LOCK_WAIT_MS);
+        expect(state.settled).toBe(false);
+
+        commit.resolve();
+        await closing;
+
+        const error: unknown = await creating.catch(
+          (caught: unknown) => caught,
+        );
+        expect(error).toBeInstanceOf(ConflictException);
+        expect((error as ConflictException).message).toBe(
+          LESSON_GROUP_NOT_OPEN_MESSAGE,
+        );
+        await expect(
+          prisma.lesson.count({ where: { groupId: school.group.id } }),
+        ).resolves.toBe(0);
+      } finally {
+        commit.resolve();
+        await closing.catch(() => undefined);
+      }
+    });
+
+    it('does not deadlock when a group closes while its lesson is created', async () => {
+      const school = await createSchool();
+
+      const settled = Promise.allSettled([
+        groupsService.changeStatus(school.admin, school.group.id, {
+          status: GroupStatus.COMPLETED,
+        }),
+        theoryAt(school, at(16)),
+      ]);
+      const winner = await Promise.race([
+        settled.then(() => 'settled'),
+        delay(UNBLOCKED_WITHIN_MS).then(() => 'stuck'),
+      ]);
+      expect(winner).toBe('settled');
+
+      const [closing, creating] = await settled;
+      expect(closing.status).toBe('fulfilled');
+      if (creating.status === 'rejected') {
+        expect(creating.reason).toBeInstanceOf(ConflictException);
+      } else {
+        // Створене раніше заняття скасувало закриття групи.
+        await expect(
+          prisma.lesson.findUniqueOrThrow({
+            where: { id: creating.value.id },
+          }),
+        ).resolves.toMatchObject({ status: LessonStatus.CANCELLED });
+      }
+    });
+  });
+
   describe('personal schedule', () => {
     type School = Awaited<ReturnType<typeof createSchool>>;
 
