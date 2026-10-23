@@ -39,8 +39,12 @@ import {
   INSTRUCTOR_CAR_MISMATCH_MESSAGE,
 } from '../students/students.service';
 import {
+  lessonPersonSelect,
+  toPracticeLessonDto,
+  toTheoryLessonDto,
+} from './lesson-view';
+import {
   CancelLessonDto,
-  LessonPersonDto,
   PracticeLessonDto,
   RescheduleLessonDto,
   TheoryLessonDto,
@@ -50,7 +54,6 @@ import {
 import {
   findPracticeConflicts,
   findTheoryConflicts,
-  lessonEnd,
   lessonSlot,
   scheduleConflict,
 } from './schedule-conflicts';
@@ -98,12 +101,7 @@ const OPEN_GROUP_STATUSES: GroupStatus[] = [
   GroupStatus.ACTIVE,
 ];
 
-const lessonPersonSelect = {
-  id: true,
-  firstName: true,
-  lastName: true,
-} satisfies Prisma.UserSelect;
-
+/** Надмножина theoryLessonViewSelect: решта полів потрібна перевіркам запису. */
 const theoryLessonSelect = {
   id: true,
   groupId: true,
@@ -133,6 +131,7 @@ type TheoryLessonRow = Prisma.LessonGetPayload<{
   select: typeof theoryLessonSelect;
 }>;
 
+/** Надмножина practiceLessonViewSelect: решта полів потрібна перевіркам запису. */
 const practiceLessonSelect = {
   id: true,
   instructorId: true,
@@ -319,51 +318,6 @@ function requirePracticeProfile(student: PracticeLessonRow['student']) {
     throw new ConflictException(STUDENT_NOT_IN_PRACTICE_MESSAGE);
   }
   return profile;
-}
-
-function toPerson(user: LessonPersonDto): LessonPersonDto {
-  return { id: user.id, firstName: user.firstName, lastName: user.lastName };
-}
-
-function toTheoryLessonDto(row: TheoryLessonRow): TheoryLessonDto {
-  return {
-    id: row.id,
-    type: 'THEORY',
-    status: row.status,
-    topic: row.topic,
-    scheduledAt: row.scheduledAt,
-    endsAt: lessonEnd(row.scheduledAt, row.durationMin),
-    durationMin: row.durationMin,
-    group: { id: row.group.id, name: row.group.name },
-    teacher: toPerson(row.group.teacher),
-    cancelledAt: row.cancelledAt,
-    cancellationReason: row.cancellationReason,
-    updatedAt: row.updatedAt,
-  };
-}
-
-function toPracticeLessonDto(row: PracticeLessonRow): PracticeLessonDto {
-  return {
-    id: row.id,
-    type: 'PRACTICE',
-    status: row.status,
-    scheduledAt: row.scheduledAt,
-    endsAt: lessonEnd(row.scheduledAt, row.durationMin),
-    durationMin: row.durationMin,
-    instructor: toPerson(row.instructor),
-    student: toPerson(row.student),
-    car: row.car
-      ? {
-          id: row.car.id,
-          plateNumber: row.car.plateNumber,
-          category: row.car.category,
-          transmission: row.car.transmission,
-        }
-      : null,
-    cancelledAt: row.cancelledAt,
-    cancellationReason: row.cancellationReason,
-    updatedAt: row.updatedAt,
-  };
 }
 
 @Injectable()

@@ -37,7 +37,7 @@ export const SCHEDULED_AT_FORMAT_MESSAGE =
   'scheduledAt має бути датою й часом ISO 8601 з часовим зсувом, наприклад 2026-11-03T10:00:00+02:00.';
 
 /** Секунди обов'язкові, мілісекунди — ні. Зсув обов'язковий: Z або ±HH:MM. */
-const ZONED_DATE_TIME_PATTERN =
+export const ZONED_DATE_TIME_PATTERN =
   /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{1,3})?(Z|[+-]\d{2}:\d{2})$/;
 
 const DURATION_DESCRIPTION = `Тривалість у хвилинах, ціле число від ${LESSON_MIN_DURATION_MIN} до ${LESSON_MAX_DURATION_MIN}.`;
