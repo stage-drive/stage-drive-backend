@@ -1,7 +1,13 @@
 import { execFileSync } from 'child_process';
-import { ConflictException, Logger, NotFoundException } from '@nestjs/common';
+import {
+  BadRequestException,
+  ConflictException,
+  Logger,
+  NotFoundException,
+} from '@nestjs/common';
 import { PrismaPg } from '@prisma/adapter-pg';
 import {
+  AttendanceStatus,
   DrivingLessonStatus,
   EnrollmentStatus,
   GroupStatus,
@@ -21,6 +27,7 @@ import { lockGroup } from '../../src/common/prisma/group-lock';
 import {
   lockPracticeLesson,
   lockScheduleResources,
+  lockTheoryLesson,
   scheduleLockKey,
 } from '../../src/common/prisma/schedule-lock';
 import { DashboardService } from '../../src/modules/dashboard/dashboard.service';
@@ -29,9 +36,16 @@ import {
   GroupsService,
 } from '../../src/modules/groups/groups.service';
 import type { InvitationEmailQueue } from '../../src/modules/invitations/invitation-email.queue';
+import type { LessonAttendanceDto } from '../../src/modules/lessons/lesson-attendance.dto';
+import {
+  ATTENDANCE_GROUP_CLOSED_MESSAGE,
+  ATTENDANCE_NOT_STARTED_MESSAGE,
+  LessonAttendanceService,
+} from '../../src/modules/lessons/lesson-attendance.service';
 import {
   LESSON_GROUP_CLOSED_MESSAGE,
   LESSON_GROUP_NOT_OPEN_MESSAGE,
+  LESSON_HAS_ATTENDANCE_MESSAGE,
   LESSON_NOT_CANCELLABLE_MESSAGE,
   LessonsService,
 } from '../../src/modules/lessons/lessons.service';
@@ -103,6 +117,7 @@ describe('Lesson schedule (integration, real Postgres)', () => {
   let groupsService: GroupsService;
   let dashboardService: DashboardService;
   let scheduleService: PersonalScheduleService;
+  let attendanceService: LessonAttendanceService;
   let sequence = 0;
 
   beforeAll(async () => {
@@ -127,6 +142,7 @@ describe('Lesson schedule (integration, real Postgres)', () => {
     );
     dashboardService = new DashboardService(service);
     scheduleService = new PersonalScheduleService(service);
+    attendanceService = new LessonAttendanceService(service);
     jest.spyOn(Logger.prototype, 'log').mockImplementation(() => undefined);
   });
 
@@ -1339,6 +1355,320 @@ describe('Lesson schedule (integration, real Postgres)', () => {
           })
           .then(ids),
       ).resolves.toEqual([practice.id]);
+    });
+  });
+
+  describe('attendance', () => {
+    /** Started ten minutes ago, so attendance can already be marked. */
+    function startedAt(): Date {
+      return new Date(Date.now() - 10 * MINUTE_MS);
+    }
+
+    function mark(studentId: string, status: AttendanceStatus) {
+      return { records: [{ studentId, status }] };
+    }
+
+    // createSchool gives both students the same name, so look rows up by id.
+    function studentIn(result: LessonAttendanceDto, studentId: string) {
+      return result.students.find((student) => student.id === studentId);
+    }
+
+    async function rejectionOf(promise: Promise<unknown>): Promise<unknown> {
+      return promise.then(
+        () => {
+          throw new Error('Expected the promise to reject');
+        },
+        (error: unknown) => error,
+      );
+    }
+
+    it('allows only one row per lesson and student in the table', async () => {
+      const school = await createSchool();
+      const lesson = await school.theory(startedAt());
+      const data = {
+        lessonId: lesson.id,
+        studentId: school.student1.id,
+        status: AttendanceStatus.PRESENT,
+        markedAt: new Date(),
+      };
+      await prisma.lessonAttendance.create({ data });
+
+      await expect(
+        prisma.lessonAttendance.create({
+          data: { ...data, status: AttendanceStatus.ABSENT },
+        }),
+      ).rejects.toMatchObject({ code: 'P2002' });
+    });
+
+    it('updates the status in place and answers with what a later read sees', async () => {
+      const school = await createSchool();
+      const lesson = await school.theory(startedAt());
+
+      await attendanceService.updateAttendance(
+        school.teacher,
+        lesson.id,
+        mark(school.student1.id, AttendanceStatus.PRESENT),
+      );
+      const saved = await attendanceService.updateAttendance(
+        school.teacher,
+        lesson.id,
+        mark(school.student1.id, AttendanceStatus.LATE),
+      );
+
+      const rows = await prisma.lessonAttendance.findMany({
+        where: { lessonId: lesson.id },
+      });
+      expect(rows).toEqual([
+        expect.objectContaining({
+          studentId: school.student1.id,
+          status: AttendanceStatus.LATE,
+          markedById: school.teacher.id,
+        }),
+      ]);
+      expect(studentIn(saved, school.student1.id)).toMatchObject({
+        enrollmentStatus: EnrollmentStatus.ACTIVE,
+        attendance: { status: AttendanceStatus.LATE },
+      });
+      expect(studentIn(saved, school.student2.id)).toMatchObject({
+        attendance: null,
+      });
+      await expect(
+        attendanceService.getAttendance(school.teacher, lesson.id),
+      ).resolves.toEqual(saved);
+    });
+
+    it('keeps other schools out', async () => {
+      const school = await createSchool();
+      const other = await createSchool();
+      const lesson = await school.theory(startedAt());
+      const foreignLesson = await other.theory(startedAt());
+
+      await expect(
+        attendanceService.getAttendance(school.teacher, foreignLesson.id),
+      ).rejects.toBeInstanceOf(NotFoundException);
+      await expect(
+        attendanceService.updateAttendance(
+          school.admin,
+          foreignLesson.id,
+          mark(other.student1.id, AttendanceStatus.PRESENT),
+        ),
+      ).rejects.toBeInstanceOf(NotFoundException);
+      await expect(
+        attendanceService.updateAttendance(
+          school.admin,
+          lesson.id,
+          mark(other.student1.id, AttendanceStatus.PRESENT),
+        ),
+      ).rejects.toBeInstanceOf(BadRequestException);
+      await expect(
+        prisma.lessonAttendance.count({
+          where: { lessonId: { in: [lesson.id, foreignLesson.id] } },
+        }),
+      ).resolves.toBe(0);
+    });
+
+    it('keeps the mark of a student removed from the group, read-only', async () => {
+      const school = await createSchool();
+      const lesson = await school.theory(startedAt());
+      await attendanceService.updateAttendance(
+        school.teacher,
+        lesson.id,
+        mark(school.student1.id, AttendanceStatus.ABSENT),
+      );
+
+      // Deletes the Enrollment row; the mark points at the user, so it stays.
+      await groupsService.removeStudent(
+        school.admin,
+        school.group.id,
+        school.student1.id,
+      );
+
+      const result = await attendanceService.getAttendance(
+        school.teacher,
+        lesson.id,
+      );
+      expect(studentIn(result, school.student1.id)).toMatchObject({
+        enrollmentStatus: null,
+        attendance: { status: AttendanceStatus.ABSENT },
+      });
+      await expect(
+        attendanceService.updateAttendance(
+          school.teacher,
+          lesson.id,
+          mark(school.student1.id, AttendanceStatus.PRESENT),
+        ),
+      ).rejects.toBeInstanceOf(BadRequestException);
+    });
+
+    it('shows the roster of a closed group but refuses changes', async () => {
+      const school = await createSchool();
+      const lesson = await school.theory(startedAt());
+
+      await groupsService.changeStatus(school.admin, school.group.id, {
+        status: GroupStatus.COMPLETED,
+      });
+
+      const result = await attendanceService.getAttendance(
+        school.teacher,
+        lesson.id,
+      );
+      expect(result.editable).toBe(false);
+      // Closing cancels only future lessons; this one already started.
+      expect(result.lesson.status).toBe(LessonStatus.SCHEDULED);
+      expect(result.students.map((s) => s.enrollmentStatus)).toEqual([
+        EnrollmentStatus.COMPLETED,
+        EnrollmentStatus.COMPLETED,
+      ]);
+      const error = await rejectionOf(
+        attendanceService.updateAttendance(
+          school.teacher,
+          lesson.id,
+          mark(school.student1.id, AttendanceStatus.PRESENT),
+        ),
+      );
+      expect(error).toBeInstanceOf(ConflictException);
+      expect((error as ConflictException).message).toBe(
+        ATTENDANCE_GROUP_CLOSED_MESSAGE,
+      );
+    });
+
+    it('refuses to reschedule a lesson once attendance is marked', async () => {
+      const school = await createSchool();
+      const marked = await school.theory(startedAt());
+      const unmarked = await school.theory(
+        new Date(Date.now() - 5 * MINUTE_MS),
+      );
+      await attendanceService.updateAttendance(
+        school.teacher,
+        marked.id,
+        mark(school.student1.id, AttendanceStatus.PRESENT),
+      );
+      const moveTo18 = (lessonId: string) =>
+        lessonsService.rescheduleTheory(school.teacher, lessonId, {
+          scheduledAt: at(18).toISOString(),
+        });
+
+      const error = await rejectionOf(moveTo18(marked.id));
+      expect(error).toBeInstanceOf(ConflictException);
+      expect((error as ConflictException).message).toBe(
+        LESSON_HAS_ATTENDANCE_MESSAGE,
+      );
+
+      await expect(moveTo18(unmarked.id)).resolves.toMatchObject({
+        scheduledAt: at(18),
+      });
+    });
+
+    it('waits for an in-flight reschedule of the same lesson, then sees it in the future', async () => {
+      const school = await createSchool();
+      const lesson = await school.theory(startedAt());
+      const moved = deferred();
+      const commit = deferred();
+
+      // In-flight reschedule: holds the lesson row and has moved it to 18:00.
+      const rescheduling = prisma.$transaction(async (tx) => {
+        await lockTheoryLesson(tx, lesson.id, school.organization.id);
+        await tx.lesson.update({
+          where: { id: lesson.id },
+          data: { scheduledAt: at(18) },
+        });
+        moved.resolve();
+        await commit.promise;
+      });
+
+      try {
+        await moved.promise;
+        const marking = attendanceService.updateAttendance(
+          school.teacher,
+          lesson.id,
+          mark(school.student1.id, AttendanceStatus.PRESENT),
+        );
+        const state = track(marking);
+
+        await delay(LOCK_WAIT_MS);
+        expect(state.settled).toBe(false);
+
+        commit.resolve();
+        await rescheduling;
+
+        const error = await rejectionOf(marking);
+        expect(error).toBeInstanceOf(ConflictException);
+        expect((error as ConflictException).message).toBe(
+          ATTENDANCE_NOT_STARTED_MESSAGE,
+        );
+        await expect(
+          prisma.lessonAttendance.count({ where: { lessonId: lesson.id } }),
+        ).resolves.toBe(0);
+      } finally {
+        commit.resolve();
+        await rescheduling.catch(() => undefined);
+      }
+    });
+
+    it('serializes two saves of the same lesson: one row, each answer shows its own write', async () => {
+      const school = await createSchool();
+      const lesson = await school.theory(startedAt());
+
+      const [present, absent] = await Promise.all([
+        attendanceService.updateAttendance(
+          school.teacher,
+          lesson.id,
+          mark(school.student1.id, AttendanceStatus.PRESENT),
+        ),
+        attendanceService.updateAttendance(
+          school.admin,
+          lesson.id,
+          mark(school.student1.id, AttendanceStatus.ABSENT),
+        ),
+      ]);
+
+      expect(studentIn(present, school.student1.id)?.attendance?.status).toBe(
+        AttendanceStatus.PRESENT,
+      );
+      expect(studentIn(absent, school.student1.id)?.attendance?.status).toBe(
+        AttendanceStatus.ABSENT,
+      );
+      const rows = await prisma.lessonAttendance.findMany({
+        where: { lessonId: lesson.id },
+      });
+      expect(rows).toHaveLength(1);
+      expect([AttendanceStatus.PRESENT, AttendanceStatus.ABSENT]).toContain(
+        rows[0].status,
+      );
+    });
+
+    it('does not deadlock when the group closes while attendance is saved', async () => {
+      const school = await createSchool();
+      const lesson = await school.theory(startedAt());
+
+      const settled = Promise.allSettled([
+        groupsService.changeStatus(school.admin, school.group.id, {
+          status: GroupStatus.COMPLETED,
+        }),
+        attendanceService.updateAttendance(
+          school.teacher,
+          lesson.id,
+          mark(school.student1.id, AttendanceStatus.PRESENT),
+        ),
+      ]);
+      const winner = await Promise.race([
+        settled.then(() => 'settled'),
+        delay(UNBLOCKED_WITHIN_MS).then(() => 'stuck'),
+      ]);
+      expect(winner).toBe('settled');
+
+      const [closing, marking] = await settled;
+      expect(closing.status).toBe('fulfilled');
+      // Whoever came first wins: the mark is saved, or the closed group refuses it.
+      if (marking.status === 'rejected') {
+        expect(marking.reason).toBeInstanceOf(ConflictException);
+        expect((marking.reason as ConflictException).message).toBe(
+          ATTENDANCE_GROUP_CLOSED_MESSAGE,
+        );
+      }
+      await expect(
+        prisma.lessonAttendance.count({ where: { lessonId: lesson.id } }),
+      ).resolves.toBe(marking.status === 'fulfilled' ? 1 : 0);
     });
   });
 });

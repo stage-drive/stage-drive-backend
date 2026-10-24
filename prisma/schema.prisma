@@ -114,6 +114,14 @@ enum CourseMaterialType {
   VIDEO
 }
 
+/// Відвідування теоретичного заняття. «Не відмічено» — відсутність рядка.
+enum AttendanceStatus {
+  PRESENT
+  ABSENT
+  LATE
+  EXCUSED
+}
+
 model Organization {
   id             String             @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   name           String             @db.VarChar(255)
@@ -172,6 +180,8 @@ model User {
   studentDrivingLessons    DrivingLesson[]      @relation("StudentDrivingLessons")
   cancelledLessons         Lesson[]             @relation("CancelledLessons")
   cancelledDrivingLessons  DrivingLesson[]      @relation("CancelledDrivingLessons")
+  lessonAttendances        LessonAttendance[]   @relation("StudentAttendances")
+  markedAttendances        LessonAttendance[]   @relation("MarkedAttendances")
 
   @@index([deletedAt])
   @@index([organizationId])
@@ -464,20 +474,21 @@ model Enrollment {
 }
 
 model Lesson {
-  id                 String       @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  groupId            String       @map("group_id") @db.Uuid
-  group              Group        @relation(fields: [groupId], references: [id], onDelete: Cascade)
-  topic              String       @db.VarChar(200)
-  scheduledAt        DateTime     @map("scheduled_at")
-  durationMin        Int          @default(90) @map("duration_min")
-  status             LessonStatus @default(SCHEDULED)
+  id                 String             @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  groupId            String             @map("group_id") @db.Uuid
+  group              Group              @relation(fields: [groupId], references: [id], onDelete: Cascade)
+  topic              String             @db.VarChar(200)
+  scheduledAt        DateTime           @map("scheduled_at")
+  durationMin        Int                @default(90) @map("duration_min")
+  status             LessonStatus       @default(SCHEDULED)
   /// Аудит скасування. CHECK у міграції: cancelledAt є тоді й лише тоді, коли status = CANCELLED.
-  cancelledAt        DateTime?    @map("cancelled_at")
-  cancelledById      String?      @map("cancelled_by_id") @db.Uuid
-  cancelledBy        User?        @relation("CancelledLessons", fields: [cancelledById], references: [id], onDelete: SetNull)
-  cancellationReason String?      @map("cancellation_reason") @db.VarChar(500)
-  createdAt          DateTime     @default(now()) @map("created_at")
-  updatedAt          DateTime     @default(now()) @updatedAt @map("updated_at")
+  cancelledAt        DateTime?          @map("cancelled_at")
+  cancelledById      String?            @map("cancelled_by_id") @db.Uuid
+  cancelledBy        User?              @relation("CancelledLessons", fields: [cancelledById], references: [id], onDelete: SetNull)
+  cancellationReason String?            @map("cancellation_reason") @db.VarChar(500)
+  createdAt          DateTime           @default(now()) @map("created_at")
+  updatedAt          DateTime           @default(now()) @updatedAt @map("updated_at")
+  attendances        LessonAttendance[]
 
   @@index([groupId])
   @@index([scheduledAt])
@@ -514,4 +525,24 @@ model DrivingLesson {
   @@index([scheduledAt])
   @@index([cancelledById])
   @@map("driving_lessons")
+}
+
+/// Відвідування студентом теоретичного заняття: один рядок на пару (заняття, студент) — актуальний статус.
+/// studentId посилається на User, а не на Enrollment: видалення студента з групи не стирає історію.
+model LessonAttendance {
+  id         String           @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  lessonId   String           @map("lesson_id") @db.Uuid
+  lesson     Lesson           @relation(fields: [lessonId], references: [id], onDelete: Cascade)
+  studentId  String           @map("student_id") @db.Uuid
+  student    User             @relation("StudentAttendances", fields: [studentId], references: [id], onDelete: Cascade)
+  status     AttendanceStatus
+  markedById String?          @map("marked_by_id") @db.Uuid
+  markedBy   User?            @relation("MarkedAttendances", fields: [markedById], references: [id], onDelete: SetNull)
+  markedAt   DateTime         @map("marked_at")
+  createdAt  DateTime         @default(now()) @map("created_at")
+
+  @@unique([lessonId, studentId])
+  @@index([studentId])
+  @@index([markedById])
+  @@map("lesson_attendances")
 }

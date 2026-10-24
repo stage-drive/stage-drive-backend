@@ -5,6 +5,7 @@ import { UserRole } from '@prisma/client';
 import { AuthGuard } from '../auth/auth.guard';
 import { ROLES_KEY } from '../auth/roles.decorator';
 import { RolesGuard } from '../auth/roles.guard';
+import { LessonAttendanceService } from './lesson-attendance.service';
 import { LessonsController } from './lessons.controller';
 import { LessonsService } from './lessons.service';
 import { PersonalScheduleService } from './personal-schedule.service';
@@ -26,6 +27,8 @@ describe('LessonsController', () => {
     ['reschedulePractice', [UserRole.ADMIN, UserRole.INSTRUCTOR]],
     ['cancelTheory', [UserRole.ADMIN, UserRole.TEACHER]],
     ['cancelPractice', [UserRole.ADMIN, UserRole.INSTRUCTOR]],
+    ['getAttendance', [UserRole.ADMIN, UserRole.TEACHER]],
+    ['updateAttendance', [UserRole.ADMIN, UserRole.TEACHER]],
     [
       'getMySchedule',
       [UserRole.TEACHER, UserRole.INSTRUCTOR, UserRole.STUDENT],
@@ -83,9 +86,14 @@ describe('LessonsController', () => {
     const personalScheduleService = {
       getMySchedule: jest.fn().mockResolvedValue(response),
     };
+    const lessonAttendanceService = {
+      getAttendance: jest.fn().mockResolvedValue(response),
+      updateAttendance: jest.fn().mockResolvedValue(response),
+    };
     const controller = new LessonsController(
       lessonsService as unknown as LessonsService,
       personalScheduleService as unknown as PersonalScheduleService,
+      lessonAttendanceService as unknown as LessonAttendanceService,
     );
 
     it.each([
@@ -127,6 +135,31 @@ describe('LessonsController', () => {
         expect(lessonsService[method]).toHaveBeenCalledWith(user, body);
       },
     );
+
+    it('getAttendance passes the current user and id to the attendance service', async () => {
+      await expect(controller.getAttendance(user as never, id)).resolves.toBe(
+        response,
+      );
+      expect(lessonAttendanceService.getAttendance).toHaveBeenCalledWith(
+        user,
+        id,
+      );
+    });
+
+    it('updateAttendance passes the current user, id and body to the attendance service', async () => {
+      const body = {
+        records: [{ studentId: 'student-1', status: 'PRESENT' as const }],
+      };
+
+      await expect(
+        controller.updateAttendance(user as never, id, body),
+      ).resolves.toBe(response);
+      expect(lessonAttendanceService.updateAttendance).toHaveBeenCalledWith(
+        user,
+        id,
+        body,
+      );
+    });
 
     it('getMySchedule passes the current user and query to the schedule service', async () => {
       const query = { from: '2026-11-02T00:00:00Z', type: 'THEORY' as const };
