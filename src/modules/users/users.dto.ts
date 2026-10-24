@@ -150,6 +150,14 @@ export const MEMBER_STATUS_VALUES = [
   UserStatus.ARCHIVED,
 ] as const;
 
+/** OWNER не призначається: власника автошколи меню користувачів не змінює. */
+export const MEMBER_ROLE_VALUES = [
+  UserRole.ADMIN,
+  UserRole.TEACHER,
+  UserRole.INSTRUCTOR,
+  UserRole.STUDENT,
+] as const;
+
 const SEARCH_MAX_LENGTH = 100;
 const DEFAULT_PAGE = 1;
 const DEFAULT_LIMIT = 20;
@@ -407,4 +415,18 @@ export class UpdateOrganizationMemberStatusDto {
     message: 'status має бути ACTIVE, BLOCKED або ARCHIVED.',
   })
   status: UserStatus;
+}
+
+export class UpdateOrganizationMemberRoleDto {
+  @ApiProperty({
+    enum: MEMBER_ROLE_VALUES,
+    example: UserRole.INSTRUCTOR,
+    description:
+      'Нова роль. OWNER задати не можна. ADMIN призначає лише ' +
+      'TEACHER, INSTRUCTOR або STUDENT; OWNER — ще й ADMIN.',
+  })
+  @IsIn(MEMBER_ROLE_VALUES, {
+    message: 'role має бути ADMIN, TEACHER, INSTRUCTOR або STUDENT.',
+  })
+  role: UserRole;
 }
