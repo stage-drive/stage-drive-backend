@@ -6,7 +6,14 @@ import {
   Logger,
   NotFoundException,
 } from '@nestjs/common';
-import { Prisma, User, UserRole, UserStatus } from '@prisma/client';
+import {
+  InvitationStatus,
+  Prisma,
+  TrainingStatus,
+  User,
+  UserRole,
+  UserStatus,
+} from '@prisma/client';
 import * as bcrypt from 'bcrypt';
 import { existsSync, unlinkSync } from 'fs';
 import { join } from 'path';
@@ -52,6 +59,26 @@ export const SELF_STATUS_MESSAGE =
   'Не можна змінити статус власного облікового запису.';
 export const MEMBER_ROLE_FILTER_MESSAGE =
   'Цю роль не можна переглядати з вашими правами.';
+export const SELF_ROLE_MESSAGE =
+  'Не можна змінити роль власного облікового запису.';
+export const MEMBER_ROLE_FORBIDDEN_MESSAGE =
+  'Цю роль не можна призначити з вашими правами.';
+export const MEMBER_ROLE_STATUS_MESSAGE =
+  'Роль змінюється лише для користувача зі статусом INVITED або ACTIVE.';
+export const MEMBER_ROLE_CONCURRENT_MESSAGE =
+  'Користувача щойно змінено. Оновіть дані й спробуйте ще раз.';
+export const TEACHER_HAS_GROUPS_MESSAGE =
+  'Викладач призначений до груп. Спочатку призначте групам іншого викладача.';
+export const INSTRUCTOR_HAS_CARS_MESSAGE =
+  'Інструктор призначений до автомобілів. Спочатку зніміть призначення.';
+export const INSTRUCTOR_HAS_STUDENTS_MESSAGE =
+  'Інструктор закріплений за учнями. Спочатку закріпіть учнів за іншим інструктором.';
+export const INSTRUCTOR_HAS_LESSONS_MESSAGE =
+  'В інструктора є практичні заняття.';
+export const STUDENT_HAS_ASSIGNMENTS_MESSAGE =
+  'Учень має групу, інструктора або автомобіль.';
+export const STUDENT_HAS_HISTORY_MESSAGE =
+  'Учень має історію навчання: зарахування, практичні заняття або відвідування.';
 
 const EMPTY_FIELD_MESSAGE = "Заповніть обов'язкове поле.";
 const DEFAULT_PAGE = 1;
@@ -112,7 +139,12 @@ const memberSelect = {
 } satisfies Prisma.UserSelect;
 
 type MemberRow = Prisma.UserGetPayload<{ select: typeof memberSelect }>;
-type MemberAction = 'read' | 'update' | 'status';
+type MemberAction = 'read' | 'update' | 'status' | 'role';
+
+const ROLE_CHANGE_STATUSES: readonly UserStatus[] = [
+  UserStatus.INVITED,
+  UserStatus.ACTIVE,
+];
 
 function visibleMemberRoles(actor: User): UserRole[] {
   if (actor.role === UserRole.OWNER) {
@@ -156,6 +188,68 @@ function selfMessage(action: MemberAction): string {
       return SELF_UPDATE_MESSAGE;
     case 'status':
       return SELF_STATUS_MESSAGE;
+    case 'role':
+      return SELF_ROLE_MESSAGE;
+  }
+}
+
+function roleError(message: string): ConflictException {
+  return new ConflictException({
+    statusCode: 409,
+    errors: [{ field: 'role', message }],
+  });
+}
+
+/**
+ * Дані, прив'язані до поточної ролі. Їх не переносять і не стирають мовчки:
+ * поки вони є, роль не змінюється.
+ */
+async function roleBindings(
+  tx: Prisma.TransactionClient,
+  userId: string,
+  role: UserRole,
+): Promise<string[]> {
+  switch (role) {
+    case UserRole.TEACHER: {
+      const groups = await tx.group.count({ where: { teacherId: userId } });
+      return groups > 0 ? [TEACHER_HAS_GROUPS_MESSAGE] : [];
+    }
+    case UserRole.INSTRUCTOR: {
+      const [cars, students, lessons] = await Promise.all([
+        tx.car.count({ where: { instructorId: userId } }),
+        tx.student.count({ where: { instructorId: userId } }),
+        tx.drivingLesson.count({ where: { instructorId: userId } }),
+      ]);
+      return [
+        ...(cars > 0 ? [INSTRUCTOR_HAS_CARS_MESSAGE] : []),
+        ...(students > 0 ? [INSTRUCTOR_HAS_STUDENTS_MESSAGE] : []),
+        ...(lessons > 0 ? [INSTRUCTOR_HAS_LESSONS_MESSAGE] : []),
+      ];
+    }
+    case UserRole.STUDENT: {
+      const [profile, enrollments, lessons, attendances] = await Promise.all([
+        tx.student.findUnique({
+          where: { userId },
+          select: { groupId: true, instructorId: true, carId: true },
+        }),
+        tx.enrollment.count({ where: { studentId: userId } }),
+        tx.drivingLesson.count({ where: { studentId: userId } }),
+        tx.lessonAttendance.count({ where: { studentId: userId } }),
+      ]);
+      const assigned =
+        !!profile &&
+        (profile.groupId !== null ||
+          profile.instructorId !== null ||
+          profile.carId !== null);
+      return [
+        ...(assigned ? [STUDENT_HAS_ASSIGNMENTS_MESSAGE] : []),
+        ...(enrollments + lessons + attendances > 0
+          ? [STUDENT_HAS_HISTORY_MESSAGE]
+          : []),
+      ];
+    }
+    default:
+      return [];
   }
 }
 
@@ -451,9 +545,8 @@ export class UsersService {
   /**
    * Email і role навмисно не приймаються.
    * Email активного акаунта змінює лише сам користувач через підтвердження листа.
-   * Email і роль запрошення задаються під час запрошення: щоб їх змінити,
-   * запрошення скасовують і створюють нове. Роль тягне за собою профіль учня,
-   * групи, уроки водіння й автомобілі інструктора.
+   * Email запрошення задається під час запрошення: щоб його змінити,
+   * запрошення скасовують і створюють нове. Роль змінює changeMemberRole.
    * Автомобіль інструктору призначає модуль cars.
    */
   async updateMember(
@@ -502,6 +595,95 @@ export class UsersService {
 
     this.logger.log(
       `Organization member status changed userId=${member.id} from=${member.status} to=${nextStatus} actorId=${actor.id} organizationId=${actor.organizationId}`,
+    );
+    return toOrganizationMember(updated);
+  }
+
+  /**
+   * Роль змінюється для INVITED і ACTIVE. OWNER не призначається і не змінюється.
+   * Для INVITED роль оновлюється й у PENDING-запрошенні, тож активація дає нову роль.
+   * Профіль учня створюється при переході в STUDENT і видаляється при виході з неї,
+   * якщо за ним немає призначень та історії. Активному користувачу сесії скидаються,
+   * щоб клієнт отримав нову роль через повторний вхід.
+   */
+  async changeMemberRole(
+    actor: User,
+    userId: string,
+    nextRole: UserRole,
+  ): Promise<OrganizationMemberDto> {
+    const member = await this.requireMember(actor, userId, 'role');
+    if (!visibleMemberRoles(actor).includes(nextRole)) {
+      throw new ForbiddenException(MEMBER_ROLE_FORBIDDEN_MESSAGE);
+    }
+    if (member.role === nextRole) {
+      return toOrganizationMember(member);
+    }
+    if (!ROLE_CHANGE_STATUSES.includes(member.status)) {
+      throw roleError(MEMBER_ROLE_STATUS_MESSAGE);
+    }
+
+    const revokeSession = member.status === UserStatus.ACTIVE;
+    const updated = await this.prisma.$transaction(async (tx) => {
+      const bindings = await roleBindings(tx, member.id, member.role);
+      if (bindings.length > 0) {
+        throw new ConflictException({
+          statusCode: 409,
+          errors: bindings.map((message) => ({ field: 'role', message })),
+        });
+      }
+
+      const result = await tx.user.updateMany({
+        where: {
+          id: member.id,
+          role: member.role,
+          status: member.status,
+          deletedAt: null,
+        },
+        data: {
+          role: nextRole,
+          ...(revokeSession ? { tokensInvalidBefore: new Date() } : {}),
+        },
+      });
+      if (result.count !== 1) {
+        throw roleError(MEMBER_ROLE_CONCURRENT_MESSAGE);
+      }
+
+      if (member.role === UserRole.STUDENT) {
+        await tx.student.deleteMany({ where: { userId: member.id } });
+      }
+      if (nextRole === UserRole.STUDENT) {
+        await tx.student.upsert({
+          where: { userId: member.id },
+          update: {},
+          create: {
+            userId: member.id,
+            organizationId: member.organizationId,
+            trainingStatus: TrainingStatus.INVITED,
+          },
+        });
+      }
+      if (member.status === UserStatus.INVITED) {
+        await tx.invitation.updateMany({
+          where: {
+            userId: member.id,
+            status: InvitationStatus.PENDING,
+            acceptedAt: null,
+          },
+          data: { role: nextRole },
+        });
+      }
+
+      return tx.user.findUniqueOrThrow({
+        where: { id: member.id },
+        select: memberSelect,
+      });
+    });
+    if (revokeSession) {
+      await this.refreshTokenService.revokeAllForUser(member.id);
+    }
+
+    this.logger.log(
+      `Organization member role changed userId=${member.id} from=${member.role} to=${nextRole} actorId=${actor.id} organizationId=${actor.organizationId}`,
     );
     return toOrganizationMember(updated);
   }

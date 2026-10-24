@@ -91,13 +91,6 @@ function visibleRoles(actor: User): UserRole[] {
   return [];
 }
 
-function canCancelRole(actor: User, role: UserRole): boolean {
-  if (actor.role === UserRole.OWNER) {
-    return role === UserRole.ADMIN;
-  }
-  return actor.role === UserRole.ADMIN && isAdminInvitableRole(role);
-}
-
 function toInvitationView(
   invitation: Invitation,
   emailDelivery?: InvitationEmailDelivery,
@@ -184,9 +177,7 @@ export class InvitationsService {
   }
 
   async cancel(actor: User, invitationId: string) {
-    const invitation = await this.findInvitationForActor(actor, invitationId, {
-      forCancel: true,
-    });
+    const invitation = await this.findInvitationForActor(actor, invitationId);
 
     if (invitation.status === InvitationStatus.CANCELLED) {
       throw new BadRequestException({
@@ -209,22 +200,36 @@ export class InvitationsService {
       });
     }
 
-    const cancelled = await this.prisma.invitation.update({
-      where: { id: invitation.id },
-      data: { status: InvitationStatus.CANCELLED },
-    });
-    await this.prisma.invitationEmailJob.updateMany({
-      where: {
-        invitationId: invitation.id,
-        status: {
-          in: [
-            InvitationEmailStatus.QUEUED,
-            InvitationEmailStatus.PROCESSING,
-            InvitationEmailStatus.FAILED,
-          ],
+    // Умова в updateMany не дає скасувати запрошення, яке паралельно активували.
+    const cancelled = await this.prisma.$transaction(async (tx) => {
+      const result = await tx.invitation.updateMany({
+        where: {
+          id: invitation.id,
+          status: InvitationStatus.PENDING,
+          acceptedAt: null,
         },
-      },
-      data: { status: InvitationEmailStatus.SUPERSEDED, token: null },
+        data: { status: InvitationStatus.CANCELLED },
+      });
+      if (result.count !== 1) {
+        throw new BadRequestException({
+          statusCode: 400,
+          message: INVITATION_ALREADY_USED_MESSAGE,
+        });
+      }
+      await tx.invitationEmailJob.updateMany({
+        where: {
+          invitationId: invitation.id,
+          status: {
+            in: [
+              InvitationEmailStatus.QUEUED,
+              InvitationEmailStatus.PROCESSING,
+              InvitationEmailStatus.FAILED,
+            ],
+          },
+        },
+        data: { status: InvitationEmailStatus.SUPERSEDED, token: null },
+      });
+      return tx.invitation.findUniqueOrThrow({ where: { id: invitation.id } });
     });
 
     return toInvitationView(cancelled);
@@ -356,11 +361,7 @@ export class InvitationsService {
     };
   }
 
-  private async findInvitationForActor(
-    actor: User,
-    invitationId: string,
-    options?: { forCancel?: boolean },
-  ) {
+  private async findInvitationForActor(actor: User, invitationId: string) {
     const invitation = await this.prisma.invitation.findUnique({
       where: { id: invitationId },
       include: { user: true, emailJobs: invitationEmailPreview },
@@ -370,10 +371,7 @@ export class InvitationsService {
       throw new NotFoundException(INVITATION_NOT_FOUND_MESSAGE);
     }
 
-    const allowed = options?.forCancel
-      ? canCancelRole(actor, invitation.role)
-      : visibleRoles(actor).includes(invitation.role);
-    if (!allowed) {
+    if (!visibleRoles(actor).includes(invitation.role)) {
       throw new ForbiddenException('Insufficient permissions');
     }
 
@@ -559,12 +557,12 @@ export class InvitationsService {
             throw this.emailAlreadyExists();
           }
 
-          const liveInvitation = await tx.invitation.findFirst({
+          // Прострочене PENDING-запрошення теж оновлюється, а не дублюється.
+          const pendingInvitation = await tx.invitation.findFirst({
             where: {
               userId: existing.id,
               status: InvitationStatus.PENDING,
               acceptedAt: null,
-              expiresAt: { gt: new Date() },
             },
           });
 
@@ -581,9 +579,9 @@ export class InvitationsService {
           });
           await this.ensureStudentProfile(tx, user);
 
-          if (liveInvitation) {
+          if (pendingInvitation) {
             const invitation = await tx.invitation.update({
-              where: { id: liveInvitation.id },
+              where: { id: pendingInvitation.id },
               data: {
                 email,
                 role,

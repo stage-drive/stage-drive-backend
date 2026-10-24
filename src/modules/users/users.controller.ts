@@ -55,6 +55,7 @@ import {
   OrganizationMemberListDto,
   PublicUserDto,
   UpdateOrganizationMemberDto,
+  UpdateOrganizationMemberRoleDto,
   UpdateOrganizationMemberStatusDto,
   UpdateProfileDto,
   VerifyEmailDto,
@@ -268,8 +269,7 @@ export class UsersController {
       'користувач: POST /api/users/me/email/change і POST /api/users/me/email/verify. ' +
       'Email запрошеного є частиною запрошення: щоб виправити адресу, запрошення ' +
       'скасовують (POST /api/invitations/{id}/cancel) і створюють нове. ' +
-      'role теж не змінюється. Роль задається під час запрошення і впливає на профіль учня, ' +
-      'групи, уроки водіння й автомобілі інструктора. ' +
+      'role цим запитом не змінюється: PATCH /api/users/{id}/role. ' +
       'Автомобіль інструктору цим запитом не призначається: ' +
       'PATCH /api/cars/{carId}/instructor. ' +
       'Поля email і role у тілі відхиляються як невідомі. ' +
@@ -356,5 +356,62 @@ export class UsersController {
     @Body() body: UpdateOrganizationMemberStatusDto,
   ) {
     return this.usersService.changeMemberStatus(user, id, body.status);
+  }
+
+  @Patch(':id/role')
+  @Roles(...MEMBER_MANAGE_ROLES)
+  @ApiOperation({
+    operationId: 'changeOrganizationMemberRole',
+    summary: 'Змінити роль учасника',
+    description:
+      'OWNER призначає ADMIN, TEACHER, INSTRUCTOR або STUDENT. ' +
+      'ADMIN змінює роль лише TEACHER, INSTRUCTOR і STUDENT між цими ж ролями. ' +
+      'Роль OWNER не призначається і не змінюється: власника автошколи ' +
+      'меню користувачів не змінює. Власну роль змінити не можна. ' +
+      'Доступно для статусів INVITED і ACTIVE; BLOCKED і ARCHIVED — 409. ' +
+      'Для INVITED нова роль записується й у PENDING-запрошення: ' +
+      'активація за вже надісланим посиланням дасть нову роль. ' +
+      'Лист із новою роллю — POST /api/invitations/{id}/resend. ' +
+      'Для ACTIVE refresh-токени відкликаються, а access-токени стають недійсними: ' +
+      'нова роль діє після повторного входу. ' +
+      'Роль не змінюється, поки є дані поточної ролі: групи викладача; ' +
+      'автомобілі, закріплені учні або практичні заняття інструктора; ' +
+      'група, інструктор, автомобіль, зарахування, заняття або відвідування учня. ' +
+      'Профіль учня створюється при переході в STUDENT і видаляється при виході з неї. ' +
+      'Повтор тієї самої ролі нічого не змінює. Відповідь — актуальний профіль учасника.',
+  })
+  @ApiParam({
+    name: 'id',
+    format: 'uuid',
+    description: 'Id учасника своєї автошколи.',
+    example: '77777777-7777-4777-8777-777777777777',
+  })
+  @ApiOkResponse({ type: OrganizationMemberDto })
+  @ApiForbiddenResponse({
+    description:
+      'Недостатньо прав для поточної або нової ролі, це власник автошколи, ' +
+      'або це власний обліковий запис.',
+  })
+  @ApiBadRequestResponse({
+    description:
+      'role має бути ADMIN, TEACHER, INSTRUCTOR або STUDENT. ' +
+      'Тіло містить errors: [{ field, message }].',
+  })
+  @ApiConflictResponse({
+    description:
+      'Статус BLOCKED або ARCHIVED, є дані поточної ролі, або користувача ' +
+      'паралельно змінено. Тіло містить errors: [{ field: "role", message }].',
+  })
+  @ApiNotFoundResponse({
+    description:
+      'Користувача не знайдено, його видалено, або він належить іншій автошколі. ' +
+      'Також якщо автошколу видалено.',
+  })
+  changeRole(
+    @CurrentUser() user: User,
+    @Param('id', new ParseUUIDPipe({ version: '4' })) id: string,
+    @Body() body: UpdateOrganizationMemberRoleDto,
+  ) {
+    return this.usersService.changeMemberRole(user, id, body.role);
   }
 }

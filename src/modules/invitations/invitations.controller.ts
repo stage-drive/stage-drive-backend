@@ -12,6 +12,7 @@ import {
 import {
   ApiBadRequestResponse,
   ApiBearerAuth,
+  ApiConflictResponse,
   ApiCreatedResponse,
   ApiForbiddenResponse,
   ApiNotFoundResponse,
@@ -94,13 +95,18 @@ export class InvitationsController {
       'Необов’язкове поле role: ADMIN, TEACHER, INSTRUCTOR або STUDENT. ' +
       'Якщо role не передати, запрошений стає ADMIN. OWNER запросити не можна. ' +
       'Викликати може лише OWNER. Лист ставиться в чергу; стан доставки — у invitation.emailDelivery. ' +
-      'Сирий token не повертається. Якщо для цього email уже є живе PENDING-запрошення тієї самої школи, ' +
-      'воно оновлюється і лист ставиться в чергу знову.',
+      'Сирий token не повертається. Якщо для цього email уже є PENDING-запрошення тієї самої школи ' +
+      '(навіть прострочене), воно оновлюється і лист ставиться в чергу знову. Дубліката не створюється. ' +
+      'Email активного акаунта або іншої школи — 409.',
   })
   @ApiUnauthorizedResponse({ description: 'Потрібен access token' })
   @ApiCreatedResponse({ type: InviteResponseDto })
   @ApiForbiddenResponse({
     description: 'Лише OWNER може запрошувати користувачів цим ендпоінтом.',
+  })
+  @ApiConflictResponse({
+    description:
+      'Email уже належить активному акаунту або користувачу іншої автошколи.',
   })
   inviteAdmin(@CurrentUser() user: User, @Body() body: InviteByOwnerDto) {
     return this.invitationsService.inviteAdmin(user, body);
@@ -115,12 +121,18 @@ export class InvitationsController {
     summary: 'ADMIN запрошує TEACHER, INSTRUCTOR або STUDENT',
     description:
       'У body обов’язкове поле role: TEACHER | INSTRUCTOR | STUDENT. ' +
-      'OWNER/ADMIN цим ендпоінтом запросити не можна. Викликати може лише ADMIN.',
+      'OWNER/ADMIN цим ендпоінтом запросити не можна. Викликати може лише ADMIN. ' +
+      'Повторне запрошення тієї самої адреси оновлює наявне PENDING-запрошення, ' +
+      'дубліката не створюється.',
   })
   @ApiUnauthorizedResponse({ description: 'Потрібен access token' })
   @ApiCreatedResponse({ type: InviteResponseDto })
   @ApiForbiddenResponse({
     description: 'Лише ADMIN може запрошувати TEACHER, INSTRUCTOR або STUDENT.',
+  })
+  @ApiConflictResponse({
+    description:
+      'Email уже належить активному акаунту або користувачу іншої автошколи.',
   })
   inviteMember(@CurrentUser() user: User, @Body() body: InviteMemberDto) {
     return this.invitationsService.inviteMember(user, body);
@@ -174,9 +186,13 @@ export class InvitationsController {
   @ApiOperation({
     summary: 'Скасувати запрошення',
     description:
-      'OWNER скасовує запрошення ADMIN. ADMIN скасовує запрошення TEACHER, ' +
-      'INSTRUCTOR або STUDENT. Після цього verify/activate повертають ' +
-      'CANCELLED_INVITATION_TOKEN. Повторне скасування — 400.',
+      'Лише PENDING-запрошення своєї автошколи. OWNER скасовує запрошення ADMIN, ' +
+      'TEACHER, INSTRUCTOR і STUDENT. ADMIN — лише TEACHER, INSTRUCTOR і STUDENT. ' +
+      'Незавершені листи запрошення зупиняються. Після цього verify/activate повертають ' +
+      'CANCELLED_INVITATION_TOKEN, а повторне скасування — 400. ' +
+      'Користувач лишається в GET /api/users зі статусом INVITED. ' +
+      'Нове запрошення на ту саму адресу створює POST /api/invitations ' +
+      '(або POST /api/invitations/members).',
   })
   @ApiUnauthorizedResponse({ description: 'Потрібен access token' })
   @ApiOkResponse({ type: CreatedInvitationDto })

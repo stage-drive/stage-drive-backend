@@ -505,6 +505,56 @@ describe('UsersService organization members', () => {
       expect((error as ForbiddenException).message).toBe(SELF_UPDATE_MESSAGE);
       expect(prisma.user.update).not.toHaveBeenCalled();
     });
+
+    it.each([UserRole.OWNER, UserRole.ADMIN])(
+      'does not let %s edit the organization owner',
+      async (role) => {
+        prisma.user.findUnique.mockResolvedValue(
+          memberRow({ role: UserRole.OWNER }),
+        );
+
+        await expect(
+          service.updateMember(actor(role), 'user-2', { firstName: 'Інше' }),
+        ).rejects.toBeInstanceOf(ForbiddenException);
+        expect(prisma.user.update).not.toHaveBeenCalled();
+      },
+    );
+
+    it('does not let an admin edit an admin', async () => {
+      prisma.user.findUnique.mockResolvedValue(
+        memberRow({ role: UserRole.ADMIN }),
+      );
+
+      await expect(
+        service.updateMember(actor(UserRole.ADMIN), 'user-2', {
+          firstName: 'Інше',
+        }),
+      ).rejects.toBeInstanceOf(ForbiddenException);
+      expect(prisma.user.update).not.toHaveBeenCalled();
+    });
+
+    it.each([UserRole.TEACHER, UserRole.INSTRUCTOR, UserRole.STUDENT])(
+      'does not let %s edit members',
+      async (role) => {
+        await expect(
+          service.updateMember(actor(role), 'user-2', { firstName: 'Інше' }),
+        ).rejects.toBeInstanceOf(ForbiddenException);
+        expect(prisma.user.update).not.toHaveBeenCalled();
+      },
+    );
+
+    it('returns 404 for a member of another organization', async () => {
+      prisma.user.findUnique.mockResolvedValue(
+        memberRow({ organizationId: 'org-2' }),
+      );
+
+      await expect(
+        service.updateMember(actor(UserRole.OWNER), 'user-2', {
+          firstName: 'Інше',
+        }),
+      ).rejects.toBeInstanceOf(NotFoundException);
+      expect(prisma.user.update).not.toHaveBeenCalled();
+    });
   });
 
   describe('changeMemberStatus', () => {
@@ -627,6 +677,51 @@ describe('UsersService organization members', () => {
           UserStatus.BLOCKED,
         ),
       ).rejects.toBeInstanceOf(ForbiddenException);
+      expect(prisma.user.update).not.toHaveBeenCalled();
+    });
+
+    it.each([UserRole.OWNER, UserRole.ADMIN])(
+      'does not let %s change the organization owner',
+      async (role) => {
+        prisma.user.findUnique.mockResolvedValue(
+          memberRow({ role: UserRole.OWNER }),
+        );
+
+        await expect(
+          service.changeMemberStatus(
+            actor(role),
+            'user-2',
+            UserStatus.ARCHIVED,
+          ),
+        ).rejects.toBeInstanceOf(ForbiddenException);
+        expect(prisma.user.update).not.toHaveBeenCalled();
+        expect(refreshTokenService.revokeAllForUser).not.toHaveBeenCalled();
+      },
+    );
+
+    it.each([UserRole.TEACHER, UserRole.INSTRUCTOR, UserRole.STUDENT])(
+      'does not let %s change statuses',
+      async (role) => {
+        await expect(
+          service.changeMemberStatus(actor(role), 'user-2', UserStatus.BLOCKED),
+        ).rejects.toBeInstanceOf(ForbiddenException);
+        expect(prisma.user.update).not.toHaveBeenCalled();
+        expect(refreshTokenService.revokeAllForUser).not.toHaveBeenCalled();
+      },
+    );
+
+    it('returns 404 for a member of another organization', async () => {
+      prisma.user.findUnique.mockResolvedValue(
+        memberRow({ organizationId: 'org-2' }),
+      );
+
+      await expect(
+        service.changeMemberStatus(
+          actor(UserRole.OWNER),
+          'user-2',
+          UserStatus.BLOCKED,
+        ),
+      ).rejects.toBeInstanceOf(NotFoundException);
       expect(prisma.user.update).not.toHaveBeenCalled();
     });
   });

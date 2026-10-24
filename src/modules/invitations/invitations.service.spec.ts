@@ -48,7 +48,10 @@ describe('InvitationsService', () => {
       create: jest.Mock;
       findFirst: jest.Mock;
       update: jest.Mock;
+      updateMany: jest.Mock;
+      findUniqueOrThrow: jest.Mock;
     };
+    invitationEmailJob: { updateMany: jest.Mock };
     student: { findUnique: jest.Mock; create: jest.Mock };
   };
 
@@ -178,6 +181,11 @@ describe('InvitationsService', () => {
         create: jest.fn().mockResolvedValue(createdInvitation),
         findFirst: jest.fn().mockResolvedValue(null),
         update: jest.fn().mockResolvedValue(createdInvitation),
+        updateMany: jest.fn().mockResolvedValue({ count: 1 }),
+        findUniqueOrThrow: jest.fn(),
+      },
+      invitationEmailJob: {
+        updateMany: jest.fn().mockResolvedValue({ count: 0 }),
       },
       student: {
         findUnique: jest.fn().mockResolvedValue(null),
@@ -315,7 +323,7 @@ describe('InvitationsService', () => {
     expect(emailQueue.replacePending).not.toHaveBeenCalled();
   });
 
-  it('issues a new invitation when the previous one expired or was cancelled', async () => {
+  it('issues a new invitation when the previous one was cancelled', async () => {
     const invitedUser = {
       id: 'admin-1',
       firstName: 'Стара',
@@ -339,7 +347,6 @@ describe('InvitationsService', () => {
         userId: 'admin-1',
         status: InvitationStatus.PENDING,
         acceptedAt: null,
-        expiresAt: { gt: expect.any(Date) },
       },
     });
     expect(tx.user.update).toHaveBeenCalledWith({
@@ -405,6 +412,45 @@ describe('InvitationsService', () => {
       emailDelivery: queuedDelivery,
     });
     expect(result).not.toHaveProperty('token');
+  });
+
+  it('reuses an expired pending invitation instead of creating a duplicate', async () => {
+    tx.user.findUnique.mockResolvedValue({
+      id: 'admin-1',
+      status: UserStatus.INVITED,
+      organizationId: 'org-1',
+      deletedAt: null,
+    });
+    tx.invitation.findFirst.mockResolvedValue({
+      id: 'expired-invite',
+      status: InvitationStatus.PENDING,
+      expiresAt: new Date('2020-01-01T00:00:00.000Z'),
+    });
+    tx.user.update.mockResolvedValue(createdUser);
+    tx.invitation.update.mockResolvedValue({
+      ...createdInvitation,
+      id: 'expired-invite',
+    });
+
+    await service.inviteAdmin(owner as never, payload);
+
+    expect(tx.invitation.create).not.toHaveBeenCalled();
+    expect(tx.invitation.update).toHaveBeenCalledWith({
+      where: { id: 'expired-invite' },
+      data: expect.objectContaining({
+        status: InvitationStatus.PENDING,
+        expiresAt: expect.any(Date),
+      }),
+    });
+    const { expiresAt } = (
+      tx.invitation.update.mock.calls[0] as [{ data: { expiresAt: Date } }]
+    )[0].data;
+    expect(expiresAt.getTime()).toBeGreaterThan(Date.now());
+    expect(emailQueue.enqueue).not.toHaveBeenCalled();
+    expect(emailQueue.replacePending).toHaveBeenCalledWith(
+      tx,
+      expect.objectContaining({ invitationId: 'expired-invite' }),
+    );
   });
 
   it('rejects a repeat invite when the account is already active', async () => {
@@ -1061,7 +1107,7 @@ describe('InvitationsService', () => {
 
     it('lets OWNER cancel a pending ADMIN invitation', async () => {
       prisma.invitation.findUnique.mockResolvedValue(pendingAdminInvitation);
-      prisma.invitation.update.mockResolvedValue({
+      tx.invitation.findUniqueOrThrow.mockResolvedValue({
         ...pendingAdminInvitation,
         status: InvitationStatus.CANCELLED,
       });
@@ -1072,11 +1118,15 @@ describe('InvitationsService', () => {
         id: 'invite-1',
         status: InvitationStatus.CANCELLED,
       });
-      expect(prisma.invitation.update).toHaveBeenCalledWith({
-        where: { id: 'invite-1' },
+      expect(tx.invitation.updateMany).toHaveBeenCalledWith({
+        where: {
+          id: 'invite-1',
+          status: InvitationStatus.PENDING,
+          acceptedAt: null,
+        },
         data: { status: InvitationStatus.CANCELLED },
       });
-      expect(prisma.invitationEmailJob.updateMany).toHaveBeenCalledWith({
+      expect(tx.invitationEmailJob.updateMany).toHaveBeenCalledWith({
         where: {
           invitationId: 'invite-1',
           status: { in: ['QUEUED', 'PROCESSING', 'FAILED'] },
@@ -1085,9 +1135,28 @@ describe('InvitationsService', () => {
       });
     });
 
+    it.each([UserRole.TEACHER, UserRole.INSTRUCTOR, UserRole.STUDENT])(
+      'lets OWNER cancel a pending %s invitation',
+      async (role) => {
+        prisma.invitation.findUnique.mockResolvedValue({
+          ...pendingTeacherInvitation,
+          role,
+        });
+        tx.invitation.findUniqueOrThrow.mockResolvedValue({
+          ...pendingTeacherInvitation,
+          role,
+          status: InvitationStatus.CANCELLED,
+        });
+
+        await expect(
+          service.cancel(owner as never, 'invite-teacher-1'),
+        ).resolves.toMatchObject({ role, status: InvitationStatus.CANCELLED });
+      },
+    );
+
     it('lets ADMIN cancel a member invitation and forbids cancelling an ADMIN invitation', async () => {
       prisma.invitation.findUnique.mockResolvedValue(pendingTeacherInvitation);
-      prisma.invitation.update.mockResolvedValue({
+      tx.invitation.findUniqueOrThrow.mockResolvedValue({
         ...pendingTeacherInvitation,
         status: InvitationStatus.CANCELLED,
       });
@@ -1096,10 +1165,39 @@ describe('InvitationsService', () => {
         service.cancel(admin as never, 'invite-teacher-1'),
       ).resolves.toMatchObject({ status: InvitationStatus.CANCELLED });
 
+      tx.invitation.updateMany.mockClear();
       prisma.invitation.findUnique.mockResolvedValue(pendingAdminInvitation);
       await expect(
         service.cancel(admin as never, 'invite-1'),
       ).rejects.toBeInstanceOf(ForbiddenException);
+      expect(tx.invitation.updateMany).not.toHaveBeenCalled();
+    });
+
+    it('hides an invitation of another school from cancel', async () => {
+      prisma.invitation.findUnique.mockResolvedValue({
+        ...pendingTeacherInvitation,
+        organizationId: 'org-2',
+      });
+
+      await expect(
+        service.cancel(owner as never, 'invite-teacher-1'),
+      ).rejects.toBeInstanceOf(NotFoundException);
+      expect(prisma.$transaction).not.toHaveBeenCalled();
+    });
+
+    it('does not cancel an invitation activated concurrently', async () => {
+      prisma.invitation.findUnique.mockResolvedValue(pendingTeacherInvitation);
+      tx.invitation.updateMany.mockResolvedValue({ count: 0 });
+
+      await expect(
+        service.cancel(admin as never, 'invite-teacher-1'),
+      ).rejects.toMatchObject({
+        response: {
+          statusCode: 400,
+          message: INVITATION_ALREADY_USED_MESSAGE,
+        },
+      });
+      expect(tx.invitationEmailJob.updateMany).not.toHaveBeenCalled();
     });
 
     it('rejects a second cancel and an already accepted invitation', async () => {
@@ -1129,7 +1227,7 @@ describe('InvitationsService', () => {
           message: INVITATION_ALREADY_USED_MESSAGE,
         },
       });
-      expect(prisma.invitation.update).not.toHaveBeenCalled();
+      expect(tx.invitation.updateMany).not.toHaveBeenCalled();
     });
   });
 
