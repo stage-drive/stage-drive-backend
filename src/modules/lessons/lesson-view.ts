@@ -56,7 +56,7 @@ export type PracticeLessonView = Prisma.DrivingLessonGetPayload<{
 }>;
 
 /** Лише id та ім'я: рядок може містити статус, роль чи профіль людини. */
-function toPerson(user: LessonPersonDto): LessonPersonDto {
+export function toPerson(user: LessonPersonDto): LessonPersonDto {
   return { id: user.id, firstName: user.firstName, lastName: user.lastName };
 }
 

@@ -38,6 +38,7 @@ import {
   LESSON_CREATE_IN_PAST_MESSAGE,
   LESSON_GROUP_CLOSED_MESSAGE,
   LESSON_GROUP_NOT_OPEN_MESSAGE,
+  LESSON_HAS_ATTENDANCE_MESSAGE,
   LESSON_IN_PAST_MESSAGE,
   LESSON_INSTRUCTOR_ASSIGN_MESSAGE,
   LESSON_INSTRUCTOR_CHANGE_MESSAGE,
@@ -230,6 +231,7 @@ describe('LessonsService', () => {
       create: jest.fn(),
     },
     enrollment: { findMany: jest.fn() },
+    lessonAttendance: { count: jest.fn() },
     user: { findUnique: jest.fn(), findFirst: jest.fn() },
     car: { findUnique: jest.fn() },
     $queryRaw: jest.fn(),
@@ -283,6 +285,7 @@ describe('LessonsService', () => {
     prisma.lesson.findMany.mockResolvedValue([]);
     prisma.drivingLesson.findMany.mockResolvedValue([]);
     prisma.enrollment.findMany.mockResolvedValue([{ groupId: 'group-1' }]);
+    prisma.lessonAttendance.count.mockResolvedValue(0);
     prisma.user.findUnique.mockResolvedValue(activeInstructor);
     prisma.car.findUnique.mockResolvedValue(availableCar);
     prisma.$queryRaw.mockResolvedValue([]);
@@ -940,6 +943,54 @@ describe('LessonsService', () => {
 
       expect(error).toBeInstanceOf(ConflictException);
       expect(error.message).toBe(LESSON_TEACHER_NOT_ACTIVE_MESSAGE);
+    });
+
+    describe('with marked attendance', () => {
+      beforeEach(() => {
+        // Відмітки бувають лише в заняття, що вже почалося.
+        givenTheory(
+          theoryRow({
+            lesson: { scheduledAt: new Date('2026-10-21T09:30:00.000Z') },
+          }),
+        );
+        prisma.lessonAttendance.count.mockResolvedValue(3);
+      });
+
+      it('refuses to move the lesson to another time', async () => {
+        const error = await caught(
+          service.rescheduleTheory(admin as never, 'lesson-t1', {
+            scheduledAt: '2026-11-04T18:00:00+02:00',
+          }),
+        );
+
+        expect(error).toBeInstanceOf(ConflictException);
+        expect(error.message).toBe(LESSON_HAS_ATTENDANCE_MESSAGE);
+        expect(prisma.lessonAttendance.count).toHaveBeenCalledWith({
+          where: { lessonId: 'lesson-t1' },
+        });
+        expect(prisma.$executeRaw).not.toHaveBeenCalled();
+        expect(prisma.lesson.update).not.toHaveBeenCalled();
+      });
+
+      it('still allows a topic change without counting the marks', async () => {
+        await service.updateTheory(admin as never, 'lesson-t1', {
+          topic: 'Інша тема',
+        });
+
+        expect(prisma.lessonAttendance.count).not.toHaveBeenCalled();
+        expect(updateData(prisma.lesson.update)).toEqual({
+          topic: 'Інша тема',
+        });
+      });
+    });
+
+    it('reschedules a lesson without attendance after counting the marks', async () => {
+      await service.rescheduleTheory(admin as never, 'lesson-t1', {
+        scheduledAt: '2026-11-04T18:00:00+02:00',
+      });
+
+      expect(prisma.lessonAttendance.count).toHaveBeenCalledTimes(1);
+      expect(prisma.lesson.update).toHaveBeenCalledTimes(1);
     });
 
     it('allows a topic change even when the teacher is blocked', async () => {

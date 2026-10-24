@@ -30,6 +30,11 @@ import { CurrentUser } from '../auth/current-user.decorator';
 import { Roles } from '../auth/roles.decorator';
 import { RolesGuard } from '../auth/roles.guard';
 import {
+  LessonAttendanceDto,
+  UpdateLessonAttendanceDto,
+} from './lesson-attendance.dto';
+import { LessonAttendanceService } from './lesson-attendance.service';
+import {
   CancelLessonDto,
   CreatePracticeLessonDto,
   CreateTheoryLessonDto,
@@ -98,8 +103,15 @@ const CREATE_CONFLICT_DESCRIPTION =
 
 const LESSON_CONFLICT_DESCRIPTION =
   'Заняття не SCHEDULED (тіло з currentStatus), група закрита, заняття вже почалося, ' +
-  'ресурс недоступний (викладач, інструктор, авто, студент), або новий час конфліктує з іншими заняттями ' +
-  '(тіло з conflicts: [{ resource, resourceId, lessonType, lessonId, scheduledAt, endsAt }]).';
+  'ресурс недоступний (викладач, інструктор, авто, студент), новий час конфліктує з іншими заняттями ' +
+  '(тіло з conflicts: [{ resource, resourceId, lessonType, lessonId, scheduledAt, endsAt }]), ' +
+  'або теоретичне заняття з відміченим відвідуванням переноситься на інший час.';
+
+const ATTENDANCE_RULES =
+  'Список — студенти групи з активним зарахуванням (у закритої групи — її склад на момент закриття) ' +
+  'і всі, кого вже відмічено на цьому занятті. Змінювати можна, коли заняття не скасоване, вже почалося, ' +
+  'а група відкрита, і лише студентів з активним зарахуванням. ' +
+  'Для одного студента зберігається один актуальний статус.';
 
 const CANCEL_RULES =
   'Скасувати можна лише заняття зі статусом SCHEDULED, яке ще не почалося. ' +
@@ -124,6 +136,7 @@ export class LessonsController {
   constructor(
     private readonly lessonsService: LessonsService,
     private readonly personalScheduleService: PersonalScheduleService,
+    private readonly lessonAttendanceService: LessonAttendanceService,
   ) {}
 
   @Get('me')
@@ -431,5 +444,72 @@ export class LessonsController {
     @Body() body: CancelLessonDto,
   ): Promise<PracticeLessonDto> {
     return this.lessonsService.cancelPractice(user, id, body);
+  }
+
+  @Get('theory/:id/attendance')
+  @Roles(...THEORY_LESSON_EDIT_ROLES)
+  @ApiOperation({
+    summary: 'Відвідування теоретичного заняття',
+    description:
+      'ADMIN або викладач групи отримує список студентів заняття з поточними статусами. ' +
+      `Список видно для заняття в будь-якому стані; editable показує, чи можна його змінити. ${ATTENDANCE_RULES}`,
+  })
+  @ApiParam({
+    name: 'id',
+    format: 'uuid',
+    description: 'Id теоретичного заняття.',
+  })
+  @ApiOkResponse({ type: LessonAttendanceDto })
+  @ApiBadRequestResponse({ description: 'id не UUID.' })
+  @ApiForbiddenResponse({
+    description:
+      'Роль не ADMIN чи TEACHER, або викладач відкриває заняття чужої групи.',
+  })
+  @ApiNotFoundResponse({
+    description: 'Заняття не знайдено або воно належить іншій автошколі.',
+  })
+  getAttendance(
+    @CurrentUser() user: User,
+    @Param('id', new ParseUUIDPipe({ version: '4' })) id: string,
+  ): Promise<LessonAttendanceDto> {
+    return this.lessonAttendanceService.getAttendance(user, id);
+  }
+
+  @Patch('theory/:id/attendance')
+  @Roles(...THEORY_LESSON_EDIT_ROLES)
+  @ApiOperation({
+    summary: 'Відмітити відвідування теоретичного заняття',
+    description:
+      'ADMIN або викладач групи встановлює статуси переліченим студентам; решта не змінюється. ' +
+      `Пакет атомарний. Відповідь — актуальний список після збереження. ${ATTENDANCE_RULES}`,
+  })
+  @ApiParam({
+    name: 'id',
+    format: 'uuid',
+    description: 'Id теоретичного заняття.',
+  })
+  @ApiOkResponse({ type: LessonAttendanceDto })
+  @ApiBadRequestResponse({
+    description:
+      'id не UUID, некоректне тіло, зайве поле, студент повторюється, або студент не входить до складу групи ' +
+      '(field: records.<i>.studentId). Тіло містить errors: [{ field, message }].',
+  })
+  @ApiForbiddenResponse({
+    description:
+      'Роль не ADMIN чи TEACHER, або викладач змінює відвідування чужої групи.',
+  })
+  @ApiNotFoundResponse({
+    description: 'Заняття не знайдено або воно належить іншій автошколі.',
+  })
+  @ApiConflictResponse({
+    description:
+      'Заняття скасоване (тіло з currentStatus), ще не почалося, або група закрита.',
+  })
+  updateAttendance(
+    @CurrentUser() user: User,
+    @Param('id', new ParseUUIDPipe({ version: '4' })) id: string,
+    @Body() body: UpdateLessonAttendanceDto,
+  ): Promise<LessonAttendanceDto> {
+    return this.lessonAttendanceService.updateAttendance(user, id, body);
   }
 }

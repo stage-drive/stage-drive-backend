@@ -112,6 +112,8 @@ export const LESSON_INSTRUCTOR_ASSIGN_MESSAGE =
   'Інструктор може створити заняття лише для себе.';
 export const STUDENT_NOT_ASSIGNED_MESSAGE =
   'Інструктор може створити заняття лише для свого студента.';
+export const LESSON_HAS_ATTENDANCE_MESSAGE =
+  'Заняття з відміченим відвідуванням не можна перенести.';
 
 const OPEN_GROUP_STATUSES: GroupStatus[] = [
   GroupStatus.PLANNED,
@@ -212,10 +214,34 @@ type PracticeChange = {
   carId?: string;
 };
 
-function assertCanEditTheory(actor: User): void {
+export function assertCanEditTheory(actor: User): void {
   if (!(THEORY_LESSON_EDIT_ROLES as readonly UserRole[]).includes(actor.role)) {
     throw new ForbiddenException('Insufficient permissions');
   }
+}
+
+/**
+ * Група (FOR SHARE) → заняття (FOR UPDATE). Порядок той самий, що в
+ * GroupsService.changeStatus. Заняття іншої організації — 404. Читання з
+ * потрібним select робить викликач: після блокування воно бачить збережений стан.
+ */
+export async function lockTheoryLessonWithGroup(
+  tx: Prisma.TransactionClient,
+  organizationId: string,
+  lessonId: string,
+): Promise<void> {
+  const target = await tx.lesson.findFirst({
+    where: { id: lessonId, group: { organizationId } },
+    select: { groupId: true },
+  });
+  if (!target) {
+    throw new NotFoundException(LESSON_NOT_FOUND_MESSAGE);
+  }
+
+  // Закриття групи, що вже йде, завершиться раніше, і нижче ми побачимо
+  // закриту групу.
+  await lockGroup(tx, target.groupId, organizationId, 'share');
+  await lockTheoryLesson(tx, lessonId, organizationId);
 }
 
 function assertCanEditPractice(actor: User): void {
@@ -682,6 +708,16 @@ export class LessonsService {
           now,
           change.scheduledAt !== undefined,
         );
+        // Відмітки описують заняття, що вже відбулося. PATCH відвідування бере
+        // те саме блокування заняття, тож гонки між перевіркою і записом немає.
+        if (data.scheduledAt !== undefined) {
+          const marked = await tx.lessonAttendance.count({
+            where: { lessonId: lesson.id },
+          });
+          if (marked > 0) {
+            throw new ConflictException(LESSON_HAS_ATTENDANCE_MESSAGE);
+          }
+        }
         assertWithinGroupDates(
           next.scheduledAt,
           lesson.group,
@@ -882,21 +918,7 @@ export class LessonsService {
     actor: User,
     lessonId: string,
   ): Promise<TheoryLessonRow> {
-    const target = await tx.lesson.findFirst({
-      where: {
-        id: lessonId,
-        group: { organizationId: actor.organizationId },
-      },
-      select: { groupId: true },
-    });
-    if (!target) {
-      throw new NotFoundException(LESSON_NOT_FOUND_MESSAGE);
-    }
-
-    // Закриття групи, що вже йде, завершиться раніше, і нижче ми побачимо
-    // закриту групу.
-    await lockGroup(tx, target.groupId, actor.organizationId, 'share');
-    await lockTheoryLesson(tx, lessonId, actor.organizationId);
+    await lockTheoryLessonWithGroup(tx, actor.organizationId, lessonId);
     const lesson = await tx.lesson.findFirst({
       where: {
         id: lessonId,
