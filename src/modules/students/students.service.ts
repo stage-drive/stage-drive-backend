@@ -131,7 +131,7 @@ const TERMINAL_TRAINING_STATUSES = [
 ] as const;
 
 export const NO_STUDENT_FIELDS_MESSAGE =
-  'Немає дозволених полів для оновлення (firstName, lastName, phone, category, transmission).';
+  'Немає дозволених полів для оновлення (firstName, lastName, phone, category, transmission, birthDate, address, contractNumber).';
 
 const EMPTY_FIELD_MESSAGE = "Заповніть обов'язкове поле.";
 
@@ -186,6 +186,9 @@ const studentCardSelect = {
       carId: true,
       category: true,
       transmission: true,
+      birthDate: true,
+      address: true,
+      contractNumber: true,
       trainingStatus: true,
       car: {
         select: {
@@ -483,6 +486,17 @@ function isOwnStudentProfile(row: StudentCardRow, actor: User): boolean {
   );
 }
 
+function toDateOnly(value: string | null): Date | null {
+  return value === null ? null : new Date(`${value}T00:00:00.000Z`);
+}
+
+function formatDateOnly(value: Date | null | undefined): string | null {
+  if (!value) {
+    return null;
+  }
+  return value.toISOString().slice(0, 10);
+}
+
 function toPracticeCar(
   car:
     | NonNullable<NonNullable<StudentCardRow['studentProfile']>['car']>
@@ -531,6 +545,9 @@ function toStudentCard(row: StudentCardRow): StudentCardDto {
           ),
           category: row.studentProfile.category ?? null,
           transmission: row.studentProfile.transmission ?? null,
+          birthDate: formatDateOnly(row.studentProfile.birthDate),
+          address: row.studentProfile.address ?? null,
+          contractNumber: row.studentProfile.contractNumber ?? null,
           trainingStatus: row.studentProfile.trainingStatus,
         }
       : null,
@@ -586,6 +603,34 @@ function trainingProfileUpdate(payload: UpdateStudentDto): {
   }
   if (payload.transmission !== undefined) {
     data.transmission = payload.transmission;
+  }
+
+  return data;
+}
+
+function studentDetailsUpdate(payload: UpdateStudentDto): {
+  birthDate?: Date | null;
+  address?: string | null;
+  contractNumber?: string | null;
+} {
+  const data: {
+    birthDate?: Date | null;
+    address?: string | null;
+    contractNumber?: string | null;
+  } = {};
+
+  if (payload.birthDate !== undefined) {
+    data.birthDate = toDateOnly(payload.birthDate);
+  }
+  if (payload.address !== undefined) {
+    data.address =
+      payload.address === null ? null : payload.address.trim() || null;
+  }
+  if (payload.contractNumber !== undefined) {
+    data.contractNumber =
+      payload.contractNumber === null
+        ? null
+        : payload.contractNumber.trim() || null;
   }
 
   return data;
@@ -657,6 +702,9 @@ export class StudentsService {
     const groupId = payload.groupId ?? null;
     const category = payload.category ?? null;
     const transmission = payload.transmission ?? null;
+    const birthDate = toDateOnly(payload.birthDate ?? null);
+    const address = payload.address?.trim() || null;
+    const contractNumber = payload.contractNumber?.trim() || null;
 
     const token = randomBytes(48).toString('base64url');
     const tokenHash = hashToken(token);
@@ -673,6 +721,9 @@ export class StudentsService {
         carId: string | null;
         category: LicenseCategory | null;
         transmission: Transmission | null;
+        birthDate: Date | null;
+        address: string | null;
+        contractNumber: string | null;
         trainingStatus: TrainingStatus;
       };
       invitation: {
@@ -729,6 +780,9 @@ export class StudentsService {
             carId: null,
             category,
             transmission,
+            birthDate,
+            address,
+            contractNumber,
             trainingStatus: TrainingStatus.INVITED,
           },
         });
@@ -806,6 +860,9 @@ export class StudentsService {
         car: null,
         category: created.student.category ?? null,
         transmission: created.student.transmission ?? null,
+        birthDate: formatDateOnly(created.student.birthDate),
+        address: created.student.address,
+        contractNumber: created.student.contractNumber,
         trainingStatus: created.student.trainingStatus,
       },
       invitation: {
@@ -865,28 +922,31 @@ export class StudentsService {
 
     const data = profileUpdate(payload);
     const trainingData = trainingProfileUpdate(payload);
-    if (!data && Object.keys(trainingData).length === 0) {
+    const detailsData = studentDetailsUpdate(payload);
+    const hasTraining = Object.keys(trainingData).length > 0;
+    const hasDetails = Object.keys(detailsData).length > 0;
+    if (!data && !hasTraining && !hasDetails) {
       throw fieldError('body', NO_STUDENT_FIELDS_MESSAGE);
     }
 
     const existing = await this.findStudentCard(actor, studentId);
     let updated = existing;
 
-    if (Object.keys(trainingData).length > 0) {
+    if (hasTraining || hasDetails) {
       if (!existing.studentProfile) {
         throw new NotFoundException(STUDENT_NOT_FOUND_MESSAGE);
       }
 
-      const nextCategory =
-        trainingData.category !== undefined
-          ? trainingData.category
-          : existing.studentProfile.category;
-      const nextTransmission =
-        trainingData.transmission !== undefined
-          ? trainingData.transmission
-          : existing.studentProfile.transmission;
+      if (hasTraining && existing.studentProfile.carId) {
+        const nextCategory =
+          trainingData.category !== undefined
+            ? trainingData.category
+            : existing.studentProfile.category;
+        const nextTransmission =
+          trainingData.transmission !== undefined
+            ? trainingData.transmission
+            : existing.studentProfile.transmission;
 
-      if (existing.studentProfile.carId) {
         const car = await this.prisma.car.findUnique({
           where: { id: existing.studentProfile.carId },
         });
@@ -902,7 +962,7 @@ export class StudentsService {
 
       const profile = await this.prisma.student.update({
         where: { id: existing.studentProfile.id },
-        data: trainingData,
+        data: { ...trainingData, ...detailsData },
       });
       updated = {
         ...updated,
@@ -910,6 +970,9 @@ export class StudentsService {
           ...existing.studentProfile,
           category: profile.category,
           transmission: profile.transmission,
+          birthDate: profile.birthDate,
+          address: profile.address,
+          contractNumber: profile.contractNumber,
         },
       };
     }
@@ -933,6 +996,18 @@ export class StudentsService {
               trainingData.transmission !== undefined
                 ? trainingData.transmission
                 : updated.studentProfile.transmission,
+            birthDate:
+              detailsData.birthDate !== undefined
+                ? detailsData.birthDate
+                : updated.studentProfile.birthDate,
+            address:
+              detailsData.address !== undefined
+                ? detailsData.address
+                : updated.studentProfile.address,
+            contractNumber:
+              detailsData.contractNumber !== undefined
+                ? detailsData.contractNumber
+                : updated.studentProfile.contractNumber,
           },
         };
       }

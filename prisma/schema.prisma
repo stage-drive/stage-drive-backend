@@ -426,6 +426,9 @@ model Student {
   car            Car?             @relation(fields: [carId], references: [id], onDelete: SetNull)
   category       LicenseCategory?
   transmission   Transmission?
+  birthDate      DateTime?        @map("birth_date") @db.Date
+  address        String?          @db.VarChar(255)
+  contractNumber String?          @map("contract_number") @db.VarChar(64)
   trainingStatus TrainingStatus   @default(INVITED) @map("training_status")
   createdAt      DateTime         @default(now()) @map("created_at")
   updatedAt      DateTime         @updatedAt @map("updated_at")

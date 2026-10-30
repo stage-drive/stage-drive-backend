@@ -449,6 +449,9 @@ describe('StudentsService', () => {
       carId: null,
       category: null,
       transmission: null,
+      birthDate: null,
+      address: null,
+      contractNumber: null,
       trainingStatus: TrainingStatus.INVITED,
     };
 
@@ -471,6 +474,9 @@ describe('StudentsService', () => {
             groupId: string | null;
             category?: LicenseCategory | null;
             transmission?: Transmission | null;
+            birthDate?: Date | null;
+            address?: string | null;
+            contractNumber?: string | null;
           };
         }) =>
           Promise.resolve({
@@ -478,6 +484,9 @@ describe('StudentsService', () => {
             groupId: args.data.groupId,
             category: args.data.category ?? null,
             transmission: args.data.transmission ?? null,
+            birthDate: args.data.birthDate ?? null,
+            address: args.data.address ?? null,
+            contractNumber: args.data.contractNumber ?? null,
           }),
       );
       prisma.invitation.create.mockResolvedValue(createdInvitation);
@@ -508,6 +517,9 @@ describe('StudentsService', () => {
           carId: null,
           category: null,
           transmission: null,
+          birthDate: null,
+          address: null,
+          contractNumber: null,
           trainingStatus: TrainingStatus.INVITED,
         },
       });
@@ -542,6 +554,9 @@ describe('StudentsService', () => {
           car: null,
           category: null,
           transmission: null,
+          birthDate: null,
+          address: null,
+          contractNumber: null,
           trainingStatus: TrainingStatus.INVITED,
         },
         invitation: {
@@ -604,6 +619,28 @@ describe('StudentsService', () => {
       expect(result.student.instructorId).toBeNull();
       expect(result.student.carId).toBeNull();
       expect(result.user.organizationId).toBe('org-1');
+    });
+
+    it('stores optional birthDate, address and contractNumber when they are sent', async () => {
+      const result = await service.create(actor(UserRole.ADMIN), {
+        ...payload,
+        birthDate: '2004-03-15',
+        address: '  м. Київ, вул. Хрещатик, 1  ',
+        contractNumber: '  Д-2026/0142  ',
+      });
+
+      expect(prisma.student.create).toHaveBeenCalledWith({
+        data: expect.objectContaining({
+          birthDate: new Date('2004-03-15T00:00:00.000Z'),
+          address: 'м. Київ, вул. Хрещатик, 1',
+          contractNumber: 'Д-2026/0142',
+        }),
+      });
+      expect(result.student).toMatchObject({
+        birthDate: '2004-03-15',
+        address: 'м. Київ, вул. Хрещатик, 1',
+        contractNumber: 'Д-2026/0142',
+      });
     });
 
     it('locks the selected group FOR SHARE in the actor organization before reading it', async () => {
@@ -804,6 +841,9 @@ describe('StudentsService', () => {
       car: null,
       category: null,
       transmission: null,
+      birthDate: null as Date | null,
+      address: null as string | null,
+      contractNumber: null as string | null,
       trainingStatus: TrainingStatus.ACTIVE,
     };
 
@@ -997,6 +1037,9 @@ describe('StudentsService', () => {
       } | null,
       category: null as LicenseCategory | null,
       transmission: null as Transmission | null,
+      birthDate: null as Date | null,
+      address: null as string | null,
+      contractNumber: null as string | null,
       trainingStatus: TrainingStatus.ACTIVE as TrainingStatus,
     };
 
@@ -1111,6 +1154,29 @@ describe('StudentsService', () => {
       );
       expect(hidden.student?.carId).toBe('car-1');
       expect(hidden.student?.car).toBeNull();
+    });
+
+    it('returns birthDate, address and contractNumber from the student profile', async () => {
+      prisma.user.findFirst.mockResolvedValue(
+        cardRow({
+          studentProfile: {
+            ...profile,
+            birthDate: new Date('2004-03-15T00:00:00.000Z'),
+            address: 'м. Київ, вул. Хрещатик, 1',
+            contractNumber: 'Д-2026/0142',
+          },
+        }),
+      );
+
+      await expect(
+        service.getById(actor(UserRole.ADMIN), 'student-1'),
+      ).resolves.toMatchObject({
+        student: {
+          birthDate: '2004-03-15',
+          address: 'м. Київ, вул. Хрещатик, 1',
+          contractNumber: 'Д-2026/0142',
+        },
+      });
     });
 
     it('returns the card when the student profile row is missing', async () => {
@@ -1252,6 +1318,89 @@ describe('StudentsService', () => {
         },
       });
       expect(prisma.user.update).not.toHaveBeenCalled();
+    });
+
+    it('stores birthDate, address and contractNumber on the student profile', async () => {
+      const existing = cardRow();
+      prisma.user.findFirst.mockResolvedValue(existing);
+      prisma.user.update.mockImplementation(
+        (args: { data: { firstName?: string } }) =>
+          Promise.resolve({
+            ...existing,
+            ...args.data,
+          }),
+      );
+      prisma.student.update.mockResolvedValue({
+        ...profile,
+        birthDate: new Date('2004-03-15T00:00:00.000Z'),
+        address: 'м. Київ, вул. Хрещатик, 1',
+        contractNumber: 'Д-2026/0142',
+      });
+
+      await expect(
+        service.update(actor(UserRole.ADMIN), 'student-1', {
+          firstName: 'Ірина',
+          birthDate: '2004-03-15',
+          address: '  м. Київ, вул. Хрещатик, 1  ',
+          contractNumber: '  Д-2026/0142  ',
+        }),
+      ).resolves.toMatchObject({
+        firstName: 'Ірина',
+        student: {
+          birthDate: '2004-03-15',
+          address: 'м. Київ, вул. Хрещатик, 1',
+          contractNumber: 'Д-2026/0142',
+        },
+      });
+      expect(prisma.student.update).toHaveBeenCalledWith({
+        where: { id: 'profile-1' },
+        data: {
+          birthDate: new Date('2004-03-15T00:00:00.000Z'),
+          address: 'м. Київ, вул. Хрещатик, 1',
+          contractNumber: 'Д-2026/0142',
+        },
+      });
+      expect(prisma.car.findUnique).not.toHaveBeenCalled();
+    });
+
+    it('clears birthDate, address and contractNumber when null is sent', async () => {
+      const existing = cardRow({
+        studentProfile: {
+          ...profile,
+          birthDate: new Date('2004-03-15T00:00:00.000Z'),
+          address: 'м. Київ, вул. Хрещатик, 1',
+          contractNumber: 'Д-2026/0142',
+        },
+      });
+      prisma.user.findFirst.mockResolvedValue(existing);
+      prisma.student.update.mockResolvedValue({
+        ...profile,
+        birthDate: null,
+        address: null,
+        contractNumber: null,
+      });
+
+      await expect(
+        service.update(actor(UserRole.OWNER), 'student-1', {
+          birthDate: null,
+          address: null,
+          contractNumber: null,
+        }),
+      ).resolves.toMatchObject({
+        student: {
+          birthDate: null,
+          address: null,
+          contractNumber: null,
+        },
+      });
+      expect(prisma.student.update).toHaveBeenCalledWith({
+        where: { id: 'profile-1' },
+        data: {
+          birthDate: null,
+          address: null,
+          contractNumber: null,
+        },
+      });
     });
 
     it('rejects a category that no longer matches the assigned car', async () => {
