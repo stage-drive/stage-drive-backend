@@ -118,7 +118,8 @@ export class StudentsController {
       'належить тій самій автошколі і має статус PLANNED або ACTIVE; разом із ' +
       'групою створюється активне зарахування. Групи ARCHIVED і COMPLETED ' +
       'відхиляються. instructorId і carId лишаються null. Необов’язкові ' +
-      'category і transmission зберігаються в профілі. ' +
+      'category, transmission, birthDate, address і contractNumber зберігаються ' +
+      'в профілі; якщо їх не передати, у профілі буде null. ' +
       'Лист із посиланням запрошення передається на відправку.',
   })
   @ApiCreatedResponse({ type: CreateStudentResponseDto })
@@ -172,7 +173,8 @@ export class StudentsController {
       'id — це id користувача зі списку студентів. OWNER, ADMIN, TEACHER і ' +
       'INSTRUCTOR бачать лише студента своєї організації. Студент іншої ' +
       'автошколи, інша роль і soft-delete повертають 404. Пароль і службові ' +
-      'поля у відповідь не потрапляють.',
+      'поля у відповідь не потрапляють. У student є birthDate (YYYY-MM-DD), ' +
+      'address і contractNumber; кожне null, якщо ще не заповнене.',
   })
   @ApiParam({
     name: 'id',
@@ -341,11 +343,13 @@ export class StudentsController {
   @ApiOperation({
     summary: 'Редагувати дозволені дані картки студента',
     description:
-      'OWNER або ADMIN змінюють firstName, lastName, phone, category і ' +
-      'transmission студента своєї автошколи. role, organizationId, ' +
-      'навчальний status, instructorId і carId цим запитом не змінюються ' +
-      'і відхиляються, якщо їх передати в тілі. category і transmission ' +
-      'потрібні для допуску до практики і мають збігатися з уже призначеним автомобілем.',
+      'OWNER або ADMIN змінюють firstName, lastName, phone, category, ' +
+      'transmission, birthDate, address і contractNumber студента своєї ' +
+      'автошколи. role, organizationId, навчальний status, instructorId і ' +
+      'carId цим запитом не змінюються і відхиляються, якщо їх передати в тілі. ' +
+      'category і transmission потрібні для допуску до практики і мають ' +
+      'збігатися з уже призначеним автомобілем. birthDate, address і ' +
+      'contractNumber можна очистити значенням null.',
   })
   @ApiParam({
     name: 'id',

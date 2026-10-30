@@ -12,6 +12,7 @@ import { Transform } from 'class-transformer';
 import {
   IsEmail,
   IsEnum,
+  IsISO8601,
   IsIn,
   IsInt,
   IsNotEmpty,
@@ -22,6 +23,7 @@ import {
   Max,
   MaxLength,
   Min,
+  ValidateIf,
 } from 'class-validator';
 import { IsPlainText } from '../../common/validators/plain-text.decorator';
 import { InvitationEmailDeliveryDto } from '../invitations/invitations.dto';
@@ -43,8 +45,15 @@ export type StudentSortOrder = (typeof SORT_ORDERS)[number];
 
 const SEARCH_MAX_LENGTH = 100;
 const PHONE_REGEX = /^\+?[0-9\s-]{7,20}$/;
+const DATE_ONLY_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
+export const STUDENT_ADDRESS_MAX_LENGTH = 255;
+export const STUDENT_CONTRACT_NUMBER_MAX_LENGTH = 64;
 const REQUIRED_FIELD_MESSAGE = "Заповніть обов'язкове поле.";
 const INVALID_EMAIL_MESSAGE = 'Введіть коректний email.';
+export const STUDENT_DATE_FORMAT_MESSAGE =
+  'Дата має бути у форматі YYYY-MM-DD.';
+const ADDRESS_LENGTH_MESSAGE = `Адреса має містити не більше ${STUDENT_ADDRESS_MAX_LENGTH} символів.`;
+const CONTRACT_NUMBER_LENGTH_MESSAGE = `Номер договору має містити не більше ${STUDENT_CONTRACT_NUMBER_MAX_LENGTH} символів.`;
 const DEFAULT_PAGE = 1;
 const DEFAULT_LIMIT = 20;
 const MAX_PAGE = 10_000;
@@ -63,6 +72,14 @@ function optionalInteger({ value }: { value: unknown }): unknown {
     return undefined;
   }
   return typeof value === 'number' ? value : Number(value);
+}
+
+function emptyToNull({ value }: { value: unknown }): unknown {
+  if (typeof value !== 'string') {
+    return value;
+  }
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : null;
 }
 
 export class ListStudentsQueryDto {
@@ -280,6 +297,52 @@ export class CreateStudentDto {
   })
   @IsOptional()
   transmission?: Transmission | null;
+
+  @ApiPropertyOptional({
+    type: String,
+    format: 'date',
+    nullable: true,
+    example: '2004-03-15',
+    description:
+      'Дата народження у форматі YYYY-MM-DD. Якщо поле не передати, зберігається null.',
+  })
+  @Transform(emptyToNull)
+  @ValidateIf((_, value) => value !== undefined && value !== null)
+  @IsISO8601({ strict: true }, { message: STUDENT_DATE_FORMAT_MESSAGE })
+  @Matches(DATE_ONLY_PATTERN, { message: STUDENT_DATE_FORMAT_MESSAGE })
+  birthDate?: string | null;
+
+  @ApiPropertyOptional({
+    type: String,
+    nullable: true,
+    maxLength: STUDENT_ADDRESS_MAX_LENGTH,
+    example: 'м. Київ, вул. Хрещатик, 1',
+    description:
+      'Адреса проживання. Пробіли по краях обрізаються, порожній рядок зберігається як null.',
+  })
+  @Transform(emptyToNull)
+  @MaxLength(STUDENT_ADDRESS_MAX_LENGTH, { message: ADDRESS_LENGTH_MESSAGE })
+  @IsPlainText()
+  @IsString({ message: 'address має бути рядком або null.' })
+  @IsOptional()
+  address?: string | null;
+
+  @ApiPropertyOptional({
+    type: String,
+    nullable: true,
+    maxLength: STUDENT_CONTRACT_NUMBER_MAX_LENGTH,
+    example: 'Д-2026/0142',
+    description:
+      'Номер договору. Пробіли по краях обрізаються, порожній рядок зберігається як null.',
+  })
+  @Transform(emptyToNull)
+  @MaxLength(STUDENT_CONTRACT_NUMBER_MAX_LENGTH, {
+    message: CONTRACT_NUMBER_LENGTH_MESSAGE,
+  })
+  @IsPlainText()
+  @IsString({ message: 'contractNumber має бути рядком або null.' })
+  @IsOptional()
+  contractNumber?: string | null;
 }
 
 export class CreatedStudentUserDto {
@@ -399,6 +462,32 @@ export class StudentProfileDto {
       'Новий учень створюється з null.',
   })
   transmission: Transmission | null;
+
+  @ApiProperty({
+    type: String,
+    format: 'date',
+    nullable: true,
+    example: '2004-03-15',
+    description:
+      'Дата народження у форматі YYYY-MM-DD. null, якщо ще не вказана.',
+  })
+  birthDate: string | null;
+
+  @ApiProperty({
+    type: String,
+    nullable: true,
+    example: 'м. Київ, вул. Хрещатик, 1',
+    description: 'Адреса проживання. null, якщо ще не вказана.',
+  })
+  address: string | null;
+
+  @ApiProperty({
+    type: String,
+    nullable: true,
+    example: 'Д-2026/0142',
+    description: 'Номер договору. null, якщо ще не вказаний.',
+  })
+  contractNumber: string | null;
 
   @ApiProperty({
     enum: TrainingStatus,
@@ -554,6 +643,51 @@ export class UpdateStudentDto {
   })
   @IsOptional()
   transmission?: Transmission | null;
+
+  @ApiPropertyOptional({
+    type: String,
+    format: 'date',
+    nullable: true,
+    example: '2004-03-15',
+    description: 'Дата народження у форматі YYYY-MM-DD. null очищує значення.',
+  })
+  @Transform(emptyToNull)
+  @ValidateIf((_, value) => value !== undefined && value !== null)
+  @IsISO8601({ strict: true }, { message: STUDENT_DATE_FORMAT_MESSAGE })
+  @Matches(DATE_ONLY_PATTERN, { message: STUDENT_DATE_FORMAT_MESSAGE })
+  birthDate?: string | null;
+
+  @ApiPropertyOptional({
+    type: String,
+    nullable: true,
+    maxLength: STUDENT_ADDRESS_MAX_LENGTH,
+    example: 'м. Київ, вул. Хрещатик, 1',
+    description:
+      'Адреса проживання. null або порожній рядок очищує значення. Пробіли по краях обрізаються.',
+  })
+  @Transform(emptyToNull)
+  @MaxLength(STUDENT_ADDRESS_MAX_LENGTH, { message: ADDRESS_LENGTH_MESSAGE })
+  @IsPlainText()
+  @IsString({ message: 'address має бути рядком або null.' })
+  @IsOptional()
+  address?: string | null;
+
+  @ApiPropertyOptional({
+    type: String,
+    nullable: true,
+    maxLength: STUDENT_CONTRACT_NUMBER_MAX_LENGTH,
+    example: 'Д-2026/0142',
+    description:
+      'Номер договору. null або порожній рядок очищує значення. Пробіли по краях обрізаються.',
+  })
+  @Transform(emptyToNull)
+  @MaxLength(STUDENT_CONTRACT_NUMBER_MAX_LENGTH, {
+    message: CONTRACT_NUMBER_LENGTH_MESSAGE,
+  })
+  @IsPlainText()
+  @IsString({ message: 'contractNumber має бути рядком або null.' })
+  @IsOptional()
+  contractNumber?: string | null;
 }
 
 export class StudentCardDto {
