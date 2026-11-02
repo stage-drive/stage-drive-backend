@@ -12,6 +12,8 @@ describe('CourseStructureController', () => {
   const user = { id: 'admin-1', organizationId: 'org-1' };
   const response = { id: 'saved-1' };
   const structure = {
+    getCurrentStudentCourse: jest.fn().mockResolvedValue(response),
+    getStudentContent: jest.fn().mockResolvedValue(response),
     getStructure: jest.fn().mockResolvedValue(response),
     createChapter: jest.fn().mockResolvedValue(response),
     updateChapter: jest.fn().mockResolvedValue(response),
@@ -60,6 +62,40 @@ describe('CourseStructureController', () => {
       ).toBe(HttpStatus.CREATED);
     },
   );
+
+  it.each(['getCurrent', 'getStudentContent'] as const)(
+    'restricts %s to STUDENT',
+    (method) => {
+      const roles = new Reflector().get<UserRole[]>(
+        ROLES_KEY,
+        // eslint-disable-next-line @typescript-eslint/unbound-method -- only reads decorator metadata, never invoked
+        CourseStructureController.prototype[method],
+      );
+
+      expect(roles).toEqual([UserRole.STUDENT]);
+    },
+  );
+
+  it('passes the current student to the assigned course query', async () => {
+    const student = { ...user, role: UserRole.STUDENT };
+
+    await expect(controller.getCurrent(student as never)).resolves.toBe(
+      response,
+    );
+    expect(structure.getCurrentStudentCourse).toHaveBeenCalledWith(student);
+  });
+
+  it('passes the course id to the student content query', async () => {
+    const student = { ...user, role: UserRole.STUDENT };
+
+    await expect(
+      controller.getStudentContent(student as never, 'course-1'),
+    ).resolves.toBe(response);
+    expect(structure.getStudentContent).toHaveBeenCalledWith(
+      student,
+      'course-1',
+    );
+  });
 
   it('passes the course id to the structure query', async () => {
     await expect(

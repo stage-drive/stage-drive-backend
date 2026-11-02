@@ -6,29 +6,41 @@ import {
   Logger,
   NotFoundException,
 } from '@nestjs/common';
-import { CourseStatus, Prisma, User, UserRole } from '@prisma/client';
+import {
+  CoursePublicationStatus,
+  CourseStatus,
+  Prisma,
+  User,
+  UserRole,
+} from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
 import {
   CourseDto,
   CourseListDto,
   CreateCourseDto,
   UpdateCourseDto,
+  UpdateCoursePublicationDto,
 } from './courses.dto';
 
 export const COURSE_LIST_ROLES = [UserRole.ADMIN] as const;
 export const COURSE_MANAGE_ROLES = COURSE_LIST_ROLES;
+export const COURSE_STUDENT_ROLES = [UserRole.STUDENT] as const;
 
 export const COURSE_NOT_FOUND_MESSAGE = 'Course not found';
 export const COURSE_NAME_TAKEN_MESSAGE =
   'Активний курс з такою назвою вже є в цій автошколі.';
 export const NO_COURSE_FIELDS_MESSAGE =
   'Немає дозволених полів для оновлення (name, description).';
+export const COURSE_ARCHIVED_PUBLICATION_MESSAGE =
+  'Архівований курс не можна опублікувати.';
+export const COURSE_NOT_PUBLISHED_MESSAGE = 'Course is not published';
 
 const courseSelect = {
   id: true,
   name: true,
   description: true,
   status: true,
+  publicationStatus: true,
   createdAt: true,
   updatedAt: true,
 } satisfies Prisma.CourseSelect;
@@ -60,6 +72,7 @@ function toCourse(course: CourseRow): CourseDto {
     name: course.name,
     description: course.description,
     status: course.status,
+    publicationStatus: course.publicationStatus,
     createdAt: course.createdAt,
     updatedAt: course.updatedAt,
   };
@@ -78,7 +91,12 @@ export class CoursesService {
 
     const courses = await this.prisma.course.findMany({
       where: { organizationId: actor.organizationId },
-      select: { id: true, name: true, status: true },
+      select: {
+        id: true,
+        name: true,
+        status: true,
+        publicationStatus: true,
+      },
       orderBy: [{ name: 'asc' }, { id: 'asc' }],
     });
 
@@ -87,6 +105,7 @@ export class CoursesService {
         id: course.id,
         name: course.name,
         status: course.status,
+        publicationStatus: course.publicationStatus,
       })),
     };
   }
@@ -103,6 +122,7 @@ export class CoursesService {
           name: payload.name,
           description: payload.description ?? null,
           status: CourseStatus.ACTIVE,
+          publicationStatus: CoursePublicationStatus.DRAFT,
         },
         select: courseSelect,
       });
@@ -161,6 +181,46 @@ export class CoursesService {
       `Course updated courseId=${updated.id} organizationId=${actor.organizationId} actorId=${actor.id}`,
     );
     return toCourse(updated);
+  }
+
+  /**
+   * Публікує або знімає з публікації курс своєї організації.
+   * ARCHIVED не можна перевести в PUBLISHED. Повтор того самого статусу не пише в базу.
+   */
+  async changePublication(
+    actor: User,
+    courseId: string,
+    payload: UpdateCoursePublicationDto,
+  ): Promise<CourseDto> {
+    assertCanManageCourses(actor);
+    await this.requireOrganization(actor.organizationId);
+
+    let changed = false;
+    const saved = await this.prisma.$transaction(async (tx) => {
+      const existing = await this.requireCourse(tx, actor, courseId);
+      if (payload.publicationStatus === existing.publicationStatus) {
+        return existing;
+      }
+      if (
+        payload.publicationStatus === CoursePublicationStatus.PUBLISHED &&
+        existing.status !== CourseStatus.ACTIVE
+      ) {
+        throw new ConflictException(COURSE_ARCHIVED_PUBLICATION_MESSAGE);
+      }
+      changed = true;
+      return tx.course.update({
+        where: { id: existing.id },
+        data: { publicationStatus: payload.publicationStatus },
+        select: courseSelect,
+      });
+    });
+
+    if (changed) {
+      this.logger.log(
+        `Course publication changed courseId=${saved.id} publicationStatus=${saved.publicationStatus} organizationId=${actor.organizationId} actorId=${actor.id}`,
+      );
+    }
+    return toCourse(saved);
   }
 
   /** Курс іншої організації дає той самий 404, що й неіснуючий. */
