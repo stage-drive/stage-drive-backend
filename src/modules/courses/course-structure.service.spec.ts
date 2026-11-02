@@ -7,7 +7,9 @@ import {
 } from '@nestjs/common';
 import {
   CourseMaterialType,
+  CoursePublicationStatus,
   CourseStatus,
+  EnrollmentStatus,
   Prisma,
   UserRole,
 } from '@prisma/client';
@@ -23,7 +25,10 @@ import {
   NO_CHAPTER_FIELDS_MESSAGE,
   NO_MATERIAL_FIELDS_MESSAGE,
 } from './course-structure.service';
-import { COURSE_NOT_FOUND_MESSAGE } from './courses.service';
+import {
+  COURSE_NOT_FOUND_MESSAGE,
+  COURSE_NOT_PUBLISHED_MESSAGE,
+} from './courses.service';
 
 async function caught(promise: Promise<unknown>): Promise<HttpException> {
   try {
@@ -150,6 +155,7 @@ describe('CourseStructureService', () => {
   const prisma = {
     organization: { findUnique: jest.fn() },
     course: { findFirst: jest.fn() },
+    enrollment: { findFirst: jest.fn() },
     courseChapter: chapters,
     courseLesson: lessons,
     courseMaterial: materials,
@@ -182,6 +188,7 @@ describe('CourseStructureService', () => {
       deletedAt: null,
     });
     prisma.course.findFirst.mockResolvedValue(null);
+    prisma.enrollment.findFirst.mockResolvedValue(null);
     prisma.$queryRaw.mockImplementation(() =>
       Promise.resolve(courseVisible ? [{ id: courseId }] : []),
     );
@@ -250,6 +257,7 @@ describe('CourseStructureService', () => {
         name: 'Категорія B',
         description: null,
         status: CourseStatus.ACTIVE,
+        publicationStatus: CoursePublicationStatus.DRAFT,
         createdAt,
         updatedAt: now,
         chapters: [
@@ -321,6 +329,7 @@ describe('CourseStructureService', () => {
         name: 'Категорія B',
         description: null,
         status: CourseStatus.ACTIVE,
+        publicationStatus: CoursePublicationStatus.DRAFT,
         createdAt,
         updatedAt: now,
         chapters: [
@@ -833,6 +842,195 @@ describe('CourseStructureService', () => {
         errors: [{ field: 'body', message: NO_MATERIAL_FIELDS_MESSAGE }],
       });
       expect(prisma.$transaction).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('student access', () => {
+    const student = {
+      id: 'student-1',
+      role: UserRole.STUDENT,
+      organizationId: 'org-1',
+    };
+    const publishedAccess = {
+      id: courseId,
+      status: CourseStatus.ACTIVE,
+      publicationStatus: CoursePublicationStatus.PUBLISHED,
+    };
+    const structure = {
+      id: courseId,
+      name: 'Категорія B',
+      description: null,
+      status: CourseStatus.ACTIVE,
+      publicationStatus: CoursePublicationStatus.PUBLISHED,
+      createdAt: now,
+      updatedAt: now,
+      chapters: [],
+    };
+
+    function mockAssignedPublishedCourse() {
+      prisma.enrollment.findFirst.mockResolvedValue({ id: 'enrollment-1' });
+      prisma.course.findFirst.mockImplementation(
+        (args: { select?: { chapters?: unknown } }) =>
+          Promise.resolve(args.select?.chapters ? structure : publishedAccess),
+      );
+    }
+
+    it.each([
+      UserRole.OWNER,
+      UserRole.ADMIN,
+      UserRole.TEACHER,
+      UserRole.INSTRUCTOR,
+    ])('forbids %s before touching the database', async (role) => {
+      const actor = { ...student, role };
+      await expect(
+        service.getCurrentStudentCourse(actor as never),
+      ).rejects.toBeInstanceOf(ForbiddenException);
+      await expect(
+        service.getStudentContent(actor as never, courseId),
+      ).rejects.toBeInstanceOf(ForbiddenException);
+      expect(prisma.organization.findUnique).not.toHaveBeenCalled();
+      expect(prisma.course.findFirst).not.toHaveBeenCalled();
+      expect(prisma.enrollment.findFirst).not.toHaveBeenCalled();
+    });
+
+    it('returns 404 when the organization is soft-deleted', async () => {
+      prisma.organization.findUnique.mockResolvedValue({
+        id: 'org-1',
+        deletedAt: new Date(),
+      });
+
+      await expect(
+        service.getStudentContent(student as never, courseId),
+      ).rejects.toBeInstanceOf(NotFoundException);
+      expect(prisma.course.findFirst).not.toHaveBeenCalled();
+    });
+
+    it('returns the published course of the student active group', async () => {
+      prisma.enrollment.findFirst.mockImplementation(
+        (args: { select?: { group?: unknown } }) =>
+          Promise.resolve(
+            args.select?.group
+              ? { group: { courseId } }
+              : { id: 'enrollment-1' },
+          ),
+      );
+      prisma.course.findFirst.mockImplementation(
+        (args: { select?: { chapters?: unknown } }) =>
+          Promise.resolve(args.select?.chapters ? structure : publishedAccess),
+      );
+
+      await expect(
+        service.getCurrentStudentCourse(student as never),
+      ).resolves.toEqual(structure);
+      expect(prisma.enrollment.findFirst).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: {
+            studentId: 'student-1',
+            status: EnrollmentStatus.ACTIVE,
+            group: {
+              organizationId: 'org-1',
+              courseId: { not: null },
+            },
+          },
+        }),
+      );
+    });
+
+    it('returns 404 when the student has no group with a course', async () => {
+      const error = await caught(
+        service.getCurrentStudentCourse(student as never),
+      );
+
+      expect(error).toBeInstanceOf(NotFoundException);
+      expect(error.message).toBe(COURSE_NOT_FOUND_MESSAGE);
+      expect(prisma.course.findFirst).not.toHaveBeenCalled();
+    });
+
+    it('returns published content when the course is assigned to the student', async () => {
+      mockAssignedPublishedCourse();
+
+      await expect(
+        service.getStudentContent(student as never, courseId),
+      ).resolves.toEqual(structure);
+      expect(prisma.enrollment.findFirst).toHaveBeenCalledWith({
+        where: {
+          studentId: 'student-1',
+          status: EnrollmentStatus.ACTIVE,
+          group: { organizationId: 'org-1', courseId },
+        },
+        select: { id: true },
+      });
+    });
+
+    it('hides an assigned draft and does not load the structure', async () => {
+      prisma.enrollment.findFirst.mockResolvedValue({ id: 'enrollment-1' });
+      prisma.course.findFirst.mockResolvedValue({
+        ...publishedAccess,
+        publicationStatus: CoursePublicationStatus.DRAFT,
+      });
+
+      const error = await caught(
+        service.getStudentContent(student as never, courseId),
+      );
+
+      expect(error).toBeInstanceOf(ForbiddenException);
+      expect(error.message).toBe(COURSE_NOT_PUBLISHED_MESSAGE);
+      expect(prisma.course.findFirst).toHaveBeenCalledTimes(1);
+    });
+
+    it('hides an assigned archived course even if it was published', async () => {
+      prisma.enrollment.findFirst.mockResolvedValue({ id: 'enrollment-1' });
+      prisma.course.findFirst.mockResolvedValue({
+        ...publishedAccess,
+        status: CourseStatus.ARCHIVED,
+      });
+
+      const error = await caught(
+        service.getStudentContent(student as never, courseId),
+      );
+
+      expect(error).toBeInstanceOf(ForbiddenException);
+      expect(error.message).toBe(COURSE_NOT_PUBLISHED_MESSAGE);
+    });
+
+    it('rejects a student who is not enrolled in a group with this course', async () => {
+      prisma.course.findFirst.mockResolvedValue(publishedAccess);
+
+      const error = await caught(
+        service.getStudentContent(student as never, courseId),
+      );
+
+      expect(error).toBeInstanceOf(ForbiddenException);
+      expect(error.message).toBe('Insufficient permissions');
+      expect(prisma.course.findFirst).toHaveBeenCalledTimes(1);
+    });
+
+    it('does not reveal that an unassigned course is still a draft', async () => {
+      prisma.course.findFirst.mockResolvedValue({
+        ...publishedAccess,
+        publicationStatus: CoursePublicationStatus.DRAFT,
+      });
+
+      const error = await caught(
+        service.getStudentContent(student as never, courseId),
+      );
+
+      expect(error.message).toBe('Insufficient permissions');
+    });
+
+    it('returns 404 for a missing course before checking enrollment', async () => {
+      const error = await caught(
+        service.getStudentContent(student as never, 'course-foreign'),
+      );
+
+      expect(error).toBeInstanceOf(NotFoundException);
+      expect(error.message).toBe(COURSE_NOT_FOUND_MESSAGE);
+      expect(prisma.enrollment.findFirst).not.toHaveBeenCalled();
+      expect(prisma.course.findFirst).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: { id: 'course-foreign', organizationId: 'org-1' },
+        }),
+      );
     });
   });
 });

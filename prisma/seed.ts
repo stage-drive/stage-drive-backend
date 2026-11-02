@@ -4,6 +4,7 @@ import { PrismaPg } from '@prisma/adapter-pg';
 import {
   CarStatus,
   CourseMaterialType,
+  CoursePublicationStatus,
   CourseStatus,
   EnrollmentStatus,
   GroupStatus,
@@ -275,8 +276,11 @@ async function upsertCourse(input: {
   status: CourseStatus;
   organizationId: string;
   description?: string;
+  publicationStatus?: CoursePublicationStatus;
 }) {
   const description = input.description ?? null;
+  const publicationStatus =
+    input.publicationStatus ?? CoursePublicationStatus.DRAFT;
   return prisma.course.upsert({
     where: { id: input.id },
     update: {
@@ -284,8 +288,16 @@ async function upsertCourse(input: {
       status: input.status,
       organizationId: input.organizationId,
       description,
+      publicationStatus,
     },
-    create: { ...input, description },
+    create: {
+      id: input.id,
+      name: input.name,
+      status: input.status,
+      organizationId: input.organizationId,
+      description,
+      publicationStatus,
+    },
   });
 }
 
@@ -880,10 +892,21 @@ async function main() {
   console.log(`  group C COMPLETED: ${completedGroup.id}`);
   console.log(`  group D ARCHIVED:  ${archivedGroup.id}`);
   console.log(`  other-org group:   ${foreignGroup.id}`);
-  console.log(`  course B ACTIVE (assigned to group A): ${courseB.id}`);
-  console.log(`  course A ACTIVE:   ${courseA.id}`);
+  console.log(
+    `  course B ACTIVE DRAFT (assigned to group A, students get 403 until PUBLISHED): ${courseB.id}`,
+  );
+  console.log(`  course A ACTIVE DRAFT (not assigned): ${courseA.id}`);
   console.log(`  course ARCHIVED (expect 409): ${archivedCourse.id}`);
   console.log(`  other-org course (expect 404): ${foreignCourse.id}`);
+  console.log(
+    'PATCH /api/courses/{id}/publication — only ADMIN. Body: { "publicationStatus": "PUBLISHED" } or "DRAFT".',
+  );
+  console.log(
+    'GET /api/courses/current — only STUDENT. Published course of the active group enrollment.',
+  );
+  console.log(
+    'GET /api/courses/{courseId}/content — only STUDENT. 403 if the course is not assigned or not published.',
+  );
   console.log(`  chapter ПДР: ${DEMO_CHAPTER_TRAFFIC_ID}`);
   console.log(`  chapter будова: ${DEMO_CHAPTER_CAR_ID}`);
   console.log(`  other-org chapter (expect 404): ${DEMO_OTHER_CHAPTER_ID}`);

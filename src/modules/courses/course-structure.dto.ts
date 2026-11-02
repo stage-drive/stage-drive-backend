@@ -1,5 +1,9 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
-import { CourseMaterialType, CourseStatus } from '@prisma/client';
+import {
+  CourseMaterialType,
+  CoursePublicationStatus,
+  CourseStatus,
+} from '@prisma/client';
 import { Transform } from 'class-transformer';
 import {
   IsDefined,
@@ -221,6 +225,15 @@ export class CourseStructureDto {
 
   @ApiProperty({ enum: CourseStatus, example: CourseStatus.ACTIVE })
   status: CourseStatus;
+
+  @ApiProperty({
+    enum: CoursePublicationStatus,
+    example: CoursePublicationStatus.PUBLISHED,
+    description:
+      'Для студента у відповіді GET /courses/current і GET /courses/{courseId}/content це завжди PUBLISHED. ' +
+      'ADMIN у GET /courses/{courseId} бачить і DRAFT.',
+  })
+  publicationStatus: CoursePublicationStatus;
 
   @ApiProperty()
   createdAt: Date;

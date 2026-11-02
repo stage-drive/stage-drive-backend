@@ -5,7 +5,15 @@ import {
   Logger,
   NotFoundException,
 } from '@nestjs/common';
-import { CourseMaterialType, Prisma, User, UserRole } from '@prisma/client';
+import {
+  CourseMaterialType,
+  CoursePublicationStatus,
+  CourseStatus,
+  EnrollmentStatus,
+  Prisma,
+  User,
+  UserRole,
+} from '@prisma/client';
 import { isURL } from 'class-validator';
 import { UNSAFE_TEXT_MESSAGE } from '../../common/validators/plain-text.decorator';
 import { PrismaService } from '../../prisma/prisma.service';
@@ -35,6 +43,8 @@ import {
 import {
   COURSE_MANAGE_ROLES,
   COURSE_NOT_FOUND_MESSAGE,
+  COURSE_NOT_PUBLISHED_MESSAGE,
+  COURSE_STUDENT_ROLES,
 } from './courses.service';
 
 export const CHAPTER_NOT_FOUND_MESSAGE = 'Chapter not found';
@@ -89,6 +99,7 @@ const structureSelect = {
   name: true,
   description: true,
   status: true,
+  publicationStatus: true,
   createdAt: true,
   updatedAt: true,
   chapters: {
@@ -120,6 +131,12 @@ type StructureRow = Prisma.CourseGetPayload<{ select: typeof structureSelect }>;
 
 function assertCanManage(actor: User): void {
   if (!(COURSE_MANAGE_ROLES as readonly UserRole[]).includes(actor.role)) {
+    throw new ForbiddenException('Insufficient permissions');
+  }
+}
+
+function assertStudent(actor: User): void {
+  if (!(COURSE_STUDENT_ROLES as readonly UserRole[]).includes(actor.role)) {
     throw new ForbiddenException('Insufficient permissions');
   }
 }
@@ -222,6 +239,7 @@ function toStructure(course: StructureRow): CourseStructureDto {
     name: course.name,
     description: course.description,
     status: course.status,
+    publicationStatus: course.publicationStatus,
     createdAt: course.createdAt,
     updatedAt: course.updatedAt,
     chapters: byPosition(course.chapters).map(toChapterStructure),
@@ -262,6 +280,44 @@ export class CourseStructureService {
       throw new NotFoundException(COURSE_NOT_FOUND_MESSAGE);
     }
     return toStructure(course);
+  }
+
+  /** Опублікований курс групи, у якій у студента активне зарахування. */
+  async getCurrentStudentCourse(actor: User): Promise<CourseStructureDto> {
+    assertStudent(actor);
+    await this.requireOrganization(actor.organizationId);
+
+    const enrollment = await this.prisma.enrollment.findFirst({
+      where: {
+        studentId: actor.id,
+        status: EnrollmentStatus.ACTIVE,
+        group: {
+          organizationId: actor.organizationId,
+          courseId: { not: null },
+        },
+      },
+      orderBy: { enrolledAt: 'desc' },
+      select: { group: { select: { courseId: true } } },
+    });
+    const courseId = enrollment?.group.courseId;
+    if (!courseId) {
+      throw new NotFoundException(COURSE_NOT_FOUND_MESSAGE);
+    }
+    return this.loadAssignedPublishedCourse(actor, courseId);
+  }
+
+  /**
+   * Контент конкретного курсу. Студент без активного зарахування в групу
+   * з цим курсом отримує 403, навіть якщо курс опубліковано.
+   * Призначений, але не опублікований курс теж 403, без тіла контенту.
+   */
+  async getStudentContent(
+    actor: User,
+    courseId: string,
+  ): Promise<CourseStructureDto> {
+    assertStudent(actor);
+    await this.requireOrganization(actor.organizationId);
+    return this.loadAssignedPublishedCourse(actor, courseId);
   }
 
   async createChapter(
@@ -570,6 +626,49 @@ export class CourseStructureService {
       `Material updated materialId=${updated.id} lessonId=${lessonId} courseId=${courseId} organizationId=${actor.organizationId} actorId=${actor.id}`,
     );
     return toMaterial(updated);
+  }
+
+  private async loadAssignedPublishedCourse(
+    actor: User,
+    courseId: string,
+  ): Promise<CourseStructureDto> {
+    const access = await this.prisma.course.findFirst({
+      where: { id: courseId, organizationId: actor.organizationId },
+      select: { id: true, status: true, publicationStatus: true },
+    });
+    if (!access) {
+      throw new NotFoundException(COURSE_NOT_FOUND_MESSAGE);
+    }
+
+    const enrollment = await this.prisma.enrollment.findFirst({
+      where: {
+        studentId: actor.id,
+        status: EnrollmentStatus.ACTIVE,
+        group: {
+          organizationId: actor.organizationId,
+          courseId,
+        },
+      },
+      select: { id: true },
+    });
+    if (!enrollment) {
+      throw new ForbiddenException('Insufficient permissions');
+    }
+    if (
+      access.publicationStatus !== CoursePublicationStatus.PUBLISHED ||
+      access.status !== CourseStatus.ACTIVE
+    ) {
+      throw new ForbiddenException(COURSE_NOT_PUBLISHED_MESSAGE);
+    }
+
+    const course = await this.prisma.course.findFirst({
+      where: { id: courseId, organizationId: actor.organizationId },
+      select: structureSelect,
+    });
+    if (!course) {
+      throw new NotFoundException(COURSE_NOT_FOUND_MESSAGE);
+    }
+    return toStructure(course);
   }
 
   private async prepare(actor: User): Promise<void> {

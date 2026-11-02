@@ -106,6 +106,14 @@ enum CourseStatus {
   ARCHIVED
 }
 
+/// Публікація теоретичного курсу для студентів.
+/// DRAFT недоступний навіть групі, якій курс уже призначено.
+/// PUBLISHED відкриває контент студентам з активним зарахуванням у таку групу.
+enum CoursePublicationStatus {
+  DRAFT
+  PUBLISHED
+}
+
 /// Навчальний матеріал теоретичного уроку.
 /// TEXT — текст, LINK — зовнішнє посилання, VIDEO — посилання на відео.
 enum CourseMaterialType {
@@ -338,18 +346,19 @@ model Group {
 
 /// Теоретичний курс автошколи: програма, яку викладач читає групі.
 model Course {
-  id             String           @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  organizationId String           @map("organization_id") @db.Uuid
-  organization   Organization     @relation(fields: [organizationId], references: [id], onDelete: Cascade)
-  name           String           @db.VarChar(120)
-  description    String?
-  status         CourseStatus     @default(ACTIVE)
-  createdAt      DateTime         @default(now()) @map("created_at")
-  updatedAt      DateTime         @updatedAt @map("updated_at")
-  groups         Group[]
-  chapters       CourseChapter[]
-  lessons        CourseLesson[]
-  materials      CourseMaterial[]
+  id                 String                  @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  organizationId     String                  @map("organization_id") @db.Uuid
+  organization       Organization            @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  name               String                  @db.VarChar(120)
+  description        String?
+  status             CourseStatus            @default(ACTIVE)
+  publicationStatus  CoursePublicationStatus @default(DRAFT) @map("publication_status")
+  createdAt          DateTime                @default(now()) @map("created_at")
+  updatedAt          DateTime                @updatedAt @map("updated_at")
+  groups             Group[]
+  chapters           CourseChapter[]
+  lessons            CourseLesson[]
+  materials          CourseMaterial[]
 
   @@index([organizationId])
   @@map("courses")

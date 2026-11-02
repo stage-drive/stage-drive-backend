@@ -1,5 +1,5 @@
 import { BadRequestException, Type, ValidationPipe } from '@nestjs/common';
-import { CourseStatus } from '@prisma/client';
+import { CoursePublicationStatus, CourseStatus } from '@prisma/client';
 import { validationExceptionFactory } from '../../common/validation/field-error';
 import { UNSAFE_TEXT_MESSAGE } from '../../common/validators/plain-text.decorator';
 import {
@@ -7,9 +7,11 @@ import {
   COURSE_DESCRIPTION_MAX_LENGTH,
   COURSE_NAME_LENGTH_MESSAGE,
   COURSE_NAME_MAX_LENGTH,
+  COURSE_PUBLICATION_VALUE_MESSAGE,
   CreateCourseDto,
   REQUIRED_FIELD_MESSAGE,
   UpdateCourseDto,
+  UpdateCoursePublicationDto,
 } from './courses.dto';
 
 const pipe = new ValidationPipe({
@@ -139,6 +141,7 @@ describe('CreateCourseDto', () => {
   it.each([
     ['organizationId', '11111111-1111-4111-8111-111111111111'],
     ['status', CourseStatus.ARCHIVED],
+    ['publicationStatus', CoursePublicationStatus.PUBLISHED],
   ])('rejects %s in the body', async (field, value) => {
     await expect(
       errorsFor(CreateCourseDto, { ...valid, [field]: value }),
@@ -183,7 +186,7 @@ describe('UpdateCourseDto', () => {
     );
   });
 
-  it.each(['organizationId', 'status'])(
+  it.each(['organizationId', 'status', 'publicationStatus'])(
     'rejects %s in the body',
     async (field) => {
       await expect(
@@ -193,4 +196,48 @@ describe('UpdateCourseDto', () => {
       );
     },
   );
+});
+
+describe('UpdateCoursePublicationDto', () => {
+  it.each(Object.values(CoursePublicationStatus))(
+    'accepts %s',
+    async (publicationStatus) => {
+      await expect(
+        validate(UpdateCoursePublicationDto, { publicationStatus }),
+      ).resolves.toEqual({ publicationStatus });
+    },
+  );
+
+  it.each([{}, { publicationStatus: null }])(
+    'requires publicationStatus (%p)',
+    async (body) => {
+      await expect(
+        errorsFor(UpdateCoursePublicationDto, body),
+      ).resolves.toEqual(
+        fieldErrors('publicationStatus', REQUIRED_FIELD_MESSAGE),
+      );
+    },
+  );
+
+  it.each(['ACTIVE', 'published', 1])(
+    'rejects publicationStatus %p',
+    async (publicationStatus) => {
+      await expect(
+        errorsFor(UpdateCoursePublicationDto, { publicationStatus }),
+      ).resolves.toEqual(
+        fieldErrors('publicationStatus', COURSE_PUBLICATION_VALUE_MESSAGE),
+      );
+    },
+  );
+
+  it('rejects extra fields', async () => {
+    await expect(
+      errorsFor(UpdateCoursePublicationDto, {
+        publicationStatus: CoursePublicationStatus.PUBLISHED,
+        status: CourseStatus.ARCHIVED,
+      }),
+    ).resolves.toEqual(
+      fieldErrors('status', 'property status should not exist'),
+    );
+  });
 });

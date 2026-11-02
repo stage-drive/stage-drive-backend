@@ -6,9 +6,14 @@ import {
   Logger,
   NotFoundException,
 } from '@nestjs/common';
-import { CourseStatus, UserRole } from '@prisma/client';
+import {
+  CoursePublicationStatus,
+  CourseStatus,
+  UserRole,
+} from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
 import {
+  COURSE_ARCHIVED_PUBLICATION_MESSAGE,
   COURSE_NAME_TAKEN_MESSAGE,
   COURSE_NOT_FOUND_MESSAGE,
   CoursesService,
@@ -38,6 +43,7 @@ describe('CoursesService', () => {
     name: 'Теоретичний курс, категорія B',
     description: 'ПДР та будова автомобіля.',
     status: CourseStatus.ACTIVE,
+    publicationStatus: CoursePublicationStatus.DRAFT,
     createdAt: new Date('2026-10-01T10:00:00.000Z'),
     updatedAt: new Date('2026-10-02T10:00:00.000Z'),
   };
@@ -106,17 +112,23 @@ describe('CoursesService', () => {
 
     expect(prisma.course.findMany).toHaveBeenCalledWith({
       where: { organizationId: 'org-1' },
-      select: { id: true, name: true, status: true },
+      select: {
+        id: true,
+        name: true,
+        status: true,
+        publicationStatus: true,
+      },
       orderBy: [{ name: 'asc' }, { id: 'asc' }],
     });
   });
 
-  it('returns ACTIVE and ARCHIVED courses with id, name and status only', async () => {
+  it('returns ACTIVE and ARCHIVED courses with id, name, status and publication only', async () => {
     prisma.course.findMany.mockResolvedValue([
       {
         id: 'course-1',
         name: 'Теоретичний курс, категорія B',
         status: CourseStatus.ACTIVE,
+        publicationStatus: CoursePublicationStatus.PUBLISHED,
         description: 'internal',
         organizationId: 'org-1',
       },
@@ -124,6 +136,7 @@ describe('CoursesService', () => {
         id: 'course-2',
         name: 'Старий курс',
         status: CourseStatus.ARCHIVED,
+        publicationStatus: CoursePublicationStatus.DRAFT,
       },
     ]);
 
@@ -133,8 +146,14 @@ describe('CoursesService', () => {
           id: 'course-1',
           name: 'Теоретичний курс, категорія B',
           status: CourseStatus.ACTIVE,
+          publicationStatus: CoursePublicationStatus.PUBLISHED,
         },
-        { id: 'course-2', name: 'Старий курс', status: CourseStatus.ARCHIVED },
+        {
+          id: 'course-2',
+          name: 'Старий курс',
+          status: CourseStatus.ARCHIVED,
+          publicationStatus: CoursePublicationStatus.DRAFT,
+        },
       ],
     });
   });
@@ -185,6 +204,7 @@ describe('CoursesService', () => {
         name: payload.name,
         description: payload.description,
         status: CourseStatus.ACTIVE,
+        publicationStatus: CoursePublicationStatus.DRAFT,
         createdAt: courseRow.createdAt,
         updatedAt: courseRow.updatedAt,
       });
@@ -195,12 +215,14 @@ describe('CoursesService', () => {
           name: payload.name,
           description: payload.description,
           status: CourseStatus.ACTIVE,
+          publicationStatus: CoursePublicationStatus.DRAFT,
         },
         select: {
           id: true,
           name: true,
           description: true,
           status: true,
+          publicationStatus: true,
           createdAt: true,
           updatedAt: true,
         },
@@ -325,6 +347,7 @@ describe('CoursesService', () => {
           name: true,
           description: true,
           status: true,
+          publicationStatus: true,
           createdAt: true,
           updatedAt: true,
         },
@@ -429,6 +452,148 @@ describe('CoursesService', () => {
 
       await expect(
         service.update(admin as never, 'course-1', { name: 'Інша' }),
+      ).rejects.toBeInstanceOf(NotFoundException);
+      expect(prisma.$transaction).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('changePublication', () => {
+    beforeEach(() => {
+      mockCourseLookups({ existing: courseRow });
+      prisma.course.update.mockImplementation(
+        ({ data }: { data: { publicationStatus: CoursePublicationStatus } }) =>
+          Promise.resolve({ ...courseRow, ...data }),
+      );
+    });
+
+    it('persists PUBLISHED and returns the saved status', async () => {
+      const result = await service.changePublication(
+        admin as never,
+        'course-1',
+        { publicationStatus: CoursePublicationStatus.PUBLISHED },
+      );
+
+      expect(prisma.course.update).toHaveBeenCalledWith({
+        where: { id: 'course-1' },
+        data: { publicationStatus: CoursePublicationStatus.PUBLISHED },
+        select: expect.objectContaining({ publicationStatus: true }),
+      });
+      expect(result.publicationStatus).toBe(CoursePublicationStatus.PUBLISHED);
+      expect(log).toHaveBeenCalledWith(
+        'Course publication changed courseId=course-1 publicationStatus=PUBLISHED organizationId=org-1 actorId=admin-1',
+      );
+    });
+
+    it('persists a return to DRAFT', async () => {
+      mockCourseLookups({
+        existing: {
+          ...courseRow,
+          publicationStatus: CoursePublicationStatus.PUBLISHED,
+        },
+      });
+
+      const result = await service.changePublication(
+        admin as never,
+        'course-1',
+        { publicationStatus: CoursePublicationStatus.DRAFT },
+      );
+
+      expect(result.publicationStatus).toBe(CoursePublicationStatus.DRAFT);
+      expect(prisma.course.update).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: { publicationStatus: CoursePublicationStatus.DRAFT },
+        }),
+      );
+    });
+
+    it('does not write when the publication status is unchanged', async () => {
+      await expect(
+        service.changePublication(admin as never, 'course-1', {
+          publicationStatus: CoursePublicationStatus.DRAFT,
+        }),
+      ).resolves.toEqual(courseRow);
+      expect(prisma.course.update).not.toHaveBeenCalled();
+      expect(log).not.toHaveBeenCalled();
+    });
+
+    it('returns 409 for publishing an archived course and does not write', async () => {
+      mockCourseLookups({
+        existing: { ...courseRow, status: CourseStatus.ARCHIVED },
+      });
+
+      const error = await caught(
+        service.changePublication(admin as never, 'course-1', {
+          publicationStatus: CoursePublicationStatus.PUBLISHED,
+        }),
+      );
+
+      expect(error).toBeInstanceOf(ConflictException);
+      expect(error.message).toBe(COURSE_ARCHIVED_PUBLICATION_MESSAGE);
+      expect(prisma.course.update).not.toHaveBeenCalled();
+    });
+
+    it('allows returning an archived course to DRAFT', async () => {
+      mockCourseLookups({
+        existing: {
+          ...courseRow,
+          status: CourseStatus.ARCHIVED,
+          publicationStatus: CoursePublicationStatus.PUBLISHED,
+        },
+      });
+
+      await expect(
+        service.changePublication(admin as never, 'course-1', {
+          publicationStatus: CoursePublicationStatus.DRAFT,
+        }),
+      ).resolves.toMatchObject({
+        publicationStatus: CoursePublicationStatus.DRAFT,
+      });
+      expect(prisma.course.update).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: { publicationStatus: CoursePublicationStatus.DRAFT },
+        }),
+      );
+    });
+
+    it('returns 404 for a course of another organization', async () => {
+      mockCourseLookups({ existing: null });
+
+      const error = await caught(
+        service.changePublication(admin as never, 'course-foreign', {
+          publicationStatus: CoursePublicationStatus.PUBLISHED,
+        }),
+      );
+
+      expect(error).toBeInstanceOf(NotFoundException);
+      expect(error.message).toBe(COURSE_NOT_FOUND_MESSAGE);
+      expect(prisma.course.update).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      UserRole.OWNER,
+      UserRole.TEACHER,
+      UserRole.INSTRUCTOR,
+      UserRole.STUDENT,
+    ])('forbids %s before touching the database', async (role) => {
+      await expect(
+        service.changePublication({ ...admin, role } as never, 'course-1', {
+          publicationStatus: CoursePublicationStatus.PUBLISHED,
+        }),
+      ).rejects.toBeInstanceOf(ForbiddenException);
+      expect(prisma.organization.findUnique).not.toHaveBeenCalled();
+      expect(prisma.$transaction).not.toHaveBeenCalled();
+    });
+
+    it('returns 404 when the organization is soft-deleted', async () => {
+      prisma.organization.findUnique.mockResolvedValue({
+        ...organization,
+        deletedAt: new Date(),
+      });
+
+      await expect(
+        service.changePublication(admin as never, 'course-1', {
+          publicationStatus: CoursePublicationStatus.PUBLISHED,
+        }),
       ).rejects.toBeInstanceOf(NotFoundException);
       expect(prisma.$transaction).not.toHaveBeenCalled();
     });

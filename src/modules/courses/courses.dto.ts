@@ -1,8 +1,9 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
-import { CourseStatus } from '@prisma/client';
+import { CoursePublicationStatus, CourseStatus } from '@prisma/client';
 import { Transform } from 'class-transformer';
 import {
   IsDefined,
+  IsEnum,
   IsNotEmpty,
   IsOptional,
   IsString,
@@ -16,6 +17,8 @@ export const COURSE_DESCRIPTION_MAX_LENGTH = 2000;
 export const REQUIRED_FIELD_MESSAGE = "Заповніть обов'язкове поле.";
 export const COURSE_NAME_LENGTH_MESSAGE = `Назва має містити не більше ${COURSE_NAME_MAX_LENGTH} символів.`;
 export const COURSE_DESCRIPTION_LENGTH_MESSAGE = `Опис має містити не більше ${COURSE_DESCRIPTION_MAX_LENGTH} символів.`;
+export const COURSE_PUBLICATION_VALUE_MESSAGE =
+  'publicationStatus має бути DRAFT або PUBLISHED.';
 
 function trimString({ value }: { value: unknown }): unknown {
   return typeof value === 'string' ? value.trim() : value;
@@ -43,6 +46,14 @@ export class CourseListItemDto {
     description: 'Групі можна призначити лише ACTIVE-курс.',
   })
   status: CourseStatus;
+
+  @ApiProperty({
+    enum: CoursePublicationStatus,
+    example: CoursePublicationStatus.DRAFT,
+    description:
+      'DRAFT ховає контент від студентів. PUBLISHED відкриває його студентам груп, яким курс призначено.',
+  })
+  publicationStatus: CoursePublicationStatus;
 }
 
 export class CourseListDto {
@@ -69,9 +80,17 @@ export class CourseDto {
     enum: CourseStatus,
     example: CourseStatus.ACTIVE,
     description:
-      'Новий курс завжди ACTIVE. Статус цим ендпоінтом не змінюється.',
+      'Новий курс завжди ACTIVE. Статус експлуатації цим ендпоінтом не змінюється.',
   })
   status: CourseStatus;
+
+  @ApiProperty({
+    enum: CoursePublicationStatus,
+    example: CoursePublicationStatus.DRAFT,
+    description:
+      'Новий курс завжди DRAFT. Змінюється лише PATCH /courses/{id}/publication.',
+  })
+  publicationStatus: CoursePublicationStatus;
 
   @ApiProperty()
   createdAt: Date;
@@ -143,4 +162,19 @@ export class UpdateCourseDto {
   })
   @IsString({ message: 'description має бути рядком або null.' })
   description?: string | null;
+}
+
+export class UpdateCoursePublicationDto {
+  @ApiProperty({
+    enum: CoursePublicationStatus,
+    example: CoursePublicationStatus.PUBLISHED,
+    description:
+      'PUBLISHED відкриває контент студентам груп, яким призначено цей ACTIVE-курс. ' +
+      'DRAFT знову ховає контент. Повтор поточного значення нічого не змінює.',
+  })
+  @IsEnum(CoursePublicationStatus, {
+    message: COURSE_PUBLICATION_VALUE_MESSAGE,
+  })
+  @IsDefined({ message: REQUIRED_FIELD_MESSAGE })
+  publicationStatus: CoursePublicationStatus;
 }

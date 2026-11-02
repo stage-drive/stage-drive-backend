@@ -40,7 +40,7 @@ import {
   UpdateMaterialDto,
 } from './course-structure.dto';
 import { CourseStructureService } from './course-structure.service';
-import { COURSE_MANAGE_ROLES } from './courses.service';
+import { COURSE_MANAGE_ROLES, COURSE_STUDENT_ROLES } from './courses.service';
 
 const courseIdParam = {
   name: 'courseId',
@@ -76,14 +76,67 @@ const uuidPipe = new ParseUUIDPipe({ version: '4' });
 export class CourseStructureController {
   constructor(private readonly structure: CourseStructureService) {}
 
+  // Статичний шлях реєструється раніше за :courseId, інакше "current" стане id.
+  @Get('current')
+  @Roles(...COURSE_STUDENT_ROLES)
+  @ApiOperation({
+    summary: 'Опублікований теоретичний курс групи поточного студента',
+    description:
+      'STUDENT отримує курс групи, у якій у нього Enrollment.status = ACTIVE і групі призначено курс. ' +
+      'Контент (розділи, уроки, матеріали за position) повертається лише якщо курс ACTIVE і PUBLISHED. ' +
+      'DRAFT і ARCHIVED для студента недоступні. Студент без такої групи отримує 404. ' +
+      'Інша роль отримує 403.',
+  })
+  @ApiOkResponse({ type: CourseStructureDto })
+  @ApiForbiddenResponse({
+    description:
+      'Ендпоінт лише для STUDENT. Також 403, якщо курс групи ще не опубліковано або його архівовано.',
+  })
+  @ApiNotFoundResponse({
+    description:
+      'У студента немає групи з призначеним курсом, або автошколу видалено.',
+  })
+  getCurrent(@CurrentUser() user: User) {
+    return this.structure.getCurrentStudentCourse(user);
+  }
+
+  @Get(':courseId/content')
+  @Roles(...COURSE_STUDENT_ROLES)
+  @ApiOperation({
+    summary: 'Контент опублікованого курсу для студента своєї групи',
+    description:
+      'STUDENT бачить структуру курсу лише якщо курс його автошколи, ACTIVE, PUBLISHED ' +
+      'і призначений групі, у якій у студента активне зарахування. ' +
+      'Курс іншої автошколи або неіснуючий — 404. ' +
+      'Курс своєї автошколи, який студенту не призначено, — 403, навіть якщо він опублікований. ' +
+      'Призначений, але не опублікований курс — 403 без контенту.',
+  })
+  @ApiParam(courseIdParam)
+  @ApiOkResponse({ type: CourseStructureDto })
+  @ApiForbiddenResponse({
+    description:
+      'Ендпоінт лише для STUDENT. 403, якщо курс студенту не призначено, ще не опубліковано або архівовано.',
+  })
+  @ApiNotFoundResponse({
+    description:
+      'Курс не знайдено, він чужої автошколи, або автошколу видалено.',
+  })
+  getStudentContent(
+    @CurrentUser() user: User,
+    @Param('courseId', uuidPipe) courseId: string,
+  ) {
+    return this.structure.getStudentContent(user, courseId);
+  }
+
   @Get(':courseId')
   @Roles(...COURSE_MANAGE_ROLES)
   @ApiOperation({
     summary: 'Структура теоретичного курсу',
     description:
-      'ADMIN отримує курс своєї автошколи разом із розділами, уроками та матеріалами. ' +
+      'ADMIN отримує курс своєї автошколи разом із розділами, уроками, матеріалами і publicationStatus. ' +
       'Порядок — за position від 1. Курс іншої автошколи повертає 404. ' +
-      'Порожній курс має chapters: [].',
+      'Порожній курс має chapters: []. Чернетка для ADMIN доступна. ' +
+      'Студент читає лише опублікований курс своєї групи: GET /courses/current або GET /courses/{courseId}/content.',
   })
   @ApiParam(courseIdParam)
   @ApiOkResponse({ type: CourseStructureDto })

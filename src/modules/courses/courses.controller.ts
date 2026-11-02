@@ -33,6 +33,7 @@ import {
   CourseListDto,
   CreateCourseDto,
   UpdateCourseDto,
+  UpdateCoursePublicationDto,
 } from './courses.dto';
 import {
   COURSE_LIST_ROLES,
@@ -53,7 +54,7 @@ export class CoursesController {
   @ApiOperation({
     summary: 'Список теоретичних курсів своєї автошколи',
     description:
-      'Усі курси організації поточного ADMIN, відсортовані за назвою: id, назва і статус. ' +
+      'Усі курси організації поточного ADMIN, відсортовані за назвою: id, назва, статус і publicationStatus. ' +
       'Повну структуру (розділи, уроки, матеріали) повертає GET /courses/{courseId}. ' +
       'Групі можна призначити лише ACTIVE-курс (PATCH /groups/{id}/course). ' +
       'Курси інших організацій не повертаються. Якщо курсів немає, повертається порожній масив.',
@@ -74,7 +75,8 @@ export class CoursesController {
     summary: 'Створити теоретичний курс своєї автошколи',
     description:
       'ADMIN створює курс у своїй організації. organizationId береться з access token і не приймається в тілі. ' +
-      'Новий курс завжди має статус ACTIVE. Назва унікальна серед активних курсів автошколи без урахування регістру. ' +
+      'Новий курс завжди має статус ACTIVE і publicationStatus DRAFT: студенти його ще не бачать. ' +
+      'Назва унікальна серед активних курсів автошколи без урахування регістру. ' +
       'Опис необов’язковий: порожній рядок зберігається як null.',
   })
   @ApiCreatedResponse({ type: CourseDto })
@@ -101,7 +103,7 @@ export class CoursesController {
     description:
       'ADMIN змінює name або description курсу своєї організації. ' +
       'Курс іншої автошколи повертає 404. null у description очищає опис. ' +
-      'Статус і organizationId цим запитом не змінюються.',
+      'Статус, publicationStatus і organizationId цим запитом не змінюються.',
   })
   @ApiParam({
     name: 'id',
@@ -128,5 +130,47 @@ export class CoursesController {
     @Body() body: UpdateCourseDto,
   ) {
     return this.coursesService.update(user, id, body);
+  }
+
+  @Patch(':id/publication')
+  @Roles(...COURSE_MANAGE_ROLES)
+  @ApiOperation({
+    summary: 'Опублікувати або зняти з публікації теоретичний курс',
+    description:
+      'ADMIN змінює publicationStatus курсу своєї автошколи. ' +
+      'PUBLISHED відкриває розділи, уроки та матеріали студентам, у яких є активне зарахування ' +
+      'в групу з цим курсом (GET /courses/current і GET /courses/{courseId}/content). ' +
+      'DRAFT знову ховає контент, навіть якщо курс лишається призначеним групі. ' +
+      'Повтор того самого статусу повертає курс без запису. ' +
+      'ARCHIVED-курс опублікувати не можна. Курс іншої автошколи повертає 404. ' +
+      'Відповідь містить збережений publicationStatus.',
+  })
+  @ApiParam({
+    name: 'id',
+    format: 'uuid',
+    description: 'Id курсу своєї автошколи.',
+  })
+  @ApiOkResponse({ type: CourseDto })
+  @ApiBadRequestResponse({
+    description:
+      'id не UUID, publicationStatus відсутній або не DRAFT і не PUBLISHED, або зайві поля. ' +
+      'Тіло містить errors: [{ field, message }].',
+  })
+  @ApiForbiddenResponse({
+    description: 'Змінювати публікацію курсу може лише ADMIN.',
+  })
+  @ApiNotFoundResponse({
+    description:
+      'Курс не знайдено або він належить іншій автошколі. Також якщо автошколу видалено.',
+  })
+  @ApiConflictResponse({
+    description: 'Архівований курс не можна опублікувати.',
+  })
+  changePublication(
+    @CurrentUser() user: User,
+    @Param('id', new ParseUUIDPipe({ version: '4' })) id: string,
+    @Body() body: UpdateCoursePublicationDto,
+  ) {
+    return this.coursesService.changePublication(user, id, body);
   }
 }

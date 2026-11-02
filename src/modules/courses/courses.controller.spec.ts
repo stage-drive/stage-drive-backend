@@ -38,15 +38,18 @@ describe('CoursesController', () => {
     expect(coursesService.list).toHaveBeenCalledWith(user);
   });
 
-  it.each(['create', 'update'] as const)('restricts %s to ADMIN', (method) => {
-    const roles = new Reflector().get<UserRole[]>(
-      ROLES_KEY,
-      // eslint-disable-next-line @typescript-eslint/unbound-method -- only reads decorator metadata, never invoked
-      CoursesController.prototype[method],
-    );
+  it.each(['create', 'update', 'changePublication'] as const)(
+    'restricts %s to ADMIN',
+    (method) => {
+      const roles = new Reflector().get<UserRole[]>(
+        ROLES_KEY,
+        // eslint-disable-next-line @typescript-eslint/unbound-method -- only reads decorator metadata, never invoked
+        CoursesController.prototype[method],
+      );
 
-    expect(roles).toEqual([UserRole.ADMIN]);
-  });
+      expect(roles).toEqual([UserRole.ADMIN]);
+    },
+  );
 
   it('answers 201 when a course is created', () => {
     expect(
@@ -64,6 +67,7 @@ describe('CoursesController', () => {
     const coursesService = {
       create: jest.fn().mockResolvedValue(response),
       update: jest.fn().mockResolvedValue(response),
+      changePublication: jest.fn().mockResolvedValue(response),
     };
     const controller = new CoursesController(
       coursesService as unknown as CoursesService,
@@ -85,6 +89,19 @@ describe('CoursesController', () => {
         controller.update(user as never, 'course-1', body),
       ).resolves.toBe(response);
       expect(coursesService.update).toHaveBeenCalledWith(
+        user,
+        'course-1',
+        body,
+      );
+    });
+
+    it('changePublication passes the current user, id and body to the service', async () => {
+      const body = { publicationStatus: 'PUBLISHED' as const };
+
+      await expect(
+        controller.changePublication(user as never, 'course-1', body),
+      ).resolves.toBe(response);
+      expect(coursesService.changePublication).toHaveBeenCalledWith(
         user,
         'course-1',
         body,
