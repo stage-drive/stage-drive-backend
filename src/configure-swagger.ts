@@ -15,7 +15,7 @@ export function configureSwagger(app: INestApplication) {
     .addTag('lessons', 'Розклад занять: редагування і перенесення')
     .addTag(
       'courses',
-      'Теоретичні курси: програма, публікація та доступ студентів',
+      'Теоретичні курси: програма, публікація, прогрес студента та доступ',
     )
     .addBearerAuth()
     .build();

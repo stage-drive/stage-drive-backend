@@ -907,6 +907,15 @@ async function main() {
   console.log(
     'GET /api/courses/{courseId}/content — only STUDENT. 403 if the course is not assigned or not published.',
   );
+  console.log(
+    'POST /api/courses/{courseId}/lessons/{lessonId}/complete — only STUDENT. No body. Saves the lesson and returns current progress. Repeat does not add a second row.',
+  );
+  console.log(
+    'GET /api/courses/{courseId}/progress and GET /api/courses/current/progress — only STUDENT, own progress of an assigned published course.',
+  );
+  console.log(
+    'GET /api/courses/{courseId}/students/{studentId}/progress — ADMIN for a student enrolled on the course in this school; TEACHER only for a student of their own group. Another organization is 404.',
+  );
   console.log(`  chapter ПДР: ${DEMO_CHAPTER_TRAFFIC_ID}`);
   console.log(`  chapter будова: ${DEMO_CHAPTER_CAR_ID}`);
   console.log(`  other-org chapter (expect 404): ${DEMO_OTHER_CHAPTER_ID}`);
