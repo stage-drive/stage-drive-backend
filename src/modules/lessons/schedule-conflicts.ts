@@ -1,10 +1,5 @@
 import { ConflictException } from '@nestjs/common';
-import {
-  DrivingLessonStatus,
-  EnrollmentStatus,
-  LessonStatus,
-  Prisma,
-} from '@prisma/client';
+import { EnrollmentStatus, LessonStatus, Prisma } from '@prisma/client';
 import { LESSON_MAX_DURATION_MIN } from './lessons.dto';
 
 export const LESSON_SCHEDULE_CONFLICT_MESSAGE =
@@ -134,9 +129,9 @@ export async function findTheoryConflicts(
   const theory = await tx.lesson.findMany({
     where: {
       ...excludeLesson(input.lessonId),
+      organizationId: input.organizationId,
       status: LessonStatus.SCHEDULED,
       scheduledAt: window,
-      group: { organizationId: input.organizationId },
       OR: [
         { groupId: input.groupId },
         { group: { teacherId: input.teacherId } },
@@ -154,7 +149,7 @@ export async function findTheoryConflicts(
   const practice = await tx.drivingLesson.findMany({
     where: {
       organizationId: input.organizationId,
-      status: DrivingLessonStatus.SCHEDULED,
+      status: LessonStatus.SCHEDULED,
       scheduledAt: window,
       student: {
         enrollments: {
@@ -202,7 +197,7 @@ export async function findPracticeConflicts(
     where: {
       ...excludeLesson(input.lessonId),
       organizationId: input.organizationId,
-      status: DrivingLessonStatus.SCHEDULED,
+      status: LessonStatus.SCHEDULED,
       scheduledAt: window,
       OR: [
         { instructorId: input.instructorId },
@@ -222,10 +217,10 @@ export async function findPracticeConflicts(
 
   const theory = await tx.lesson.findMany({
     where: {
+      organizationId: input.organizationId,
       status: LessonStatus.SCHEDULED,
       scheduledAt: window,
       group: {
-        organizationId: input.organizationId,
         enrollments: {
           some: { studentId: input.studentId, status: EnrollmentStatus.ACTIVE },
         },

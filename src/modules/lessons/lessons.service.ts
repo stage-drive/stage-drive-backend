@@ -8,7 +8,6 @@ import {
 } from '@nestjs/common';
 import {
   CarStatus,
-  DrivingLessonStatus,
   EnrollmentStatus,
   GroupStatus,
   LessonStatus,
@@ -231,7 +230,7 @@ export async function lockTheoryLessonWithGroup(
   lessonId: string,
 ): Promise<void> {
   const target = await tx.lesson.findFirst({
-    where: { id: lessonId, group: { organizationId } },
+    where: { id: lessonId, organizationId },
     select: { groupId: true },
   });
   if (!target) {
@@ -264,7 +263,7 @@ function isEmptyPayload(payload: object): boolean {
 }
 
 function assertEditable(
-  status: LessonStatus | DrivingLessonStatus,
+  status: LessonStatus,
   message: string = LESSON_NOT_EDITABLE_MESSAGE,
 ): void {
   if (status !== LessonStatus.SCHEDULED) {
@@ -426,6 +425,7 @@ export class LessonsService {
 
       return tx.lesson.create({
         data: {
+          organizationId: actor.organizationId,
           groupId: group.id,
           topic: payload.topic,
           scheduledAt,
@@ -648,7 +648,7 @@ export class LessonsService {
       return tx.drivingLesson.update({
         where: { id: lesson.id },
         data: {
-          status: DrivingLessonStatus.CANCELLED,
+          status: LessonStatus.CANCELLED,
           cancelledAt: now,
           cancelledById: actor.id,
           cancellationReason: payload.reason ?? null,
@@ -920,10 +920,7 @@ export class LessonsService {
   ): Promise<TheoryLessonRow> {
     await lockTheoryLessonWithGroup(tx, actor.organizationId, lessonId);
     const lesson = await tx.lesson.findFirst({
-      where: {
-        id: lessonId,
-        group: { organizationId: actor.organizationId },
-      },
+      where: { id: lessonId, organizationId: actor.organizationId },
       select: theoryLessonSelect,
     });
     if (!lesson) {

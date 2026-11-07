@@ -8,7 +8,6 @@ import {
 } from '@nestjs/common';
 import {
   CarStatus,
-  DrivingLessonStatus,
   GroupStatus,
   LessonStatus,
   LicenseCategory,
@@ -129,7 +128,7 @@ describe('LessonsService', () => {
       carId: 'car-1' as string | null,
       scheduledAt: new Date('2026-11-02T08:00:00.000Z'),
       durationMin: 60,
-      status: DrivingLessonStatus.SCHEDULED as DrivingLessonStatus,
+      status: LessonStatus.SCHEDULED as LessonStatus,
       cancelledAt: null as Date | null,
       cancellationReason: null as string | null,
       updatedAt: new Date('2026-10-20T09:00:00.000Z'),
@@ -320,7 +319,7 @@ describe('LessonsService', () => {
       expect(result).toEqual({
         id: 'lesson-1',
         type: 'PRACTICE',
-        status: DrivingLessonStatus.SCHEDULED,
+        status: LessonStatus.SCHEDULED,
         scheduledAt: new Date('2026-11-03T08:00:00.000Z'),
         endsAt: new Date('2026-11-03T09:00:00.000Z'),
         durationMin: 60,
@@ -438,7 +437,7 @@ describe('LessonsService', () => {
       expect(prisma.$transaction).not.toHaveBeenCalled();
     });
 
-    it.each([DrivingLessonStatus.COMPLETED, DrivingLessonStatus.CANCELLED])(
+    it.each([LessonStatus.COMPLETED, LessonStatus.CANCELLED])(
       'refuses to change a %s lesson and reports its status',
       async (status) => {
         givenPractice(practiceRow({ lesson: { status } }));
@@ -873,7 +872,7 @@ describe('LessonsService', () => {
       expect(error).toBeInstanceOf(NotFoundException);
       expect(prisma.lesson.findFirst).toHaveBeenCalledWith(
         expect.objectContaining({
-          where: { id: 'lesson-t1', group: { organizationId: 'org-1' } },
+          where: { id: 'lesson-t1', organizationId: 'org-1' },
         }),
       );
       expect(prisma.$queryRaw).not.toHaveBeenCalled();
@@ -887,7 +886,9 @@ describe('LessonsService', () => {
       expect(rawSql(prisma.$queryRaw, 0)).toBe(
         'SELECT id FROM groups WHERE id = $1::uuid AND organization_id = $2::uuid FOR SHARE',
       );
-      expect(rawSql(prisma.$queryRaw, 1)).toContain('FOR UPDATE OF l');
+      expect(rawSql(prisma.$queryRaw, 1)).toBe(
+        'SELECT id FROM lessons WHERE id = $1::uuid AND organization_id = $2::uuid FOR UPDATE',
+      );
       expect(advisoryKeys()).toEqual(['group:group-1', 'teacher:teacher-1']);
       const order = [
         prisma.$queryRaw.mock.invocationCallOrder[0],
@@ -1089,7 +1090,7 @@ describe('LessonsService', () => {
         );
 
         expect(updateData(prisma.drivingLesson.update)).toEqual({
-          status: DrivingLessonStatus.CANCELLED,
+          status: LessonStatus.CANCELLED,
           cancelledAt: NOW,
           cancelledById: 'admin-1',
           cancellationReason: 'Авто на ремонті',
@@ -1097,7 +1098,7 @@ describe('LessonsService', () => {
         expect(result).toEqual({
           id: 'lesson-1',
           type: 'PRACTICE',
-          status: DrivingLessonStatus.CANCELLED,
+          status: LessonStatus.CANCELLED,
           scheduledAt: new Date('2026-11-02T08:00:00.000Z'),
           endsAt: new Date('2026-11-02T09:00:00.000Z'),
           durationMin: 60,
@@ -1182,7 +1183,7 @@ describe('LessonsService', () => {
         expect(prisma.drivingLesson.update).not.toHaveBeenCalled();
       });
 
-      it.each([DrivingLessonStatus.COMPLETED, DrivingLessonStatus.CANCELLED])(
+      it.each([LessonStatus.COMPLETED, LessonStatus.CANCELLED])(
         'refuses a %s lesson and reports its status',
         async (status) => {
           givenPractice(practiceRow({ lesson: { status } }));
@@ -1206,7 +1207,7 @@ describe('LessonsService', () => {
         givenPractice(
           practiceRow({
             lesson: {
-              status: DrivingLessonStatus.CANCELLED,
+              status: LessonStatus.CANCELLED,
               scheduledAt: new Date('2026-10-20T08:00:00.000Z'),
             },
           }),
@@ -1345,7 +1346,7 @@ describe('LessonsService', () => {
         expect(error).toBeInstanceOf(NotFoundException);
         expect(prisma.lesson.findFirst).toHaveBeenCalledWith(
           expect.objectContaining({
-            where: { id: 'lesson-t1', group: { organizationId: 'org-1' } },
+            where: { id: 'lesson-t1', organizationId: 'org-1' },
           }),
         );
         expect(prisma.$queryRaw).not.toHaveBeenCalled();
@@ -1357,7 +1358,9 @@ describe('LessonsService', () => {
         expect(rawSql(prisma.$queryRaw, 0)).toBe(
           'SELECT id FROM groups WHERE id = $1::uuid AND organization_id = $2::uuid FOR SHARE',
         );
-        expect(rawSql(prisma.$queryRaw, 1)).toContain('FOR UPDATE OF l');
+        expect(rawSql(prisma.$queryRaw, 1)).toBe(
+          'SELECT id FROM lessons WHERE id = $1::uuid AND organization_id = $2::uuid FOR UPDATE',
+        );
         const order = [
           prisma.$queryRaw.mock.invocationCallOrder[0],
           prisma.$queryRaw.mock.invocationCallOrder[1],
@@ -1489,6 +1492,7 @@ describe('LessonsService', () => {
         const result = await service.createTheory(admin as never, payload);
 
         expect(createData(prisma.lesson.create)).toEqual({
+          organizationId: 'org-1',
           groupId: 'group-1',
           topic: 'Дорожні знаки',
           scheduledAt: new Date('2026-11-03T16:00:00.000Z'),
@@ -1749,7 +1753,7 @@ describe('LessonsService', () => {
         expect(result).toMatchObject({
           id: 'lesson-new',
           type: 'PRACTICE',
-          status: DrivingLessonStatus.SCHEDULED,
+          status: LessonStatus.SCHEDULED,
           scheduledAt: new Date('2026-11-03T08:00:00.000Z'),
           endsAt: new Date('2026-11-03T09:00:00.000Z'),
           durationMin: 60,

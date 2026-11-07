@@ -80,13 +80,8 @@ enum Transmission {
   AUTOMATIC
 }
 
+/// Статус заняття — спільний для теорії (Lesson) і практики (DrivingLesson).
 enum LessonStatus {
-  SCHEDULED
-  COMPLETED
-  CANCELLED
-}
-
-enum DrivingLessonStatus {
   SCHEDULED
   COMPLETED
   CANCELLED
@@ -148,6 +143,7 @@ model Organization {
   groups                  Group[]
   students                Student[]
   cars                    Car[]
+  lessons                 Lesson[]
   drivingLessons          DrivingLesson[]
   courses                 Course[]
   courseLessonCompletions CourseLessonCompletion[]
@@ -331,7 +327,8 @@ model Group {
   organizationId String       @map("organization_id") @db.Uuid
   organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   teacherId      String       @map("teacher_id") @db.Uuid
-  teacher        User         @relation("TeacherGroups", fields: [teacherId], references: [id], onDelete: Cascade)
+  /// Restrict: видалення викладача не повинно стирати групу з заняттями й відвідуванням.
+  teacher        User         @relation("TeacherGroups", fields: [teacherId], references: [id], onDelete: Restrict)
   startDate      DateTime?    @map("start_date")
   endDate        DateTime?    @map("end_date")
   courseId       String?      @map("course_id") @db.Uuid
@@ -342,6 +339,8 @@ model Group {
   lessons        Lesson[]
   students       Student[]
 
+  /// Ціль складеного FK з lessons: заняття не прив’язати до групи іншої автошколи.
+  @@unique([id, organizationId])
   @@index([organizationId])
   @@index([teacherId])
   @@index([courseId])
@@ -504,7 +503,8 @@ model Car {
   organizationId String          @map("organization_id") @db.Uuid
   organization   Organization    @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   instructorId   String?         @map("instructor_id") @db.Uuid
-  instructor     User?           @relation("InstructorCars", fields: [instructorId], references: [id], onDelete: Cascade)
+  /// SetNull: видалення інструктора лишає авто без інструктора, а не видаляє його.
+  instructor     User?           @relation("InstructorCars", fields: [instructorId], references: [id], onDelete: SetNull)
   plateNumber    String          @map("plate_number") @db.VarChar(16)
   category       LicenseCategory
   transmission   Transmission
@@ -535,10 +535,14 @@ model Enrollment {
   @@map("enrollments")
 }
 
+/// Теоретичне заняття групи. organizationId збігається з автошколою групи:
+/// складений FK (groupId, organizationId) не дає прив’язати заняття до чужої групи.
 model Lesson {
   id                 String             @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  organizationId     String             @map("organization_id") @db.Uuid
+  organization       Organization       @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   groupId            String             @map("group_id") @db.Uuid
-  group              Group              @relation(fields: [groupId], references: [id], onDelete: Cascade)
+  group              Group              @relation(fields: [groupId, organizationId], references: [id, organizationId], onDelete: Cascade)
   topic              String             @db.VarChar(200)
   scheduledAt        DateTime           @map("scheduled_at")
   durationMin        Int                @default(90) @map("duration_min")
@@ -552,39 +556,42 @@ model Lesson {
   updatedAt          DateTime           @default(now()) @updatedAt @map("updated_at")
   attendances        LessonAttendance[]
 
-  @@index([groupId])
-  @@index([scheduledAt])
+  /// Індекси під пошук конфліктів і розклад: ресурс + вікно часу.
+  @@index([organizationId, scheduledAt])
+  @@index([groupId, scheduledAt])
   @@index([cancelledById])
   @@map("lessons")
 }
 
 model DrivingLesson {
-  id                 String              @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  organizationId     String              @map("organization_id") @db.Uuid
-  organization       Organization        @relation(fields: [organizationId], references: [id], onDelete: Cascade)
-  instructorId       String              @map("instructor_id") @db.Uuid
-  instructor         User                @relation("InstructorDrivingLessons", fields: [instructorId], references: [id], onDelete: Cascade)
-  studentId          String              @map("student_id") @db.Uuid
-  student            User                @relation("StudentDrivingLessons", fields: [studentId], references: [id], onDelete: Cascade)
+  id                 String       @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  organizationId     String       @map("organization_id") @db.Uuid
+  organization       Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  /// Restrict: заняття — історія навчання, видалення людини не повинно її стирати.
+  /// Видалення всієї автошколи працює: Postgres перевіряє Restrict після всіх каскадів.
+  instructorId       String       @map("instructor_id") @db.Uuid
+  instructor         User         @relation("InstructorDrivingLessons", fields: [instructorId], references: [id], onDelete: Restrict)
+  studentId          String       @map("student_id") @db.Uuid
+  student            User         @relation("StudentDrivingLessons", fields: [studentId], references: [id], onDelete: Restrict)
   /// Авто заняття. null лише для старих занять студентів без авто.
-  carId              String?             @map("car_id") @db.Uuid
-  car                Car?                @relation(fields: [carId], references: [id], onDelete: SetNull)
-  scheduledAt        DateTime            @map("scheduled_at")
-  durationMin        Int                 @default(60) @map("duration_min")
-  status             DrivingLessonStatus @default(SCHEDULED)
+  carId              String?      @map("car_id") @db.Uuid
+  car                Car?         @relation(fields: [carId], references: [id], onDelete: SetNull)
+  scheduledAt        DateTime     @map("scheduled_at")
+  durationMin        Int          @default(60) @map("duration_min")
+  status             LessonStatus @default(SCHEDULED)
   /// Аудит скасування. CHECK у міграції: cancelledAt є тоді й лише тоді, коли status = CANCELLED.
-  cancelledAt        DateTime?           @map("cancelled_at")
-  cancelledById      String?             @map("cancelled_by_id") @db.Uuid
-  cancelledBy        User?               @relation("CancelledDrivingLessons", fields: [cancelledById], references: [id], onDelete: SetNull)
-  cancellationReason String?             @map("cancellation_reason") @db.VarChar(500)
-  createdAt          DateTime            @default(now()) @map("created_at")
-  updatedAt          DateTime            @default(now()) @updatedAt @map("updated_at")
+  cancelledAt        DateTime?    @map("cancelled_at")
+  cancelledById      String?      @map("cancelled_by_id") @db.Uuid
+  cancelledBy        User?        @relation("CancelledDrivingLessons", fields: [cancelledById], references: [id], onDelete: SetNull)
+  cancellationReason String?      @map("cancellation_reason") @db.VarChar(500)
+  createdAt          DateTime     @default(now()) @map("created_at")
+  updatedAt          DateTime     @default(now()) @updatedAt @map("updated_at")
 
-  @@index([organizationId])
-  @@index([instructorId])
-  @@index([studentId])
-  @@index([carId])
-  @@index([scheduledAt])
+  /// Індекси під пошук конфліктів і розклад: ресурс + вікно часу.
+  @@index([organizationId, scheduledAt])
+  @@index([instructorId, scheduledAt])
+  @@index([studentId, scheduledAt])
+  @@index([carId, scheduledAt])
   @@index([cancelledById])
   @@map("driving_lessons")
 }

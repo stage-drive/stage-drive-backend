@@ -5,12 +5,7 @@ import {
   ApiPropertyOptional,
   getSchemaPath,
 } from '@nestjs/swagger';
-import {
-  DrivingLessonStatus,
-  LessonStatus,
-  LicenseCategory,
-  Transmission,
-} from '@prisma/client';
+import { LessonStatus, LicenseCategory, Transmission } from '@prisma/client';
 import { Transform } from 'class-transformer';
 import {
   IsBoolean,
@@ -358,10 +353,10 @@ export class PracticeLessonDto {
   type: 'PRACTICE';
 
   @ApiProperty({
-    enum: DrivingLessonStatus,
-    example: DrivingLessonStatus.SCHEDULED,
+    enum: LessonStatus,
+    example: LessonStatus.SCHEDULED,
   })
-  status: DrivingLessonStatus;
+  status: LessonStatus;
 
   @ApiProperty({ example: '2026-11-03T08:00:00.000Z' })
   scheduledAt: Date;

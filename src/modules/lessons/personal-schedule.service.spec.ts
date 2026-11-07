@@ -5,7 +5,6 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import {
-  DrivingLessonStatus,
   EnrollmentStatus,
   LessonStatus,
   LicenseCategory,
@@ -78,7 +77,7 @@ function practiceRow(
     id: 'practice-1',
     scheduledAt: minutesFromNow(60),
     durationMin: 60,
-    status: DrivingLessonStatus.SCHEDULED,
+    status: LessonStatus.SCHEDULED,
     cancelledAt: null,
     cancellationReason: null,
     updatedAt: NOW,
@@ -145,7 +144,8 @@ describe('PersonalScheduleService', () => {
       await service.getMySchedule(teacher, {});
 
       expect(conditionsOf(prisma.lesson.findMany)[0]).toEqual({
-        group: { organizationId: 'org-1', teacherId: 'teacher-1' },
+        organizationId: 'org-1',
+        group: { teacherId: 'teacher-1' },
       });
       expect(prisma.drivingLesson.findMany).not.toHaveBeenCalled();
     });
@@ -165,7 +165,7 @@ describe('PersonalScheduleService', () => {
 
       const theoryScope = conditionsOf(prisma.lesson.findMany)[0];
       expect(theoryScope).toEqual({
-        group: { organizationId: 'org-1' },
+        organizationId: 'org-1',
         OR: [
           {
             group: {
@@ -208,7 +208,7 @@ describe('PersonalScheduleService', () => {
         status: { not: LessonStatus.CANCELLED },
       });
       expect(conditionsOf(prisma.drivingLesson.findMany)[2]).toEqual({
-        status: { not: DrivingLessonStatus.CANCELLED },
+        status: { not: LessonStatus.CANCELLED },
       });
     });
 
@@ -363,7 +363,7 @@ describe('PersonalScheduleService', () => {
       expect(practice).toEqual({
         id: 'practice-1',
         type: 'PRACTICE',
-        status: DrivingLessonStatus.SCHEDULED,
+        status: LessonStatus.SCHEDULED,
         timing: 'IN_PROGRESS',
         scheduledAt: minutesFromNow(-30),
         endsAt: minutesFromNow(30),

@@ -346,7 +346,8 @@ describe('DashboardService', () => {
     expect(prisma.lesson.findMany).toHaveBeenCalledWith(
       expect.objectContaining({
         where: {
-          group: { teacherId: 'teacher-1', organizationId: 'org-1' },
+          organizationId: 'org-1',
+          group: { teacherId: 'teacher-1' },
           scheduledAt: { gte: expect.any(Date) },
           status: 'SCHEDULED',
         },
@@ -519,8 +520,8 @@ describe('DashboardService', () => {
     expect(prisma.lesson.findMany).toHaveBeenCalledWith(
       expect.objectContaining({
         where: {
+          organizationId: 'org-1',
           group: {
-            organizationId: 'org-1',
             enrollments: {
               some: { studentId: 'student-1', status: 'ACTIVE' },
             },
