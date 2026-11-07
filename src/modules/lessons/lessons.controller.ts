@@ -196,41 +196,41 @@ export class LessonsController {
     return this.lessonsService.createTheory(user, body);
   }
 
-  // @Post('practice')
-  // @HttpCode(HttpStatus.CREATED)
-  // @Roles(...PRACTICE_LESSON_EDIT_ROLES)
-  // @ApiOperation({
-  //   summary: 'Створити практичне заняття',
-  //   description:
-  //     'ADMIN створює заняття будь-якому студенту своєї автошколи; інструктор — лише для себе і лише своєму студенту. ' +
-  //     'Без instructorId і carId беруться інструктор і авто, призначені студенту під час допуску до практики. ' +
-  //     "Місце зустрічі (meetingPlace) обов'язкове. " +
-  //     `${CREATE_RULES} ${PRACTICE_CHECKS}`,
-  // })
-  // @ApiCreatedResponse({ type: PracticeLessonDto })
-  // @ApiBadRequestResponse({
-  //   description:
-  //     'Некоректне тіло, зайве поле, порожній чи задовгий meetingPlace, або scheduledAt без зсуву чи в минулому. ' +
-  //     'Тіло містить errors: [{ field, message }].',
-  // })
-  // @ApiForbiddenResponse({
-  //   description:
-  //     'Роль не ADMIN чи INSTRUCTOR, інструктор передав чужий instructorId або створює заняття не своєму студенту.',
-  // })
-  // @ApiNotFoundResponse({
-  //   description:
-  //     'Студента, інструктора чи авто не знайдено, або вони належать іншій автошколі.',
-  // })
-  // @ApiConflictResponse({
-  //   type: LessonScheduleConflictResponseDto,
-  //   description: CREATE_CONFLICT_DESCRIPTION,
-  // })
-  // createPractice(
-  //   @CurrentUser() user: User,
-  //   @Body() body: CreatePracticeLessonDto,
-  // ): Promise<PracticeLessonDto> {
-  //   return this.lessonsService.createPractice(user, body);
-  // }
+  @Post('practice')
+  @HttpCode(HttpStatus.CREATED)
+  @Roles(...PRACTICE_LESSON_EDIT_ROLES)
+  @ApiOperation({
+    summary: 'Створити практичне заняття',
+    description:
+      'ADMIN створює заняття будь-якому студенту своєї автошколи; інструктор — лише для себе і лише своєму студенту. ' +
+      'Без instructorId і carId беруться інструктор і авто, призначені студенту під час допуску до практики. ' +
+      "Місце зустрічі (meetingPlace) обов'язкове. " +
+      `${CREATE_RULES} ${PRACTICE_CHECKS}`,
+  })
+  @ApiCreatedResponse({ type: PracticeLessonDto })
+  @ApiBadRequestResponse({
+    description:
+      'Некоректне тіло, зайве поле, порожній чи задовгий meetingPlace, або scheduledAt без зсуву чи в минулому. ' +
+      'Тіло містить errors: [{ field, message }].',
+  })
+  @ApiForbiddenResponse({
+    description:
+      'Роль не ADMIN чи INSTRUCTOR, інструктор передав чужий instructorId або створює заняття не своєму студенту.',
+  })
+  @ApiNotFoundResponse({
+    description:
+      'Студента, інструктора чи авто не знайдено, або вони належать іншій автошколі.',
+  })
+  @ApiConflictResponse({
+    type: LessonScheduleConflictResponseDto,
+    description: CREATE_CONFLICT_DESCRIPTION,
+  })
+  createPractice(
+    @CurrentUser() user: User,
+    @Body() body: CreatePracticeLessonDto,
+  ): Promise<PracticeLessonDto> {
+    return this.lessonsService.createPractice(user, body);
+  }
 
   @Patch('theory/:id')
   @Roles(...THEORY_LESSON_EDIT_ROLES)
@@ -310,84 +310,84 @@ export class LessonsController {
     return this.lessonsService.rescheduleTheory(user, id, body);
   }
 
-  // @Patch('practice/:id')
-  // @Roles(...PRACTICE_LESSON_EDIT_ROLES)
-  // @ApiOperation({
-  //   summary: 'Редагувати практичне заняття',
-  //   description:
-  //     'ADMIN змінює durationMin, instructorId, carId і meetingPlace; інструктор — лише durationMin, carId і meetingPlace свого заняття. ' +
-  //     'Зміна лише meetingPlace не перевіряє розклад. ' +
-  //     'Старе заняття без авто бере авто, призначене студенту, коли змінюється розклад. ' +
-  //     `${SCHEDULE_RULES} ${PRACTICE_CHECKS}`,
-  // })
-  // @ApiParam({
-  //   name: 'id',
-  //   format: 'uuid',
-  //   description: 'Id практичного заняття.',
-  // })
-  // @ApiOkResponse({ type: PracticeLessonDto })
-  // @ApiBadRequestResponse({
-  //   description:
-  //     'Некоректне або порожнє тіло, або id не UUID. Тіло містить errors: [{ field, message }].',
-  // })
-  // @ApiForbiddenResponse({
-  //   description:
-  //     'Роль не ADMIN чи INSTRUCTOR, інструктор редагує чуже заняття, або інструктор змінює instructorId.',
-  // })
-  // @ApiNotFoundResponse({
-  //   description:
-  //     'Заняття, інструктора чи авто не знайдено, або вони належать іншій автошколі.',
-  // })
-  // @ApiConflictResponse({
-  //   type: LessonScheduleConflictResponseDto,
-  //   description: LESSON_CONFLICT_DESCRIPTION,
-  // })
-  // updatePractice(
-  //   @CurrentUser() user: User,
-  //   @Param('id', new ParseUUIDPipe({ version: '4' })) id: string,
-  //   @Body() body: UpdatePracticeLessonDto,
-  // ): Promise<PracticeLessonDto> {
-  //   return this.lessonsService.updatePractice(user, id, body);
-  // }
+  @Patch('practice/:id')
+  @Roles(...PRACTICE_LESSON_EDIT_ROLES)
+  @ApiOperation({
+    summary: 'Редагувати практичне заняття',
+    description:
+      'ADMIN змінює durationMin, instructorId, carId і meetingPlace; інструктор — лише durationMin, carId і meetingPlace свого заняття. ' +
+      'Зміна лише meetingPlace не перевіряє розклад. ' +
+      'Старе заняття без авто бере авто, призначене студенту, коли змінюється розклад. ' +
+      `${SCHEDULE_RULES} ${PRACTICE_CHECKS}`,
+  })
+  @ApiParam({
+    name: 'id',
+    format: 'uuid',
+    description: 'Id практичного заняття.',
+  })
+  @ApiOkResponse({ type: PracticeLessonDto })
+  @ApiBadRequestResponse({
+    description:
+      'Некоректне або порожнє тіло, або id не UUID. Тіло містить errors: [{ field, message }].',
+  })
+  @ApiForbiddenResponse({
+    description:
+      'Роль не ADMIN чи INSTRUCTOR, інструктор редагує чуже заняття, або інструктор змінює instructorId.',
+  })
+  @ApiNotFoundResponse({
+    description:
+      'Заняття, інструктора чи авто не знайдено, або вони належать іншій автошколі.',
+  })
+  @ApiConflictResponse({
+    type: LessonScheduleConflictResponseDto,
+    description: LESSON_CONFLICT_DESCRIPTION,
+  })
+  updatePractice(
+    @CurrentUser() user: User,
+    @Param('id', new ParseUUIDPipe({ version: '4' })) id: string,
+    @Body() body: UpdatePracticeLessonDto,
+  ): Promise<PracticeLessonDto> {
+    return this.lessonsService.updatePractice(user, id, body);
+  }
 
-  // @Patch('practice/:id/reschedule')
-  // @Roles(...PRACTICE_LESSON_EDIT_ROLES)
-  // @ApiOperation({
-  //   summary: 'Перенести практичне заняття',
-  //   description:
-  //     'ADMIN або інструктор заняття переносить його на нову дату й час. ' +
-  //     'scheduledAt — ISO 8601 з часовим зсувом. ' +
-  //     `${SCHEDULE_RULES} ${PRACTICE_CHECKS}`,
-  // })
-  // @ApiParam({
-  //   name: 'id',
-  //   format: 'uuid',
-  //   description: 'Id практичного заняття.',
-  // })
-  // @ApiOkResponse({ type: PracticeLessonDto })
-  // @ApiBadRequestResponse({
-  //   description:
-  //     'Некоректне тіло, scheduledAt без зсуву чи в минулому, або id не UUID. ' +
-  //     'Тіло містить errors: [{ field, message }].',
-  // })
-  // @ApiForbiddenResponse({
-  //   description:
-  //     'Роль не ADMIN чи INSTRUCTOR, або інструктор переносить чуже заняття.',
-  // })
-  // @ApiNotFoundResponse({
-  //   description: 'Заняття не знайдено або воно належить іншій автошколі.',
-  // })
-  // @ApiConflictResponse({
-  //   type: LessonScheduleConflictResponseDto,
-  //   description: LESSON_CONFLICT_DESCRIPTION,
-  // })
-  // reschedulePractice(
-  //   @CurrentUser() user: User,
-  //   @Param('id', new ParseUUIDPipe({ version: '4' })) id: string,
-  //   @Body() body: RescheduleLessonDto,
-  // ): Promise<PracticeLessonDto> {
-  //   return this.lessonsService.reschedulePractice(user, id, body);
-  // }
+  @Patch('practice/:id/reschedule')
+  @Roles(...PRACTICE_LESSON_EDIT_ROLES)
+  @ApiOperation({
+    summary: 'Перенести практичне заняття',
+    description:
+      'ADMIN або інструктор заняття переносить його на нову дату й час. ' +
+      'scheduledAt — ISO 8601 з часовим зсувом. ' +
+      `${SCHEDULE_RULES} ${PRACTICE_CHECKS}`,
+  })
+  @ApiParam({
+    name: 'id',
+    format: 'uuid',
+    description: 'Id практичного заняття.',
+  })
+  @ApiOkResponse({ type: PracticeLessonDto })
+  @ApiBadRequestResponse({
+    description:
+      'Некоректне тіло, scheduledAt без зсуву чи в минулому, або id не UUID. ' +
+      'Тіло містить errors: [{ field, message }].',
+  })
+  @ApiForbiddenResponse({
+    description:
+      'Роль не ADMIN чи INSTRUCTOR, або інструктор переносить чуже заняття.',
+  })
+  @ApiNotFoundResponse({
+    description: 'Заняття не знайдено або воно належить іншій автошколі.',
+  })
+  @ApiConflictResponse({
+    type: LessonScheduleConflictResponseDto,
+    description: LESSON_CONFLICT_DESCRIPTION,
+  })
+  reschedulePractice(
+    @CurrentUser() user: User,
+    @Param('id', new ParseUUIDPipe({ version: '4' })) id: string,
+    @Body() body: RescheduleLessonDto,
+  ): Promise<PracticeLessonDto> {
+    return this.lessonsService.reschedulePractice(user, id, body);
+  }
 
   @Post('theory/:id/cancel')
   @HttpCode(HttpStatus.OK)
@@ -419,35 +419,35 @@ export class LessonsController {
     return this.lessonsService.cancelTheory(user, id, body);
   }
 
-  // @Post('practice/:id/cancel')
-  // @HttpCode(HttpStatus.OK)
-  // @Roles(...PRACTICE_LESSON_EDIT_ROLES)
-  // @ApiOperation({
-  //   summary: 'Скасувати практичне заняття',
-  //   description: `ADMIN або інструктор заняття скасовує його. Тіло необов'язкове. Інструктор, студент і авто лишаються в занятті. ${CANCEL_RULES}`,
-  // })
-  // @ApiParam({
-  //   name: 'id',
-  //   format: 'uuid',
-  //   description: 'Id практичного заняття.',
-  // })
-  // @ApiOkResponse({ type: PracticeLessonDto })
-  // @ApiBadRequestResponse({ description: CANCEL_BAD_REQUEST_DESCRIPTION })
-  // @ApiForbiddenResponse({
-  //   description:
-  //     'Роль не ADMIN чи INSTRUCTOR, або інструктор скасовує чуже заняття.',
-  // })
-  // @ApiNotFoundResponse({
-  //   description: 'Заняття не знайдено або воно належить іншій автошколі.',
-  // })
-  // @ApiConflictResponse({ description: CANCEL_CONFLICT_DESCRIPTION })
-  // cancelPractice(
-  //   @CurrentUser() user: User,
-  //   @Param('id', new ParseUUIDPipe({ version: '4' })) id: string,
-  //   @Body() body: CancelLessonDto,
-  // ): Promise<PracticeLessonDto> {
-  //   return this.lessonsService.cancelPractice(user, id, body);
-  // }
+  @Post('practice/:id/cancel')
+  @HttpCode(HttpStatus.OK)
+  @Roles(...PRACTICE_LESSON_EDIT_ROLES)
+  @ApiOperation({
+    summary: 'Скасувати практичне заняття',
+    description: `ADMIN або інструктор заняття скасовує його. Тіло необов'язкове. Інструктор, студент і авто лишаються в занятті. ${CANCEL_RULES}`,
+  })
+  @ApiParam({
+    name: 'id',
+    format: 'uuid',
+    description: 'Id практичного заняття.',
+  })
+  @ApiOkResponse({ type: PracticeLessonDto })
+  @ApiBadRequestResponse({ description: CANCEL_BAD_REQUEST_DESCRIPTION })
+  @ApiForbiddenResponse({
+    description:
+      'Роль не ADMIN чи INSTRUCTOR, або інструктор скасовує чуже заняття.',
+  })
+  @ApiNotFoundResponse({
+    description: 'Заняття не знайдено або воно належить іншій автошколі.',
+  })
+  @ApiConflictResponse({ description: CANCEL_CONFLICT_DESCRIPTION })
+  cancelPractice(
+    @CurrentUser() user: User,
+    @Param('id', new ParseUUIDPipe({ version: '4' })) id: string,
+    @Body() body: CancelLessonDto,
+  ): Promise<PracticeLessonDto> {
+    return this.lessonsService.cancelPractice(user, id, body);
+  }
 
   @Get('theory/:id/attendance')
   @Roles(...THEORY_LESSON_EDIT_ROLES)
