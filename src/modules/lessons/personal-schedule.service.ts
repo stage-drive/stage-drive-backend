@@ -1,5 +1,4 @@
 import {
-  BadRequestException,
   ForbiddenException,
   Injectable,
   NotFoundException,
@@ -26,20 +25,15 @@ import {
   PersonalScheduleDto,
   PersonalScheduleItemDto,
   PersonalScheduleQueryDto,
-  SCHEDULE_DEFAULT_RANGE_DAYS,
-  SCHEDULE_MAX_RANGE_DAYS,
-  SCHEDULE_RANGE_LENGTH_MESSAGE,
-  SCHEDULE_RANGE_ORDER_MESSAGE,
 } from './lessons.dto';
-import { candidateWindow, overlaps, ScheduleSlot } from './schedule-conflicts';
+import { candidateWindow, overlaps } from './schedule-conflicts';
+import { resolveRange } from './schedule-range';
 
 export const SCHEDULE_VIEW_ROLES = [
   UserRole.TEACHER,
   UserRole.INSTRUCTOR,
   UserRole.STUDENT,
 ] as const;
-
-const DAY_MS = 24 * 60 * 60_000;
 
 /** При однаковому часі теорія йде раніше за практику. */
 const TYPE_ORDER: Record<LessonTypeFilter, number> = {
@@ -52,13 +46,6 @@ type ScheduleScope = {
   theory: Prisma.LessonWhereInput | null;
   practice: Prisma.DrivingLessonWhereInput | null;
 };
-
-function fieldError(field: string, message: string): BadRequestException {
-  return new BadRequestException({
-    statusCode: 400,
-    errors: [{ field, message }],
-  });
-}
 
 /**
  * Заняття, що належать до розкладу користувача. Кожна умова містить фільтр
@@ -114,25 +101,6 @@ function scheduleScope(actor: User, now: Date): ScheduleScope {
     default:
       throw new ForbiddenException('Insufficient permissions');
   }
-}
-
-/** Формат from і to уже перевірив DTO; тут — правила, що зв'язують обидва поля. */
-function resolveRange(
-  query: PersonalScheduleQueryDto,
-  now: Date,
-): ScheduleSlot {
-  const start = query.from ? new Date(query.from) : now;
-  const end = query.to
-    ? new Date(query.to)
-    : new Date(start.getTime() + SCHEDULE_DEFAULT_RANGE_DAYS * DAY_MS);
-
-  if (end.getTime() <= start.getTime()) {
-    throw fieldError('to', SCHEDULE_RANGE_ORDER_MESSAGE);
-  }
-  if (end.getTime() - start.getTime() > SCHEDULE_MAX_RANGE_DAYS * DAY_MS) {
-    throw fieldError('to', SCHEDULE_RANGE_LENGTH_MESSAGE);
-  }
-  return { start, end };
 }
 
 /** Межі ті самі, що в assertNotStarted: scheduledAt = now — уже почалося. */

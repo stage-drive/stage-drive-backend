@@ -63,3 +63,19 @@ export async function lockPracticeLesson(
     FOR UPDATE
   `;
 }
+
+/**
+ * Блокує рядок слоту практики до кінця транзакції. Слот іншої організації не
+ * блокується: запит нічого не знаходить, а 404 кидає подальше читання слоту.
+ */
+export async function lockPracticeSlot(
+  tx: Prisma.TransactionClient,
+  slotId: string,
+  organizationId: string,
+): Promise<void> {
+  await tx.$queryRaw`
+    SELECT id FROM practice_slots
+    WHERE id = ${slotId}::uuid AND organization_id = ${organizationId}::uuid
+    FOR UPDATE
+  `;
+}

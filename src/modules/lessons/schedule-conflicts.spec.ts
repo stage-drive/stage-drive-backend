@@ -5,6 +5,7 @@ import {
   LessonConflict,
   candidateWindow,
   findPracticeConflicts,
+  findSlotConflicts,
   findTheoryConflicts,
   lessonSlot,
   overlaps,
@@ -349,6 +350,160 @@ describe('findTheoryConflicts', () => {
         scheduledAt: at('2026-11-03T17:00:00Z'),
         endsAt: at('2026-11-03T18:00:00Z'),
       },
+    ]);
+  });
+});
+
+describe('findSlotConflicts', () => {
+  const tx = {
+    practiceSlot: { findMany: jest.fn() },
+    drivingLesson: { findMany: jest.fn() },
+  };
+  // 10:00–11:00 UTC
+  const input = {
+    organizationId: 'org-1',
+    slotId: 'slot-1',
+    instructorId: 'instructor-1',
+    carId: 'car-1',
+    interval: lessonSlot(at('2026-11-03T10:00:00Z'), 60),
+  };
+  const row = (overrides: object) => ({
+    id: 'row-1',
+    instructorId: 'instructor-2',
+    carId: 'car-2',
+    scheduledAt: at('2026-11-03T10:30:00Z'),
+    durationMin: 60,
+    ...overrides,
+  });
+
+  beforeEach(() => {
+    tx.practiceSlot.findMany.mockReset().mockResolvedValue([]);
+    tx.drivingLesson.findMany.mockReset().mockResolvedValue([]);
+  });
+
+  it('queries other slots and SCHEDULED lessons of the instructor or car in the window', async () => {
+    await findSlotConflicts(tx as never, input);
+
+    const [slotArgs] = tx.practiceSlot.findMany.mock.calls[0];
+    expect(slotArgs.where).toEqual({
+      id: { not: 'slot-1' },
+      organizationId: 'org-1',
+      scheduledAt: candidateWindow(input.interval),
+      OR: [{ instructorId: 'instructor-1' }, { carId: 'car-1' }],
+    });
+    const [lessonArgs] = tx.drivingLesson.findMany.mock.calls[0];
+    expect(lessonArgs.where).toEqual({
+      organizationId: 'org-1',
+      status: LessonStatus.SCHEDULED,
+      scheduledAt: candidateWindow(input.interval),
+      OR: [{ instructorId: 'instructor-1' }, { carId: 'car-1' }],
+    });
+  });
+
+  it('excludes nothing for a new slot', async () => {
+    await findSlotConflicts(tx as never, { ...input, slotId: null });
+
+    const [slotArgs] = tx.practiceSlot.findMany.mock.calls[0];
+    expect(slotArgs.where).not.toHaveProperty('id');
+  });
+
+  it('returns no conflicts when nothing overlaps', async () => {
+    await expect(findSlotConflicts(tx as never, input)).resolves.toEqual([]);
+  });
+
+  it('reports a slot of the same instructor as INSTRUCTOR/SLOT', async () => {
+    tx.practiceSlot.findMany.mockResolvedValue([
+      row({ id: 'slot-2', instructorId: 'instructor-1' }),
+    ]);
+
+    await expect(findSlotConflicts(tx as never, input)).resolves.toEqual([
+      {
+        resource: 'INSTRUCTOR',
+        resourceId: 'instructor-1',
+        lessonType: 'SLOT',
+        lessonId: 'slot-2',
+        scheduledAt: at('2026-11-03T10:30:00Z'),
+        endsAt: at('2026-11-03T11:30:00Z'),
+      },
+    ]);
+  });
+
+  it('reports a slot of the same car as CAR/SLOT', async () => {
+    tx.practiceSlot.findMany.mockResolvedValue([
+      row({ id: 'slot-2', carId: 'car-1' }),
+    ]);
+
+    const conflicts = await findSlotConflicts(tx as never, input);
+
+    expect(conflicts.map((c) => [c.resource, c.lessonType])).toEqual([
+      ['CAR', 'SLOT'],
+    ]);
+  });
+
+  it('reports both resources of a slot with the same instructor and car', async () => {
+    tx.practiceSlot.findMany.mockResolvedValue([
+      row({ id: 'slot-2', instructorId: 'instructor-1', carId: 'car-1' }),
+    ]);
+
+    const conflicts = await findSlotConflicts(tx as never, input);
+
+    expect(conflicts.map((c) => c.resource)).toEqual(['INSTRUCTOR', 'CAR']);
+  });
+
+  it('reports a SCHEDULED lesson of the instructor as INSTRUCTOR/PRACTICE', async () => {
+    tx.drivingLesson.findMany.mockResolvedValue([
+      row({ id: 'lesson-9', instructorId: 'instructor-1' }),
+    ]);
+
+    const conflicts = await findSlotConflicts(tx as never, input);
+
+    expect(
+      conflicts.map((c) => [c.resource, c.lessonType, c.lessonId]),
+    ).toEqual([['INSTRUCTOR', 'PRACTICE', 'lesson-9']]);
+  });
+
+  it('ignores candidates that touch the slot end to start', async () => {
+    tx.practiceSlot.findMany.mockResolvedValue([
+      row({
+        instructorId: 'instructor-1',
+        scheduledAt: at('2026-11-03T09:00:00Z'),
+      }),
+      row({
+        instructorId: 'instructor-1',
+        scheduledAt: at('2026-11-03T11:00:00Z'),
+      }),
+    ]);
+
+    await expect(findSlotConflicts(tx as never, input)).resolves.toEqual([]);
+  });
+
+  it('sorts INSTRUCTOR before CAR, then by start time', async () => {
+    tx.practiceSlot.findMany.mockResolvedValue([
+      row({
+        id: 'slot-car',
+        carId: 'car-1',
+        scheduledAt: at('2026-11-03T09:30:00Z'),
+      }),
+    ]);
+    tx.drivingLesson.findMany.mockResolvedValue([
+      row({
+        id: 'lesson-late',
+        instructorId: 'instructor-1',
+        scheduledAt: at('2026-11-03T10:45:00Z'),
+      }),
+      row({
+        id: 'lesson-early',
+        instructorId: 'instructor-1',
+        scheduledAt: at('2026-11-03T10:15:00Z'),
+      }),
+    ]);
+
+    const conflicts = await findSlotConflicts(tx as never, input);
+
+    expect(conflicts.map((c) => c.lessonId)).toEqual([
+      'lesson-early',
+      'lesson-late',
+      'slot-car',
     ]);
   });
 });

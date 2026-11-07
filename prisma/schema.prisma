@@ -148,6 +148,7 @@ model Organization {
   courses                 Course[]
   courseLessonCompletions CourseLessonCompletion[]
   courseProgressRecords   CourseProgress[]
+  practiceSlots           PracticeSlot[]
 
   @@index([deletedAt])
   @@map("organizations")
@@ -190,7 +191,11 @@ model User {
   markedAttendances        LessonAttendance[]       @relation("MarkedAttendances")
   courseLessonCompletions  CourseLessonCompletion[] @relation("StudentCourseLessonCompletions")
   courseProgressRecords    CourseProgress[]         @relation("StudentCourseProgress")
+  practiceSlots            PracticeSlot[]           @relation("InstructorPracticeSlots")
+  createdPracticeSlots     PracticeSlot[]           @relation("CreatedPracticeSlots")
 
+  /// Ціль складеного FK з practice_slots: слот не прив’язати до інструктора іншої автошколи.
+  @@unique([id, organizationId])
   @@index([deletedAt])
   @@index([organizationId])
   @@map("users")
@@ -513,8 +518,11 @@ model Car {
   updatedAt      DateTime        @updatedAt @map("updated_at")
   students       Student[]
   drivingLessons DrivingLesson[]
+  practiceSlots  PracticeSlot[]
 
   @@unique([organizationId, plateNumber])
+  /// Ціль складеного FK з practice_slots.
+  @@unique([id, organizationId])
   @@index([organizationId])
   @@index([instructorId])
   @@map("cars")
@@ -595,6 +603,34 @@ model DrivingLesson {
   @@index([carId, scheduledAt])
   @@index([cancelledById])
   @@map("driving_lessons")
+}
+
+/// Час, який ADMIN відкрив для запису на практику: інструктор + авто + інтервал.
+/// Складені FK (instructorId, organizationId) і (carId, organizationId) не дають
+/// прив’язати слот до інструктора чи авто іншої автошколи.
+/// CHECK у міграції: тривалість 15–240, як у занять.
+model PracticeSlot {
+  id             String       @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  organizationId String       @map("organization_id") @db.Uuid
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  /// Restrict: після бронювання слот — історія, як і саме заняття.
+  instructorId   String       @map("instructor_id") @db.Uuid
+  instructor     User         @relation("InstructorPracticeSlots", fields: [instructorId, organizationId], references: [id, organizationId], onDelete: Restrict)
+  carId          String       @map("car_id") @db.Uuid
+  car            Car          @relation(fields: [carId, organizationId], references: [id, organizationId], onDelete: Restrict)
+  scheduledAt    DateTime     @map("scheduled_at")
+  durationMin    Int          @default(60) @map("duration_min")
+  createdById    String?      @map("created_by_id") @db.Uuid
+  createdBy      User?        @relation("CreatedPracticeSlots", fields: [createdById], references: [id], onDelete: SetNull)
+  createdAt      DateTime     @default(now()) @map("created_at")
+  updatedAt      DateTime     @default(now()) @updatedAt @map("updated_at")
+
+  /// Індекси під пошук конфліктів і список: ресурс + вікно часу.
+  @@index([organizationId, scheduledAt])
+  @@index([instructorId, scheduledAt])
+  @@index([carId, scheduledAt])
+  @@index([createdById])
+  @@map("practice_slots")
 }
 
 /// Відвідування студентом теоретичного заняття: один рядок на пару (заняття, студент) — актуальний статус.
