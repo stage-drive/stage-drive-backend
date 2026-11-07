@@ -346,6 +346,7 @@ export class DashboardService {
         studentId: lesson.studentId,
         studentName: `${lesson.student.firstName} ${lesson.student.lastName}`,
         scheduledAt: lesson.scheduledAt,
+        meetingPlace: lesson.meetingPlace,
       })),
     };
   }

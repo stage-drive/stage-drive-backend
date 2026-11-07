@@ -8,6 +8,7 @@ import {
 import { PrismaPg } from '@prisma/adapter-pg';
 import {
   AttendanceStatus,
+  CarStatus,
   EnrollmentStatus,
   GroupStatus,
   LessonStatus,
@@ -932,6 +933,7 @@ describe('Lesson schedule (integration, real Postgres)', () => {
       lessonsService.createPractice(school.admin, {
         studentId,
         scheduledAt: scheduledAt.toISOString(),
+        meetingPlace: 'Автодром',
       });
 
     it('stores a theory lesson of the group and shows it in the schedules', async () => {
@@ -974,11 +976,39 @@ describe('Lesson schedule (integration, real Postgres)', () => {
         scheduledAt: at(10),
         durationMin: 60,
         status: LessonStatus.SCHEDULED,
+        meetingPlace: 'Автодром',
       });
+      expect(created.meetingPlace).toBe('Автодром');
       const dashboard = await dashboardService.getInstructorDashboard(
         school.instructor,
       );
-      expect(dashboard.upcomingLessons.map((l) => l.id)).toEqual([created.id]);
+      expect(dashboard.upcomingLessons).toEqual([
+        expect.objectContaining({ id: created.id, meetingPlace: 'Автодром' }),
+      ]);
+    });
+
+    it('changes only the meeting place while the car is in maintenance', async () => {
+      const school = await createSchool();
+      const created = await practiceAt(school, school.student1.id, at(10));
+      await prisma.car.update({
+        where: { id: school.car1.id },
+        data: { status: CarStatus.MAINTENANCE },
+      });
+
+      const updated = await lessonsService.updatePractice(
+        school.instructor,
+        created.id,
+        { meetingPlace: 'Біля офісу автошколи' },
+      );
+
+      expect(updated.meetingPlace).toBe('Біля офісу автошколи');
+      await expect(
+        prisma.drivingLesson.findUniqueOrThrow({ where: { id: created.id } }),
+      ).resolves.toMatchObject({
+        meetingPlace: 'Біля офісу автошколи',
+        carId: school.car1.id,
+        scheduledAt: at(10),
+      });
     });
 
     it('refuses a slot taken by the instructor, the student or the group', async () => {
@@ -1057,6 +1087,7 @@ describe('Lesson schedule (integration, real Postgres)', () => {
         lessonsService.createPractice(school.admin, {
           studentId: other.student1.id,
           scheduledAt,
+          meetingPlace: 'Автодром',
         }),
       ).rejects.toBeInstanceOf(NotFoundException);
       await expect(
@@ -1064,6 +1095,7 @@ describe('Lesson schedule (integration, real Postgres)', () => {
           studentId: school.student1.id,
           instructorId: other.instructor.id,
           scheduledAt,
+          meetingPlace: 'Автодром',
         }),
       ).rejects.toBeInstanceOf(NotFoundException);
       await expect(
@@ -1071,6 +1103,7 @@ describe('Lesson schedule (integration, real Postgres)', () => {
           studentId: school.student1.id,
           carId: other.car1.id,
           scheduledAt,
+          meetingPlace: 'Автодром',
         }),
       ).rejects.toBeInstanceOf(NotFoundException);
 

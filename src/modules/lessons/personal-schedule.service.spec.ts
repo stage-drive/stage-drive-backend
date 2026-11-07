@@ -89,6 +89,7 @@ function practiceRow(
       category: LicenseCategory.B,
       transmission: Transmission.MANUAL,
     },
+    meetingPlace: 'Автодром',
     ...overrides,
   };
 }
@@ -380,6 +381,7 @@ describe('PersonalScheduleService', () => {
           category: LicenseCategory.B,
           transmission: Transmission.MANUAL,
         },
+        meetingPlace: 'Автодром',
         cancelledAt: null,
         cancellationReason: null,
         updatedAt: NOW,

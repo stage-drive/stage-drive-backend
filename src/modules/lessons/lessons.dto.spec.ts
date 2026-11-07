@@ -12,6 +12,9 @@ import {
   LESSON_TOPIC_LENGTH_MESSAGE,
   LESSON_TOPIC_MAX_LENGTH,
   LESSON_TYPE_MESSAGE,
+  MEETING_PLACE_LENGTH_MESSAGE,
+  MEETING_PLACE_MAX_LENGTH,
+  MEETING_PLACE_TYPE_MESSAGE,
   PersonalScheduleQueryDto,
   REQUIRED_FIELD_MESSAGE,
   RescheduleLessonDto,
@@ -200,6 +203,27 @@ describe('UpdatePracticeLessonDto', () => {
     ).resolves.toEqual(fieldErrors(field, message));
   });
 
+  it('accepts a meeting place on its own and trims it', async () => {
+    await expect(
+      validate(UpdatePracticeLessonDto, { meetingPlace: '  Автодром  ' }),
+    ).resolves.toEqual({ meetingPlace: 'Автодром' });
+  });
+
+  it.each([
+    ['whitespace only', '   ', REQUIRED_FIELD_MESSAGE],
+    ['null', null, MEETING_PLACE_TYPE_MESSAGE],
+    [
+      'too long',
+      'а'.repeat(MEETING_PLACE_MAX_LENGTH + 1),
+      MEETING_PLACE_LENGTH_MESSAGE,
+    ],
+    ['markup', '<b>Автодром</b>', UNSAFE_TEXT_MESSAGE],
+  ])('rejects a meeting place that is %s', async (_, meetingPlace, message) => {
+    await expect(
+      errorsFor(UpdatePracticeLessonDto, { meetingPlace }),
+    ).resolves.toEqual(fieldErrors('meetingPlace', message));
+  });
+
   it.each(['studentId', 'scheduledAt', 'status'])(
     'rejects %s in the body',
     async (field) => {
@@ -340,12 +364,22 @@ describe('CreatePracticeLessonDto', () => {
   const body = {
     studentId: STUDENT_ID,
     scheduledAt: '2026-11-03T10:00:00+02:00',
+    meetingPlace: 'Автодром',
   };
 
-  it('accepts only studentId and scheduledAt', async () => {
+  it('accepts only studentId, scheduledAt and meetingPlace', async () => {
     await expect(validate(CreatePracticeLessonDto, body)).resolves.toEqual(
       body,
     );
+  });
+
+  it('trims the meeting place', async () => {
+    await expect(
+      validate(CreatePracticeLessonDto, {
+        ...body,
+        meetingPlace: '  Автодром  ',
+      }),
+    ).resolves.toEqual(body);
   });
 
   it('accepts instructorId, carId and durationMin', async () => {
@@ -371,6 +405,17 @@ describe('CreatePracticeLessonDto', () => {
     ['instructorId', 'abc', 'instructorId має бути UUID.'],
     ['carId', null, 'carId має бути UUID.'],
     ['durationMin', 60.5, LESSON_DURATION_MESSAGE],
+    ['meetingPlace', undefined, REQUIRED_FIELD_MESSAGE],
+    ['meetingPlace', null, REQUIRED_FIELD_MESSAGE],
+    ['meetingPlace', '', REQUIRED_FIELD_MESSAGE],
+    ['meetingPlace', '   ', REQUIRED_FIELD_MESSAGE],
+    ['meetingPlace', 5, MEETING_PLACE_TYPE_MESSAGE],
+    [
+      'meetingPlace',
+      'а'.repeat(MEETING_PLACE_MAX_LENGTH + 1),
+      MEETING_PLACE_LENGTH_MESSAGE,
+    ],
+    ['meetingPlace', '<b>Автодром</b>', UNSAFE_TEXT_MESSAGE],
   ])('rejects %s = %p', async (field, value, message) => {
     await expect(
       errorsFor(CreatePracticeLessonDto, { ...body, [field]: value }),

@@ -129,6 +129,7 @@ describe('LessonsService', () => {
       scheduledAt: new Date('2026-11-02T08:00:00.000Z'),
       durationMin: 60,
       status: LessonStatus.SCHEDULED as LessonStatus,
+      meetingPlace: 'Автодром' as string | null,
       cancelledAt: null as Date | null,
       cancellationReason: null as string | null,
       updatedAt: new Date('2026-10-20T09:00:00.000Z'),
@@ -335,6 +336,7 @@ describe('LessonsService', () => {
           category: LicenseCategory.B,
           transmission: Transmission.MANUAL,
         },
+        meetingPlace: 'Автодром',
         cancelledAt: null,
         cancellationReason: null,
         updatedAt: new Date('2026-10-20T09:00:00.000Z'),
@@ -791,6 +793,108 @@ describe('LessonsService', () => {
       expect(logged).not.toContain('Марія');
       expect(logged).not.toContain('Олег');
     });
+
+    describe('meeting place', () => {
+      it('lets the instructor change only the meeting place without schedule checks', async () => {
+        const result = await service.updatePractice(
+          instructorActor as never,
+          'lesson-1',
+          { meetingPlace: 'Біля офісу автошколи' },
+        );
+
+        expect(updateData(prisma.drivingLesson.update)).toEqual({
+          meetingPlace: 'Біля офісу автошколи',
+        });
+        expect(result.meetingPlace).toBe('Біля офісу автошколи');
+        expect(prisma.$executeRaw).not.toHaveBeenCalled();
+        expect(prisma.drivingLesson.findMany).not.toHaveBeenCalled();
+        expect(prisma.car.findUnique).not.toHaveBeenCalled();
+        expect(prisma.user.findUnique).not.toHaveBeenCalled();
+      });
+
+      it('allows it even when the car is in maintenance and the instructor is blocked', async () => {
+        givenPractice(
+          practiceRow({ instructor: { status: UserStatus.BLOCKED } }),
+        );
+        prisma.car.findUnique.mockResolvedValue({
+          ...availableCar,
+          status: CarStatus.MAINTENANCE,
+        });
+
+        await service.updatePractice(admin as never, 'lesson-1', {
+          meetingPlace: 'Біля офісу автошколи',
+        });
+
+        expect(prisma.drivingLesson.update).toHaveBeenCalledTimes(1);
+      });
+
+      it("does not take the student's car into a lesson without one", async () => {
+        givenPractice(practiceRow({ lesson: { carId: null, car: null } }));
+
+        await service.updatePractice(admin as never, 'lesson-1', {
+          meetingPlace: 'Біля офісу автошколи',
+        });
+
+        expect(updateData(prisma.drivingLesson.update)).toEqual({
+          meetingPlace: 'Біля офісу автошколи',
+        });
+        expect(prisma.car.findUnique).not.toHaveBeenCalled();
+      });
+
+      it('still checks the schedule when the duration changes too', async () => {
+        await service.updatePractice(admin as never, 'lesson-1', {
+          meetingPlace: 'Біля офісу автошколи',
+          durationMin: 90,
+        });
+
+        expect(updateData(prisma.drivingLesson.update)).toEqual({
+          durationMin: 90,
+          meetingPlace: 'Біля офісу автошколи',
+        });
+        expect(prisma.$executeRaw).toHaveBeenCalled();
+        expect(prisma.car.findUnique).toHaveBeenCalled();
+      });
+
+      it('refuses a cancelled lesson', async () => {
+        givenPractice(
+          practiceRow({ lesson: { status: LessonStatus.CANCELLED } }),
+        );
+
+        const error = await caught(
+          service.updatePractice(admin as never, 'lesson-1', {
+            meetingPlace: 'Біля офісу автошколи',
+          }),
+        );
+
+        expect(error).toBeInstanceOf(ConflictException);
+        expect(prisma.drivingLesson.update).not.toHaveBeenCalled();
+      });
+
+      it('skips the write when the meeting place is the same', async () => {
+        const result = await service.updatePractice(
+          admin as never,
+          'lesson-1',
+          {
+            meetingPlace: 'Автодром',
+          },
+        );
+
+        expect(result.meetingPlace).toBe('Автодром');
+        expect(prisma.drivingLesson.update).not.toHaveBeenCalled();
+        expect(log).not.toHaveBeenCalled();
+      });
+
+      it('logs the changed field but not the address', async () => {
+        await service.updatePractice(admin as never, 'lesson-1', {
+          meetingPlace: 'Біля офісу автошколи',
+        });
+
+        expect(log).toHaveBeenCalledWith(
+          'Lesson updated type=PRACTICE lessonId=lesson-1 fields=meetingPlace ' +
+            'scheduledAt=2026-11-02T08:00:00.000Z actorId=admin-1 organizationId=org-1',
+        );
+      });
+    });
   });
 
   describe('theory', () => {
@@ -1114,6 +1218,7 @@ describe('LessonsService', () => {
             category: LicenseCategory.B,
             transmission: Transmission.MANUAL,
           },
+          meetingPlace: 'Автодром',
           cancelledAt: NOW,
           cancellationReason: 'Авто на ремонті',
           updatedAt: new Date('2026-10-20T09:00:00.000Z'),
@@ -1737,6 +1842,7 @@ describe('LessonsService', () => {
       const payload = {
         studentId: 'student-1',
         scheduledAt: '2026-11-03T10:00:00+02:00',
+        meetingPlace: 'Автодром, вул. Промислова, 5',
       };
 
       it("takes the instructor and car from the student's practice access", async () => {
@@ -1749,6 +1855,7 @@ describe('LessonsService', () => {
           carId: 'car-1',
           scheduledAt: new Date('2026-11-03T08:00:00.000Z'),
           durationMin: 60,
+          meetingPlace: 'Автодром, вул. Промислова, 5',
         });
         expect(result).toMatchObject({
           id: 'lesson-new',
@@ -1759,6 +1866,7 @@ describe('LessonsService', () => {
           durationMin: 60,
           student: { id: 'student-1', firstName: 'Марія', lastName: 'Коваль' },
           car: { id: 'car-1', plateNumber: 'AA1234BB' },
+          meetingPlace: 'Автодром, вул. Промислова, 5',
         });
       });
 

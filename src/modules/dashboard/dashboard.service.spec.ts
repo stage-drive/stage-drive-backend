@@ -661,26 +661,42 @@ describe('DashboardService', () => {
     });
   });
 
-  it('maps upcoming lessons with the student name', async () => {
+  it('maps upcoming lessons with the student name and meeting place', async () => {
     const scheduledAt = new Date('2026-10-05T09:00:00.000Z');
     prisma.drivingLesson.findMany.mockResolvedValueOnce([
       {
         id: 'lesson-1',
         studentId: 'student-1',
         scheduledAt,
+        meetingPlace: 'Автодром',
+        student: { firstName: 'Олена', lastName: 'Петренко' },
+      },
+      {
+        id: 'lesson-2',
+        studentId: 'student-1',
+        scheduledAt,
+        meetingPlace: null,
         student: { firstName: 'Олена', lastName: 'Петренко' },
       },
     ]);
 
     const result = await service.getInstructorDashboard(instructor as never);
 
-    expect(result.stats.upcomingLessonsTotal).toBe(1);
+    expect(result.stats.upcomingLessonsTotal).toBe(2);
     expect(result.upcomingLessons).toEqual([
       {
         id: 'lesson-1',
         studentId: 'student-1',
         studentName: 'Олена Петренко',
         scheduledAt,
+        meetingPlace: 'Автодром',
+      },
+      {
+        id: 'lesson-2',
+        studentId: 'student-1',
+        studentName: 'Олена Петренко',
+        scheduledAt,
+        meetingPlace: null,
       },
     ]);
   });

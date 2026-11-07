@@ -96,7 +96,7 @@ export const LESSON_INSTRUCTOR_CHANGE_MESSAGE =
 export const NO_THEORY_LESSON_FIELDS_MESSAGE =
   'Немає дозволених полів для оновлення (topic, durationMin).';
 export const NO_PRACTICE_LESSON_FIELDS_MESSAGE =
-  'Немає дозволених полів для оновлення (durationMin, instructorId, carId).';
+  'Немає дозволених полів для оновлення (durationMin, instructorId, carId, meetingPlace).';
 export const LESSON_NOT_CANCELLABLE_MESSAGE =
   'Скасувати можна лише заняття зі статусом SCHEDULED.';
 export const LESSON_CANCEL_STARTED_MESSAGE =
@@ -179,6 +179,7 @@ const practiceLessonSelect = {
   scheduledAt: true,
   durationMin: true,
   status: true,
+  meetingPlace: true,
   cancelledAt: true,
   cancellationReason: true,
   updatedAt: true,
@@ -211,6 +212,7 @@ type PracticeChange = {
   durationMin?: number;
   instructorId?: string;
   carId?: string;
+  meetingPlace?: string;
 };
 
 export function assertCanEditTheory(actor: User): void {
@@ -517,6 +519,7 @@ export class LessonsService {
           carId,
           scheduledAt,
           durationMin,
+          meetingPlace: payload.meetingPlace,
         },
         select: practiceLessonSelect,
       });
@@ -571,6 +574,7 @@ export class LessonsService {
       durationMin: payload.durationMin,
       instructorId: payload.instructorId,
       carId: payload.carId,
+      meetingPlace: payload.meetingPlace,
     });
   }
 
@@ -765,7 +769,13 @@ export class LessonsService {
       const lesson = await this.lockPracticeForChange(tx, actor, lessonId);
       assertEditable(lesson.status);
 
-      // Старе заняття без авто бере авто, призначене студенту.
+      // Старе заняття без авто бере авто, призначене студенту, але лише разом
+      // зі зміною розкладу: правка самого місця зустрічі розклад не чіпає.
+      const touchesSchedule =
+        change.scheduledAt !== undefined ||
+        change.durationMin !== undefined ||
+        change.instructorId !== undefined ||
+        change.carId !== undefined;
       const next = {
         scheduledAt: change.scheduledAt ?? lesson.scheduledAt,
         durationMin: change.durationMin ?? lesson.durationMin,
@@ -773,8 +783,9 @@ export class LessonsService {
         carId:
           change.carId ??
           lesson.carId ??
-          lesson.student.studentProfile?.carId ??
-          null,
+          (touchesSchedule
+            ? (lesson.student.studentProfile?.carId ?? null)
+            : null),
       };
       const data: PracticeChange = {};
       if (next.scheduledAt.getTime() !== lesson.scheduledAt.getTime()) {
@@ -789,41 +800,56 @@ export class LessonsService {
       if (next.carId !== null && next.carId !== lesson.carId) {
         data.carId = next.carId;
       }
+      if (
+        change.meetingPlace !== undefined &&
+        change.meetingPlace !== lesson.meetingPlace
+      ) {
+        data.meetingPlace = change.meetingPlace;
+      }
       if (Object.keys(data).length === 0) {
         return { lesson, changed: [] as string[] };
       }
 
-      assertStartsInFuture(
-        next.scheduledAt,
-        now,
-        change.scheduledAt !== undefined,
-      );
-      const profile = requirePracticeProfile(lesson.student);
-      if (next.instructorId === lesson.instructorId) {
-        assertInstructorActive(lesson.instructor);
-      } else {
-        await this.requireInstructor(
-          tx,
-          actor.organizationId,
-          next.instructorId,
+      // Зміна лише місця зустрічі не перевіряє розклад, як зміна лише topic
+      // у теорії: її можна внести, навіть коли авто на ремонті.
+      const scheduleChanged =
+        data.scheduledAt !== undefined ||
+        data.durationMin !== undefined ||
+        data.instructorId !== undefined ||
+        data.carId !== undefined;
+      if (scheduleChanged) {
+        assertStartsInFuture(
+          next.scheduledAt,
+          now,
+          change.scheduledAt !== undefined,
         );
-      }
-      if (next.carId === null) {
-        throw new ConflictException(PRACTICE_CAR_REQUIRED_MESSAGE);
-      }
-      await this.requirePracticeCar(tx, actor.organizationId, next.carId, {
-        instructorId: next.instructorId,
-        category: profile.category,
-        transmission: profile.transmission,
-      });
+        const profile = requirePracticeProfile(lesson.student);
+        if (next.instructorId === lesson.instructorId) {
+          assertInstructorActive(lesson.instructor);
+        } else {
+          await this.requireInstructor(
+            tx,
+            actor.organizationId,
+            next.instructorId,
+          );
+        }
+        if (next.carId === null) {
+          throw new ConflictException(PRACTICE_CAR_REQUIRED_MESSAGE);
+        }
+        await this.requirePracticeCar(tx, actor.organizationId, next.carId, {
+          instructorId: next.instructorId,
+          category: profile.category,
+          transmission: profile.transmission,
+        });
 
-      await this.assertPracticeSlotFree(tx, actor, {
-        lessonId: lesson.id,
-        instructorId: next.instructorId,
-        carId: next.carId,
-        studentId: lesson.studentId,
-        slot: lessonSlot(next.scheduledAt, next.durationMin),
-      });
+        await this.assertPracticeSlotFree(tx, actor, {
+          lessonId: lesson.id,
+          instructorId: next.instructorId,
+          carId: next.carId,
+          studentId: lesson.studentId,
+          slot: lessonSlot(next.scheduledAt, next.durationMin),
+        });
+      }
 
       const saved = await tx.drivingLesson.update({
         where: { id: lesson.id },
