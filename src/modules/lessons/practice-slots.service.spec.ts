@@ -8,8 +8,10 @@ import {
 } from '@nestjs/common';
 import {
   CarStatus,
+  LessonStatus,
   LicenseCategory,
   Prisma,
+  TrainingStatus,
   Transmission,
   User,
   UserRole,
@@ -26,13 +28,16 @@ import {
   CAR_NOT_ASSIGNED_MESSAGE,
   CAR_NOT_AVAILABLE_MESSAGE,
   INSTRUCTOR_CAR_MISMATCH_MESSAGE,
+  STUDENT_NOT_FOUND_MESSAGE,
 } from '../students/students.service';
 import {
   SCHEDULE_RANGE_LENGTH_MESSAGE,
   SCHEDULE_RANGE_ORDER_MESSAGE,
 } from './lessons.dto';
+import { STUDENT_NOT_IN_PRACTICE_MESSAGE } from './practice-rules';
 import {
   NO_SLOT_FIELDS_MESSAGE,
+  PRACTICE_PROFILE_INCOMPLETE_MESSAGE,
   PracticeSlotsService,
   SLOT_ALREADY_STARTED_MESSAGE,
   SLOT_IN_PAST_MESSAGE,
@@ -108,6 +113,32 @@ describe('PracticeSlotsService', () => {
     };
   }
 
+  /** Рядок practiceStudentSelect: студент з допуском PRACTICE. */
+  function practiceStudent(
+    overrides: object = {},
+    profile: object | null = {},
+  ) {
+    return {
+      id: 'student-1',
+      firstName: 'Ірина',
+      lastName: 'Коваль',
+      status: UserStatus.ACTIVE as UserStatus,
+      deletedAt: null as Date | null,
+      studentProfile:
+        profile === null
+          ? null
+          : {
+              trainingStatus: TrainingStatus.PRACTICE as TrainingStatus,
+              category: LicenseCategory.B as LicenseCategory | null,
+              transmission: Transmission.MANUAL as Transmission | null,
+              instructorId: 'instructor-1' as string | null,
+              carId: 'car-1' as string | null,
+              ...profile,
+            },
+      ...overrides,
+    };
+  }
+
   const prisma = {
     organization: { findUnique: jest.fn() },
     practiceSlot: {
@@ -118,7 +149,8 @@ describe('PracticeSlotsService', () => {
       delete: jest.fn(),
     },
     drivingLesson: { findMany: jest.fn() },
-    user: { findUnique: jest.fn() },
+    lesson: { findMany: jest.fn() },
+    user: { findUnique: jest.fn(), findFirst: jest.fn() },
     car: { findUnique: jest.fn() },
     $queryRaw: jest.fn(),
     $executeRaw: jest.fn(),
@@ -166,7 +198,9 @@ describe('PracticeSlotsService', () => {
     );
     prisma.practiceSlot.delete.mockResolvedValue(slotRow());
     prisma.drivingLesson.findMany.mockResolvedValue([]);
+    prisma.lesson.findMany.mockResolvedValue([]);
     prisma.user.findUnique.mockResolvedValue(activeInstructor);
+    prisma.user.findFirst.mockResolvedValue(practiceStudent());
     prisma.car.findUnique.mockResolvedValue(availableCar);
     prisma.$queryRaw.mockResolvedValue([]);
     prisma.$executeRaw.mockResolvedValue(1);
@@ -837,6 +871,287 @@ describe('PracticeSlotsService', () => {
       });
       expectNoDatabaseCalls();
     });
+  });
+
+  describe('listAvailable', () => {
+    const student = actor(UserRole.STUDENT, 'student-1');
+
+    function slotQuery() {
+      const [args] = prisma.practiceSlot.findMany.mock.calls[0] as [
+        { where: object; orderBy: object },
+      ];
+      return args;
+    }
+
+    it('returns free slots of the student instructor with cars that fit the student', async () => {
+      prisma.practiceSlot.findMany.mockResolvedValue([slotRow()]);
+
+      const result = await service.listAvailable(student, {});
+
+      const range = { start: NOW, end: new Date(NOW.getTime() + 30 * DAY_MS) };
+      expect(slotQuery()).toEqual({
+        where: {
+          organizationId: 'org-1',
+          instructorId: 'instructor-1',
+          scheduledAt: { gt: NOW, gte: range.start, lt: range.end },
+          instructor: {
+            is: {
+              role: UserRole.INSTRUCTOR,
+              status: UserStatus.ACTIVE,
+              deletedAt: null,
+            },
+          },
+          car: {
+            is: {
+              status: CarStatus.AVAILABLE,
+              instructorId: 'instructor-1',
+              category: LicenseCategory.B,
+              transmission: Transmission.MANUAL,
+            },
+          },
+        },
+        select: expect.objectContaining({ instructorId: true, carId: true }),
+        orderBy: [{ scheduledAt: 'asc' }, { id: 'asc' }],
+      });
+      expect(result).toEqual({
+        from: range.start,
+        to: range.end,
+        timezone: 'Europe/Kyiv',
+        items: [
+          {
+            id: 'slot-1',
+            scheduledAt: new Date('2026-11-16T08:00:00.000Z'),
+            endsAt: new Date('2026-11-16T09:00:00.000Z'),
+            durationMin: 60,
+            instructor: {
+              id: 'instructor-1',
+              firstName: 'Олег',
+              lastName: 'Ткаченко',
+            },
+            car: {
+              id: 'car-1',
+              plateNumber: 'AA1234BB',
+              category: LicenseCategory.B,
+              transmission: Transmission.MANUAL,
+            },
+            createdAt: new Date('2026-11-01T09:00:00.000Z'),
+            updatedAt: new Date('2026-11-01T09:00:00.000Z'),
+          },
+        ],
+      });
+    });
+
+    it('reads the student from the token within the organization', async () => {
+      await service.listAvailable(student, {});
+
+      expect(prisma.user.findFirst).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: {
+            id: 'student-1',
+            organizationId: 'org-1',
+            role: UserRole.STUDENT,
+            deletedAt: null,
+            studentProfile: { is: { organizationId: 'org-1' } },
+          },
+        }),
+      );
+    });
+
+    it('hides slots that already started even when from is in the past', async () => {
+      await service.listAvailable(student, {
+        from: '2026-11-01T00:00:00Z',
+        to: '2026-11-08T00:00:00Z',
+      });
+
+      expect(slotQuery().where).toEqual(
+        expect.objectContaining({
+          scheduledAt: {
+            gt: NOW,
+            gte: new Date('2026-11-01T00:00:00Z'),
+            lt: new Date('2026-11-08T00:00:00Z'),
+          },
+        }),
+      );
+    });
+
+    it('skips the busy-time queries when there are no slots', async () => {
+      const result = await service.listAvailable(student, {});
+
+      expect(result.items).toEqual([]);
+      expect(prisma.drivingLesson.findMany).not.toHaveBeenCalled();
+      expect(prisma.lesson.findMany).not.toHaveBeenCalled();
+    });
+
+    it('reads busy time once for all slots: instructor, distinct cars, student', async () => {
+      prisma.practiceSlot.findMany.mockResolvedValue([
+        slotRow({ id: 'slot-1' }),
+        slotRow({
+          id: 'slot-2',
+          carId: 'car-2',
+          scheduledAt: new Date('2026-11-16T10:00:00.000Z'),
+          durationMin: 90,
+        }),
+        slotRow({
+          id: 'slot-3',
+          scheduledAt: new Date('2026-11-16T12:00:00.000Z'),
+        }),
+      ]);
+
+      await service.listAvailable(student, {});
+
+      expect(prisma.drivingLesson.findMany).toHaveBeenCalledTimes(1);
+      expect(prisma.lesson.findMany).toHaveBeenCalledTimes(1);
+      const [args] = prisma.drivingLesson.findMany.mock.calls[0] as [
+        { where: object },
+      ];
+      expect(args.where).toEqual({
+        organizationId: 'org-1',
+        status: LessonStatus.SCHEDULED,
+        scheduledAt: candidateWindow({
+          start: new Date('2026-11-16T08:00:00.000Z'),
+          end: new Date('2026-11-16T13:00:00.000Z'),
+        }),
+        OR: [
+          { instructorId: 'instructor-1' },
+          { carId: { in: ['car-1', 'car-2'] } },
+          { studentId: 'student-1' },
+        ],
+      });
+    });
+
+    it('drops slots taken by a lesson of the instructor, the car or the student and by group theory', async () => {
+      prisma.practiceSlot.findMany.mockResolvedValue([
+        // 08:00–09:00: an instructor lesson for another student (booked).
+        slotRow({ id: 'slot-instructor' }),
+        // 10:00–11:00: the car is used by another instructor.
+        slotRow({
+          id: 'slot-car',
+          scheduledAt: new Date('2026-11-16T10:00:00.000Z'),
+        }),
+        // 12:00–13:00: the student drives with another instructor.
+        slotRow({
+          id: 'slot-student',
+          scheduledAt: new Date('2026-11-16T12:00:00.000Z'),
+        }),
+        // 14:00–15:00: theory of the student group.
+        slotRow({
+          id: 'slot-theory',
+          scheduledAt: new Date('2026-11-16T14:00:00.000Z'),
+        }),
+        // 16:00–17:00: free; a lesson of the instructor ends right at 16:00.
+        slotRow({
+          id: 'slot-free',
+          scheduledAt: new Date('2026-11-16T16:00:00.000Z'),
+        }),
+      ]);
+      const lesson = (overrides: object) => ({
+        instructorId: 'instructor-2',
+        carId: 'car-2',
+        studentId: 'student-2',
+        durationMin: 60,
+        ...overrides,
+      });
+      prisma.drivingLesson.findMany.mockResolvedValue([
+        lesson({
+          instructorId: 'instructor-1',
+          carId: 'car-1',
+          scheduledAt: new Date('2026-11-16T08:00:00.000Z'),
+        }),
+        lesson({
+          carId: 'car-1',
+          scheduledAt: new Date('2026-11-16T10:30:00.000Z'),
+        }),
+        lesson({
+          studentId: 'student-1',
+          scheduledAt: new Date('2026-11-16T12:00:00.000Z'),
+        }),
+        lesson({
+          instructorId: 'instructor-1',
+          scheduledAt: new Date('2026-11-16T15:00:00.000Z'),
+        }),
+      ]);
+      prisma.lesson.findMany.mockResolvedValue([
+        {
+          scheduledAt: new Date('2026-11-16T13:30:00.000Z'),
+          durationMin: 90,
+        },
+      ]);
+
+      const result = await service.listAvailable(student, {});
+
+      expect(result.items.map((item) => item.id)).toEqual(['slot-free']);
+    });
+
+    it.each([
+      UserRole.ADMIN,
+      UserRole.INSTRUCTOR,
+      UserRole.TEACHER,
+      UserRole.OWNER,
+    ])('rejects %s with 403 before touching the database', async (role) => {
+      const error = await caught(service.listAvailable(actor(role), {}));
+
+      expect(error).toBeInstanceOf(ForbiddenException);
+      expectNoDatabaseCalls();
+      expect(prisma.user.findFirst).not.toHaveBeenCalled();
+    });
+
+    it('rejects to before from with 400 before touching the database', async () => {
+      const error = await caught(
+        service.listAvailable(student, {
+          from: '2026-11-17T00:00:00Z',
+          to: '2026-11-16T00:00:00Z',
+        }),
+      );
+
+      expect(error).toBeInstanceOf(BadRequestException);
+      expect(error.getResponse()).toEqual({
+        statusCode: 400,
+        errors: [{ field: 'to', message: SCHEDULE_RANGE_ORDER_MESSAGE }],
+      });
+      expectNoDatabaseCalls();
+    });
+
+    it('returns 404 when the student profile is missing', async () => {
+      prisma.user.findFirst.mockResolvedValue(null);
+
+      const error = await caught(service.listAvailable(student, {}));
+
+      expect(error).toBeInstanceOf(NotFoundException);
+      expect(error.message).toBe(STUDENT_NOT_FOUND_MESSAGE);
+      expect(prisma.practiceSlot.findMany).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      [
+        'without practice access',
+        practiceStudent({}, { trainingStatus: TrainingStatus.ACTIVE }),
+      ],
+      ['who is BLOCKED', practiceStudent({ status: UserStatus.BLOCKED })],
+      ['without a student profile', practiceStudent({}, null)],
+    ])('returns 409 for a student %s', async (_, row) => {
+      prisma.user.findFirst.mockResolvedValue(row);
+
+      const error = await caught(service.listAvailable(student, {}));
+
+      expect(error).toBeInstanceOf(ConflictException);
+      expect(error.message).toBe(STUDENT_NOT_IN_PRACTICE_MESSAGE);
+      expect(prisma.practiceSlot.findMany).not.toHaveBeenCalled();
+    });
+
+    it.each(['instructorId', 'category', 'transmission'])(
+      'returns 409 for a PRACTICE student without %s',
+      async (field) => {
+        prisma.user.findFirst.mockResolvedValue(
+          practiceStudent({}, { [field]: null }),
+        );
+
+        const error = await caught(service.listAvailable(student, {}));
+
+        expect(error).toBeInstanceOf(ConflictException);
+        expect(error.message).toBe(PRACTICE_PROFILE_INCOMPLETE_MESSAGE);
+        expect(prisma.practiceSlot.findMany).not.toHaveBeenCalled();
+      },
+    );
   });
 
   describe('findOne', () => {

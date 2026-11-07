@@ -3,14 +3,18 @@ import { EnrollmentStatus, LessonStatus } from '@prisma/client';
 import {
   LESSON_SCHEDULE_CONFLICT_MESSAGE,
   LessonConflict,
+  SlotBlocker,
   candidateWindow,
   findPracticeConflicts,
   findSlotConflicts,
+  findStudentSlotBlockers,
   findTheoryConflicts,
+  isSlotFree,
   lessonSlot,
   overlaps,
   scheduleConflict,
   sortConflicts,
+  spanOf,
 } from './schedule-conflicts';
 
 const at = (iso: string) => new Date(iso);
@@ -505,5 +509,151 @@ describe('findSlotConflicts', () => {
       'lesson-late',
       'slot-car',
     ]);
+  });
+});
+
+describe('spanOf', () => {
+  it('runs from the earliest start to the latest end, not the last row end', () => {
+    const span = spanOf([
+      { scheduledAt: at('2026-11-03T10:00:00Z'), durationMin: 240 },
+      { scheduledAt: at('2026-11-03T11:00:00Z'), durationMin: 60 },
+      { scheduledAt: at('2026-11-03T09:00:00Z'), durationMin: 30 },
+    ]);
+
+    expect(span).toEqual({
+      start: at('2026-11-03T09:00:00Z'),
+      end: at('2026-11-03T14:00:00Z'),
+    });
+  });
+});
+
+describe('findStudentSlotBlockers', () => {
+  const tx = {
+    drivingLesson: { findMany: jest.fn() },
+    lesson: { findMany: jest.fn() },
+  };
+  const input = {
+    organizationId: 'org-1',
+    studentId: 'student-1',
+    instructorId: 'instructor-1',
+    carIds: ['car-1', 'car-2'],
+    interval: {
+      start: at('2026-11-03T10:00:00Z'),
+      end: at('2026-11-03T14:00:00Z'),
+    },
+  };
+
+  beforeEach(() => {
+    tx.drivingLesson.findMany.mockReset().mockResolvedValue([]);
+    tx.lesson.findMany.mockReset().mockResolvedValue([]);
+  });
+
+  it('queries SCHEDULED practice of the instructor, cars or student and theory of the student groups', async () => {
+    await findStudentSlotBlockers(tx as never, input);
+
+    const [practiceArgs] = tx.drivingLesson.findMany.mock.calls[0];
+    expect(practiceArgs.where).toEqual({
+      organizationId: 'org-1',
+      status: LessonStatus.SCHEDULED,
+      scheduledAt: candidateWindow(input.interval),
+      OR: [
+        { instructorId: 'instructor-1' },
+        { carId: { in: ['car-1', 'car-2'] } },
+        { studentId: 'student-1' },
+      ],
+    });
+    const [theoryArgs] = tx.lesson.findMany.mock.calls[0];
+    expect(theoryArgs.where).toEqual({
+      organizationId: 'org-1',
+      status: LessonStatus.SCHEDULED,
+      scheduledAt: candidateWindow(input.interval),
+      group: {
+        enrollments: {
+          some: { studentId: 'student-1', status: EnrollmentStatus.ACTIVE },
+        },
+      },
+    });
+  });
+
+  it('returns practice as is and theory as busy time of the student', async () => {
+    const practice = {
+      instructorId: 'instructor-1',
+      carId: null,
+      studentId: 'student-2',
+      scheduledAt: at('2026-11-03T10:00:00Z'),
+      durationMin: 60,
+    };
+    tx.drivingLesson.findMany.mockResolvedValue([practice]);
+    tx.lesson.findMany.mockResolvedValue([
+      { scheduledAt: at('2026-11-03T12:00:00Z'), durationMin: 90 },
+    ]);
+
+    await expect(findStudentSlotBlockers(tx as never, input)).resolves.toEqual([
+      practice,
+      {
+        instructorId: null,
+        carId: null,
+        studentId: 'student-1',
+        scheduledAt: at('2026-11-03T12:00:00Z'),
+        durationMin: 90,
+      },
+    ]);
+  });
+});
+
+describe('isSlotFree', () => {
+  // 10:00–11:00 UTC
+  const slot = {
+    instructorId: 'instructor-1',
+    carId: 'car-1',
+    scheduledAt: at('2026-11-03T10:00:00Z'),
+    durationMin: 60,
+  };
+  const blocker = (overrides: Partial<SlotBlocker>): SlotBlocker => ({
+    instructorId: 'instructor-2',
+    carId: 'car-2',
+    studentId: 'student-2',
+    scheduledAt: at('2026-11-03T10:30:00Z'),
+    durationMin: 60,
+    ...overrides,
+  });
+
+  it('is free with no blockers', () => {
+    expect(isSlotFree(slot, [], 'student-1')).toBe(true);
+  });
+
+  it.each([
+    [
+      'practice of the same instructor with another car',
+      { instructorId: 'instructor-1' },
+    ],
+    ['practice of another instructor with the same car', { carId: 'car-1' }],
+    [
+      'practice of the student with another instructor',
+      { studentId: 'student-1' },
+    ],
+    [
+      'theory of a student group',
+      { instructorId: null, carId: null, studentId: 'student-1' },
+    ],
+  ])('is busy with overlapping %s', (_, overrides) => {
+    expect(isSlotFree(slot, [blocker(overrides)], 'student-1')).toBe(false);
+  });
+
+  it('is free when an overlapping lesson shares no instructor, car or student', () => {
+    expect(isSlotFree(slot, [blocker({})], 'student-1')).toBe(true);
+  });
+
+  it.each([
+    ['ends when the slot starts', '2026-11-03T09:00:00Z'],
+    ['starts when the slot ends', '2026-11-03T11:00:00Z'],
+  ])('is free when a lesson of the instructor %s', (_, start) => {
+    expect(
+      isSlotFree(
+        slot,
+        [blocker({ instructorId: 'instructor-1', scheduledAt: at(start) })],
+        'student-1',
+      ),
+    ).toBe(true);
   });
 });

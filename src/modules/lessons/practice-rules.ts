@@ -3,6 +3,7 @@ import {
   CarStatus,
   LicenseCategory,
   Prisma,
+  TrainingStatus,
   Transmission,
   UserRole,
   UserStatus,
@@ -18,11 +19,53 @@ import {
   CAR_NOT_AVAILABLE_MESSAGE,
   INSTRUCTOR_CAR_MISMATCH_MESSAGE,
 } from '../students/students.service';
+import { lessonPersonSelect } from './lesson-view';
 
 /**
- * Перевірки інструктора й авто практики. Спільні для практичних занять
- * (LessonsService) і слотів (PracticeSlotsService).
+ * Перевірки студента, інструктора й авто практики. Спільні для практичних
+ * занять (LessonsService) і слотів (PracticeSlotsService).
  */
+
+export const STUDENT_NOT_IN_PRACTICE_MESSAGE =
+  'Студент має бути активним і мати допуск до практики (PRACTICE).';
+
+/** Студент практики з профілем: допуск, категорія, коробка, призначені інструктор і авто. */
+export const practiceStudentSelect = {
+  ...lessonPersonSelect,
+  status: true,
+  deletedAt: true,
+  studentProfile: {
+    select: {
+      trainingStatus: true,
+      category: true,
+      transmission: true,
+      instructorId: true,
+      carId: true,
+    },
+  },
+} satisfies Prisma.UserSelect;
+
+export type PracticeStudentRow = Prisma.UserGetPayload<{
+  select: typeof practiceStudentSelect;
+}>;
+
+/**
+ * Допуск до практики вже має бути (PRACTICE). ACTIVE тут не підходить, хоча
+ * isEligibleForPractice у students його приймає: там перевіряється право
+ * отримати допуск.
+ */
+export function requirePracticeProfile(student: PracticeStudentRow) {
+  const profile = student.studentProfile;
+  if (
+    student.deletedAt ||
+    student.status !== UserStatus.ACTIVE ||
+    !profile ||
+    profile.trainingStatus !== TrainingStatus.PRACTICE
+  ) {
+    throw new ConflictException(STUDENT_NOT_IN_PRACTICE_MESSAGE);
+  }
+  return profile;
+}
 
 export function assertInstructorActive(instructor: {
   role: UserRole;

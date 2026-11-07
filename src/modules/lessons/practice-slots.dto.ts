@@ -159,6 +159,32 @@ export class PracticeSlotListQueryDto {
   carId?: string;
 }
 
+/**
+ * Query списку доступних слотів. Окремий клас, а не PracticeSlotListQueryDto:
+ * студент не передає instructorId чи carId, forbidNonWhitelisted дасть 400.
+ */
+export class AvailablePracticeSlotQueryDto {
+  @ApiPropertyOptional({
+    format: 'date-time',
+    example: '2026-11-16T00:00:00+02:00',
+    description:
+      'Початок вікна, ISO 8601 з часовим зсувом (Z або ±HH:MM). За замовчуванням — поточний момент. ' +
+      'Слоти, що вже почалися, не повертаються. Знак + кодуйте як %2B, інакше він прийде пробілом.',
+  })
+  @IsScheduleBoundary()
+  from?: string;
+
+  @ApiPropertyOptional({
+    format: 'date-time',
+    example: '2026-11-23T00:00:00+02:00',
+    description:
+      `Кінець вікна, не включно. За замовчуванням — from + ${SCHEDULE_DEFAULT_RANGE_DAYS} днів. ` +
+      `Має бути пізніше за from, але не більше ніж на ${SCHEDULE_MAX_RANGE_DAYS} днів.`,
+  })
+  @IsScheduleBoundary()
+  to?: string;
+}
+
 export class PracticeSlotDto {
   @ApiProperty()
   id: string;
@@ -210,7 +236,8 @@ export class PracticeSlotListDto {
   @ApiProperty({
     type: [PracticeSlotDto],
     description:
-      'Слоти, що перетинають вікно [from, to), за зростанням scheduledAt.',
+      'Слоти за зростанням scheduledAt. Загальний список — слоти, що перетинають вікно [from, to); ' +
+      'список доступних — вільні слоти, що починаються у вікні й у майбутньому.',
   })
   items: PracticeSlotDto[];
 }

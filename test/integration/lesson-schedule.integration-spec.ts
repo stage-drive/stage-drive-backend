@@ -18,6 +18,7 @@ import {
   Transmission,
   User,
   UserRole,
+  UserStatus,
 } from '@prisma/client';
 import {
   PostgreSqlContainer,
@@ -55,6 +56,7 @@ import {
   PracticeSlotsService,
   SLOT_ALREADY_STARTED_MESSAGE,
 } from '../../src/modules/lessons/practice-slots.service';
+import { STUDENT_NOT_IN_PRACTICE_MESSAGE } from '../../src/modules/lessons/practice-rules';
 import type { LessonConflict } from '../../src/modules/lessons/schedule-conflicts';
 import { StudentsService } from '../../src/modules/students/students.service';
 import type { PrismaService } from '../../src/prisma/prisma.service';
@@ -2067,6 +2069,126 @@ describe('Lesson schedule (integration, real Postgres)', () => {
         commit.resolve();
         await booking.catch(() => undefined);
       }
+    });
+
+    // Prisma-фільтри за складеними зв'язками instructor і car мок не
+    // перевіряє, тож тут — на реальній БД.
+    describe('available for a student', () => {
+      const day = () => ({
+        from: at(0).toISOString(),
+        to: at(24).toISOString(),
+      });
+
+      const availableIds = async (student: User) =>
+        (await slotsService.listAvailable(student, day())).items.map(
+          (item) => item.id,
+        );
+
+      it('lists slots of the student instructor only, never of another school', async () => {
+        const school = await createSchool();
+        const other = await createSchool();
+        const own = await slot(school, { scheduledAt: at(10) });
+        await slot(school, {
+          scheduledAt: at(12),
+          instructorId: school.otherInstructor.id,
+          carId: school.car3.id,
+        });
+        await slot(other, { scheduledAt: at(14) });
+
+        await expect(availableIds(school.student1)).resolves.toEqual([own.id]);
+      });
+
+      it('hides a slot whose car is unavailable, reassigned or does not fit the student', async () => {
+        const school = await createSchool();
+        const onCar1 = await slot(school, { scheduledAt: at(10) });
+        const onCar2 = await slot(school, {
+          scheduledAt: at(12),
+          carId: school.car2.id,
+        });
+
+        // Будь-яке авто інструктора студента з його категорією й коробкою.
+        await expect(availableIds(school.student1)).resolves.toEqual([
+          onCar1.id,
+          onCar2.id,
+        ]);
+
+        await prisma.car.update({
+          where: { id: school.car1.id },
+          data: { status: CarStatus.MAINTENANCE },
+        });
+        await expect(availableIds(school.student1)).resolves.toEqual([
+          onCar2.id,
+        ]);
+
+        await prisma.car.update({
+          where: { id: school.car2.id },
+          data: { transmission: Transmission.AUTOMATIC },
+        });
+        await expect(availableIds(school.student1)).resolves.toEqual([]);
+
+        await prisma.car.update({
+          where: { id: school.car1.id },
+          data: {
+            status: CarStatus.AVAILABLE,
+            instructorId: school.otherInstructor.id,
+          },
+        });
+        await expect(availableIds(school.student1)).resolves.toEqual([]);
+      });
+
+      it('hides slots of a BLOCKED instructor', async () => {
+        const school = await createSchool();
+        await slot(school, { scheduledAt: at(10) });
+
+        await prisma.user.update({
+          where: { id: school.instructor.id },
+          data: { status: UserStatus.BLOCKED },
+        });
+
+        await expect(availableIds(school.student1)).resolves.toEqual([]);
+      });
+
+      it('hides a slot taken by a lesson of another student and shows it again after cancellation', async () => {
+        const school = await createSchool();
+        const taken = await slot(school, { scheduledAt: at(10) });
+        const free = await slot(school, { scheduledAt: at(12) });
+
+        // Пряме заняття того самого інструктора з іншим авто (car2 студента 2).
+        const lesson = await lessonsService.createPractice(school.admin, {
+          studentId: school.student2.id,
+          scheduledAt: at(10, 30).toISOString(),
+          meetingPlace: 'Автодром',
+        });
+        await expect(availableIds(school.student1)).resolves.toEqual([free.id]);
+
+        await lessonsService.cancelPractice(school.admin, lesson.id, {});
+        await expect(availableIds(school.student1)).resolves.toEqual([
+          taken.id,
+          free.id,
+        ]);
+      });
+
+      it('hides a slot during theory of the student group', async () => {
+        const school = await createSchool();
+        await slot(school, { scheduledAt: at(10) });
+        const free = await slot(school, { scheduledAt: at(12) });
+        await school.theory(at(9, 30), 90);
+
+        await expect(availableIds(school.student1)).resolves.toEqual([free.id]);
+      });
+
+      it('rejects a student without practice access with 409', async () => {
+        const school = await createSchool();
+        await slot(school, { scheduledAt: at(10) });
+        await prisma.student.update({
+          where: { userId: school.student1.id },
+          data: { trainingStatus: TrainingStatus.ACTIVE },
+        });
+
+        await expect(
+          slotsService.listAvailable(school.student1, day()),
+        ).rejects.toThrow(STUDENT_NOT_IN_PRACTICE_MESSAGE);
+      });
     });
   });
 });

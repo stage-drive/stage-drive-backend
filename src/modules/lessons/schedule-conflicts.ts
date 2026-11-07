@@ -316,3 +316,110 @@ export async function findSlotConflicts(
   }
   return sortConflicts(conflicts);
 }
+
+/** Заняття, що може зайняти час слоту. У теорії instructorId і carId — null. */
+export type SlotBlocker = {
+  instructorId: string | null;
+  carId: string | null;
+  studentId: string | null;
+  scheduledAt: Date;
+  durationMin: number;
+};
+
+/** Інтервал від найранішого початку до найпізнішого кінця. rows не порожній. */
+export function spanOf(
+  rows: readonly { scheduledAt: Date; durationMin: number }[],
+): ScheduleSlot {
+  const start = Math.min(...rows.map((row) => row.scheduledAt.getTime()));
+  const end = Math.max(
+    ...rows.map((row) => lessonEnd(row.scheduledAt, row.durationMin).getTime()),
+  );
+  return { start: new Date(start), end: new Date(end) };
+}
+
+/**
+ * Зайнятість для списку доступних слотів: SCHEDULED-практика інструктора,
+ * цих авто чи студента і SCHEDULED-теорія груп з ACTIVE-зарахуванням
+ * студента. Ті самі правила, що в findPracticeConflicts, але одним набором
+ * запитів на всі слоти.
+ */
+export async function findStudentSlotBlockers(
+  tx: Prisma.TransactionClient,
+  input: {
+    organizationId: string;
+    studentId: string;
+    instructorId: string;
+    carIds: readonly string[];
+    interval: ScheduleSlot;
+  },
+): Promise<SlotBlocker[]> {
+  const window = candidateWindow(input.interval);
+
+  const practice = await tx.drivingLesson.findMany({
+    where: {
+      organizationId: input.organizationId,
+      status: LessonStatus.SCHEDULED,
+      scheduledAt: window,
+      OR: [
+        { instructorId: input.instructorId },
+        { carId: { in: [...input.carIds] } },
+        { studentId: input.studentId },
+      ],
+    },
+    select: {
+      instructorId: true,
+      carId: true,
+      studentId: true,
+      scheduledAt: true,
+      durationMin: true,
+    },
+  });
+
+  const theory = await tx.lesson.findMany({
+    where: {
+      organizationId: input.organizationId,
+      status: LessonStatus.SCHEDULED,
+      scheduledAt: window,
+      group: {
+        enrollments: {
+          some: { studentId: input.studentId, status: EnrollmentStatus.ACTIVE },
+        },
+      },
+    },
+    select: { scheduledAt: true, durationMin: true },
+  });
+
+  return [
+    ...practice,
+    ...theory.map((row) => ({
+      ...row,
+      instructorId: null,
+      carId: null,
+      studentId: input.studentId,
+    })),
+  ];
+}
+
+/**
+ * Слот вільний, якщо жодне заняття того самого інструктора, авто чи
+ * студента його не перетинає. Межі напіввідкриті, як в overlaps.
+ */
+export function isSlotFree(
+  slot: {
+    instructorId: string;
+    carId: string;
+    scheduledAt: Date;
+    durationMin: number;
+  },
+  blockers: readonly SlotBlocker[],
+  studentId: string,
+): boolean {
+  const interval = lessonSlot(slot.scheduledAt, slot.durationMin);
+  return !blockers.some(
+    (row) =>
+      overlaps(interval, row) &&
+      (row.instructorId === slot.instructorId ||
+        row.carId === slot.carId ||
+        row.studentId === studentId),
+  );
+}
