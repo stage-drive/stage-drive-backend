@@ -11,7 +11,6 @@ import {
   GroupStatus,
   LessonStatus,
   Prisma,
-  TrainingStatus,
   User,
   UserRole,
   UserStatus,
@@ -45,8 +44,10 @@ import {
 } from './lessons.dto';
 import {
   assertInstructorActive,
+  practiceStudentSelect,
   requireInstructor,
   requirePracticeCar,
+  requirePracticeProfile,
 } from './practice-rules';
 import {
   ScheduleSlot,
@@ -79,8 +80,8 @@ export const LESSON_OUTSIDE_GROUP_DATES_MESSAGE =
   'Дата заняття виходить за період навчання групи.';
 export const LESSON_TEACHER_NOT_ACTIVE_MESSAGE =
   'Викладач групи має бути в статусі ACTIVE.';
-export const STUDENT_NOT_IN_PRACTICE_MESSAGE =
-  'Студент має бути активним і мати допуск до практики (PRACTICE).';
+/** Живе в practice-rules.ts: його бере й PracticeSlotsService. */
+export { STUDENT_NOT_IN_PRACTICE_MESSAGE } from './practice-rules';
 export const PRACTICE_CAR_REQUIRED_MESSAGE =
   'Для практичного заняття потрібен автомобіль. Передайте carId.';
 export const LESSON_INSTRUCTOR_CHANGE_MESSAGE =
@@ -140,26 +141,6 @@ const theoryLessonSelect = {
 
 type TheoryLessonRow = Prisma.LessonGetPayload<{
   select: typeof theoryLessonSelect;
-}>;
-
-/** Студент практики з профілем: допуск, категорія, коробка, призначені інструктор і авто. */
-const practiceStudentSelect = {
-  ...lessonPersonSelect,
-  status: true,
-  deletedAt: true,
-  studentProfile: {
-    select: {
-      trainingStatus: true,
-      category: true,
-      transmission: true,
-      instructorId: true,
-      carId: true,
-    },
-  },
-} satisfies Prisma.UserSelect;
-
-type PracticeStudentRow = Prisma.UserGetPayload<{
-  select: typeof practiceStudentSelect;
 }>;
 
 /** Надмножина practiceLessonViewSelect: решта полів потрібна перевіркам запису. */
@@ -337,24 +318,6 @@ function assertTeacherActive(teacher: {
   if (teacher.deletedAt || teacher.status !== UserStatus.ACTIVE) {
     throw new ConflictException(LESSON_TEACHER_NOT_ACTIVE_MESSAGE);
   }
-}
-
-/**
- * Допуск до практики вже має бути (PRACTICE). ACTIVE тут не підходить, хоча
- * isEligibleForPractice у students його приймає: там перевіряється право
- * отримати допуск.
- */
-function requirePracticeProfile(student: PracticeStudentRow) {
-  const profile = student.studentProfile;
-  if (
-    student.deletedAt ||
-    student.status !== UserStatus.ACTIVE ||
-    !profile ||
-    profile.trainingStatus !== TrainingStatus.PRACTICE
-  ) {
-    throw new ConflictException(STUDENT_NOT_IN_PRACTICE_MESSAGE);
-  }
-  return profile;
 }
 
 @Injectable()

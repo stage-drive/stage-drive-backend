@@ -39,6 +39,7 @@ import {
   SCHEDULE_MAX_RANGE_DAYS,
 } from './lessons.dto';
 import {
+  AvailablePracticeSlotQueryDto,
   CreatePracticeSlotDto,
   PracticeSlotDto,
   PracticeSlotListDto,
@@ -46,6 +47,7 @@ import {
   UpdatePracticeSlotDto,
 } from './practice-slots.dto';
 import {
+  PRACTICE_SLOT_AVAILABLE_ROLES,
   PRACTICE_SLOT_MANAGE_ROLES,
   PRACTICE_SLOT_VIEW_ROLES,
   PracticeSlotsService,
@@ -140,6 +142,42 @@ export class PracticeSlotsController {
     @Query() query: PracticeSlotListQueryDto,
   ): Promise<PracticeSlotListDto> {
     return this.practiceSlotsService.list(user, query);
+  }
+
+  // Оголошено вище за GET :id: Nest реєструє маршрути в порядку оголошення,
+  // інакше /available потрапить у findOne і ParseUUIDPipe поверне 400.
+  @Get('available')
+  @Roles(...PRACTICE_SLOT_AVAILABLE_ROLES)
+  @ApiOperation({
+    summary: 'Доступні слоти практики для студента',
+    description:
+      'Слоти інструктора студента, що починаються у вікні [from, to) і в майбутньому: ' +
+      `за замовчуванням від поточного моменту на ${SCHEDULE_DEFAULT_RANGE_DAYS} днів, не довше ${SCHEDULE_MAX_RANGE_DAYS} днів. ` +
+      'Інструктор ACTIVE, авто AVAILABLE, закріплене за інструктором, з категорією й коробкою студента. ' +
+      'Час не зайнятий SCHEDULED-заняттями інструктора, авто чи студента (практика й теорія його груп). ' +
+      'Зайняті й недоступні слоти не повертаються. Робочий графік і недоступність інструктора поки не враховуються.',
+  })
+  @ApiOkResponse({ type: PracticeSlotListDto })
+  @ApiBadRequestResponse({
+    description:
+      'from чи to не ISO 8601 з часовим зсувом (знак + кодуйте як %2B), to не пізніше за from, ' +
+      `вікно довше ${SCHEDULE_MAX_RANGE_DAYS} днів, або невідомий параметр (наприклад, instructorId). ` +
+      'Тіло містить errors: [{ field, message }].',
+  })
+  @ApiForbiddenResponse({ description: 'Роль не STUDENT.' })
+  @ApiNotFoundResponse({
+    description: 'Автошколу чи профіль студента не знайдено.',
+  })
+  @ApiConflictResponse({
+    description:
+      'Студент не активний чи не має допуску до практики (PRACTICE), ' +
+      'або профіль практики неповний: немає інструктора, категорії чи коробки передач.',
+  })
+  listAvailable(
+    @CurrentUser() user: User,
+    @Query() query: AvailablePracticeSlotQueryDto,
+  ): Promise<PracticeSlotListDto> {
+    return this.practiceSlotsService.listAvailable(user, query);
   }
 
   @Get(':id')
