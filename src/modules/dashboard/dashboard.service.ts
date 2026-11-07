@@ -1,6 +1,5 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
 import {
-  DrivingLessonStatus,
   EnrollmentStatus,
   InvitationStatus,
   LessonStatus,
@@ -166,10 +165,8 @@ export class DashboardService {
       }),
       this.prisma.lesson.findMany({
         where: {
-          group: {
-            teacherId: teacher.id,
-            organizationId: teacher.organizationId,
-          },
+          organizationId: teacher.organizationId,
+          group: { teacherId: teacher.id },
           scheduledAt: { gte: now },
           status: LessonStatus.SCHEDULED,
         },
@@ -246,8 +243,8 @@ export class DashboardService {
       }),
       this.prisma.lesson.findMany({
         where: {
+          organizationId: student.organizationId,
           group: {
-            organizationId: student.organizationId,
             enrollments: {
               some: { studentId: student.id, status: EnrollmentStatus.ACTIVE },
             },
@@ -309,7 +306,7 @@ export class DashboardService {
           instructorId: instructor.id,
           organizationId: instructor.organizationId,
           scheduledAt: { gte: now },
-          status: DrivingLessonStatus.SCHEDULED,
+          status: LessonStatus.SCHEDULED,
         },
         include: { student: { select: { firstName: true, lastName: true } } },
         orderBy: { scheduledAt: 'asc' },
@@ -319,7 +316,7 @@ export class DashboardService {
         where: {
           instructorId: instructor.id,
           organizationId: instructor.organizationId,
-          status: DrivingLessonStatus.SCHEDULED,
+          status: LessonStatus.SCHEDULED,
         },
         select: { studentId: true },
         distinct: ['studentId'],
@@ -349,6 +346,7 @@ export class DashboardService {
         studentId: lesson.studentId,
         studentName: `${lesson.student.firstName} ${lesson.student.lastName}`,
         scheduledAt: lesson.scheduledAt,
+        meetingPlace: lesson.meetingPlace,
       })),
     };
   }

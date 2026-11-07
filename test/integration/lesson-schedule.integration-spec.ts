@@ -8,7 +8,7 @@ import {
 import { PrismaPg } from '@prisma/adapter-pg';
 import {
   AttendanceStatus,
-  DrivingLessonStatus,
+  CarStatus,
   EnrollmentStatus,
   GroupStatus,
   LessonStatus,
@@ -233,7 +233,7 @@ describe('Lesson schedule (integration, real Postgres)', () => {
       studentId?: string;
       scheduledAt: Date;
       durationMin?: number;
-      status?: DrivingLessonStatus;
+      status?: LessonStatus;
       cancelledAt?: Date;
     }) =>
       prisma.drivingLesson.create({
@@ -248,6 +248,7 @@ describe('Lesson schedule (integration, real Postgres)', () => {
     const theory = (scheduledAt: Date, durationMin = 90) =>
       prisma.lesson.create({
         data: {
+          organizationId: organization.id,
           groupId: group.id,
           topic: 'Дорожні знаки',
           scheduledAt,
@@ -290,6 +291,7 @@ describe('Lesson schedule (integration, real Postgres)', () => {
       const theory = (data: object) =>
         prisma.lesson.create({
           data: {
+            organizationId: school.organization.id,
             groupId: school.group.id,
             topic: 'Дорожні знаки',
             scheduledAt: at(16),
@@ -300,7 +302,7 @@ describe('Lesson schedule (integration, real Postgres)', () => {
       await expect(
         school.practice({
           scheduledAt: at(10),
-          status: DrivingLessonStatus.CANCELLED,
+          status: LessonStatus.CANCELLED,
         }),
       ).rejects.toThrow();
       await expect(
@@ -330,6 +332,91 @@ describe('Lesson schedule (integration, real Postgres)', () => {
           carId: '00000000-0000-4000-8000-000000000000',
         }),
       ).rejects.toThrow();
+    });
+
+    it('ties a theory lesson to a group of the same school', async () => {
+      const school = await createSchool();
+      const other = await createSchool();
+
+      await expect(
+        prisma.lesson.create({
+          data: {
+            organizationId: other.organization.id,
+            groupId: school.group.id,
+            topic: 'Чужа група',
+            scheduledAt: at(16),
+          },
+        }),
+      ).rejects.toMatchObject({ code: 'P2003' });
+      await expect(school.theory(at(16))).resolves.toMatchObject({
+        organizationId: school.organization.id,
+      });
+    });
+
+    it('refuses to delete a person who has lesson history', async () => {
+      const school = await createSchool();
+      const lesson = await school.practice({ scheduledAt: at(10) });
+
+      for (const person of [
+        school.instructor,
+        school.student1,
+        school.teacher,
+      ]) {
+        await expect(
+          prisma.user.delete({ where: { id: person.id } }),
+        ).rejects.toMatchObject({ code: 'P2003' });
+      }
+      await expect(
+        prisma.drivingLesson.findUnique({ where: { id: lesson.id } }),
+      ).resolves.not.toBeNull();
+      await expect(
+        prisma.group.findUnique({ where: { id: school.group.id } }),
+      ).resolves.not.toBeNull();
+    });
+
+    it('keeps the car without an instructor when the instructor is deleted', async () => {
+      const school = await createSchool();
+
+      await prisma.user.delete({ where: { id: school.otherInstructor.id } });
+
+      await expect(
+        prisma.car.findUnique({ where: { id: school.car3.id } }),
+      ).resolves.toMatchObject({ instructorId: null });
+    });
+
+    it('still deletes a whole school with its lessons and people', async () => {
+      const school = await createSchool();
+      const other = await createSchool();
+      const theory = await school.theory(at(16));
+      await school.practice({ scheduledAt: at(10) });
+      await prisma.lessonAttendance.create({
+        data: {
+          lessonId: theory.id,
+          studentId: school.student1.id,
+          status: AttendanceStatus.PRESENT,
+          markedAt: new Date(),
+        },
+      });
+      await other.practice({ scheduledAt: at(10) });
+
+      await prisma.organization.delete({
+        where: { id: school.organization.id },
+      });
+
+      const organizationId = school.organization.id;
+      await expect(
+        Promise.all([
+          prisma.user.count({ where: { organizationId } }),
+          prisma.lesson.count({ where: { organizationId } }),
+          prisma.drivingLesson.count({ where: { organizationId } }),
+          prisma.lessonAttendance.count({ where: { lessonId: theory.id } }),
+        ]),
+      ).resolves.toEqual([0, 0, 0, 0]);
+      await expect(
+        prisma.drivingLesson.count({
+          where: { organizationId: other.organization.id },
+        }),
+      ).resolves.toBe(1);
     });
   });
 
@@ -439,7 +526,7 @@ describe('Lesson schedule (integration, real Postgres)', () => {
       const school = await createSchool();
       await school.practice({
         scheduledAt: at(10),
-        status: DrivingLessonStatus.CANCELLED,
+        status: LessonStatus.CANCELLED,
         cancelledAt: new Date(),
       });
       const moving = await school.practice({ scheduledAt: at(13) });
@@ -641,7 +728,7 @@ describe('Lesson schedule (integration, real Postgres)', () => {
           reason: 'Авто на ремонті',
         }),
       ).resolves.toMatchObject({
-        status: DrivingLessonStatus.CANCELLED,
+        status: LessonStatus.CANCELLED,
         cancellationReason: 'Авто на ремонті',
         car: { id: school.car1.id },
       });
@@ -651,7 +738,7 @@ describe('Lesson schedule (integration, real Postgres)', () => {
         where: { id: lesson.id },
       });
       expect(row).toMatchObject({
-        status: DrivingLessonStatus.CANCELLED,
+        status: LessonStatus.CANCELLED,
         cancelledById: school.admin.id,
         cancellationReason: 'Авто на ремонті',
         instructorId: school.instructor.id,
@@ -739,7 +826,7 @@ describe('Lesson schedule (integration, real Postgres)', () => {
       await expect(
         prisma.drivingLesson.findUniqueOrThrow({ where: { id: lesson.id } }),
       ).resolves.toMatchObject({
-        status: DrivingLessonStatus.SCHEDULED,
+        status: LessonStatus.SCHEDULED,
         cancelledAt: null,
       });
     });
@@ -777,7 +864,7 @@ describe('Lesson schedule (integration, real Postgres)', () => {
         await rescheduling;
 
         await expect(cancelling).resolves.toMatchObject({
-          status: DrivingLessonStatus.CANCELLED,
+          status: LessonStatus.CANCELLED,
           scheduledAt: at(14),
         });
       } finally {
@@ -846,6 +933,7 @@ describe('Lesson schedule (integration, real Postgres)', () => {
       lessonsService.createPractice(school.admin, {
         studentId,
         scheduledAt: scheduledAt.toISOString(),
+        meetingPlace: 'Автодром',
       });
 
     it('stores a theory lesson of the group and shows it in the schedules', async () => {
@@ -887,12 +975,40 @@ describe('Lesson schedule (integration, real Postgres)', () => {
         carId: school.car1.id,
         scheduledAt: at(10),
         durationMin: 60,
-        status: DrivingLessonStatus.SCHEDULED,
+        status: LessonStatus.SCHEDULED,
+        meetingPlace: 'Автодром',
       });
+      expect(created.meetingPlace).toBe('Автодром');
       const dashboard = await dashboardService.getInstructorDashboard(
         school.instructor,
       );
-      expect(dashboard.upcomingLessons.map((l) => l.id)).toEqual([created.id]);
+      expect(dashboard.upcomingLessons).toEqual([
+        expect.objectContaining({ id: created.id, meetingPlace: 'Автодром' }),
+      ]);
+    });
+
+    it('changes only the meeting place while the car is in maintenance', async () => {
+      const school = await createSchool();
+      const created = await practiceAt(school, school.student1.id, at(10));
+      await prisma.car.update({
+        where: { id: school.car1.id },
+        data: { status: CarStatus.MAINTENANCE },
+      });
+
+      const updated = await lessonsService.updatePractice(
+        school.instructor,
+        created.id,
+        { meetingPlace: 'Біля офісу автошколи' },
+      );
+
+      expect(updated.meetingPlace).toBe('Біля офісу автошколи');
+      await expect(
+        prisma.drivingLesson.findUniqueOrThrow({ where: { id: created.id } }),
+      ).resolves.toMatchObject({
+        meetingPlace: 'Біля офісу автошколи',
+        carId: school.car1.id,
+        scheduledAt: at(10),
+      });
     });
 
     it('refuses a slot taken by the instructor, the student or the group', async () => {
@@ -924,7 +1040,7 @@ describe('Lesson schedule (integration, real Postgres)', () => {
       await school.practice({ scheduledAt: at(10) });
       await school.practice({
         scheduledAt: at(12),
-        status: DrivingLessonStatus.CANCELLED,
+        status: LessonStatus.CANCELLED,
         cancelledAt: new Date(),
       });
 
@@ -971,6 +1087,7 @@ describe('Lesson schedule (integration, real Postgres)', () => {
         lessonsService.createPractice(school.admin, {
           studentId: other.student1.id,
           scheduledAt,
+          meetingPlace: 'Автодром',
         }),
       ).rejects.toBeInstanceOf(NotFoundException);
       await expect(
@@ -978,6 +1095,7 @@ describe('Lesson schedule (integration, real Postgres)', () => {
           studentId: school.student1.id,
           instructorId: other.instructor.id,
           scheduledAt,
+          meetingPlace: 'Автодром',
         }),
       ).rejects.toBeInstanceOf(NotFoundException);
       await expect(
@@ -985,6 +1103,7 @@ describe('Lesson schedule (integration, real Postgres)', () => {
           studentId: school.student1.id,
           carId: other.car1.id,
           scheduledAt,
+          meetingPlace: 'Автодром',
         }),
       ).rejects.toBeInstanceOf(NotFoundException);
 
@@ -1176,7 +1295,12 @@ describe('Lesson schedule (integration, real Postgres)', () => {
         },
       });
       return prisma.lesson.create({
-        data: { groupId: group.id, topic: 'Інша група', scheduledAt },
+        data: {
+          organizationId: school.organization.id,
+          groupId: group.id,
+          topic: 'Інша група',
+          scheduledAt,
+        },
       });
     }
 
@@ -1309,7 +1433,7 @@ describe('Lesson schedule (integration, real Postgres)', () => {
       expect(items).toMatchObject([
         {
           id: lesson.id,
-          status: DrivingLessonStatus.CANCELLED,
+          status: LessonStatus.CANCELLED,
           cancellationReason: 'Авто на ремонті',
         },
       ]);

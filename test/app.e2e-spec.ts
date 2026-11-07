@@ -5072,7 +5072,8 @@ describe('API (e2e)', () => {
       { where: { AND: unknown[] } },
     ];
     expect(args.where.AND[0]).toEqual({
-      group: { organizationId: organization.id, teacherId: teacher.id },
+      organizationId: organization.id,
+      group: { teacherId: teacher.id },
     });
     expect(prismaMock.drivingLesson.findMany).not.toHaveBeenCalled();
   });

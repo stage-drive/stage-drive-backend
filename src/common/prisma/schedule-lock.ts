@@ -45,10 +45,9 @@ export async function lockTheoryLesson(
   organizationId: string,
 ): Promise<void> {
   await tx.$queryRaw`
-    SELECT l.id FROM lessons l
-    JOIN groups g ON g.id = l.group_id
-    WHERE l.id = ${lessonId}::uuid AND g.organization_id = ${organizationId}::uuid
-    FOR UPDATE OF l
+    SELECT id FROM lessons
+    WHERE id = ${lessonId}::uuid AND organization_id = ${organizationId}::uuid
+    FOR UPDATE
   `;
 }
 

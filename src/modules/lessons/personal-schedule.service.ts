@@ -5,7 +5,6 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import {
-  DrivingLessonStatus,
   EnrollmentStatus,
   LessonStatus,
   Prisma,
@@ -72,7 +71,7 @@ function scheduleScope(actor: User, now: Date): ScheduleScope {
   switch (actor.role) {
     case UserRole.TEACHER:
       return {
-        theory: { group: { organizationId, teacherId: actor.id } },
+        theory: { organizationId, group: { teacherId: actor.id } },
         practice: null,
       };
     case UserRole.INSTRUCTOR:
@@ -83,7 +82,7 @@ function scheduleScope(actor: User, now: Date): ScheduleScope {
     case UserRole.STUDENT:
       return {
         theory: {
-          group: { organizationId },
+          organizationId,
           OR: [
             {
               group: {
@@ -253,9 +252,7 @@ export class PersonalScheduleService {
         AND: [
           where,
           { scheduledAt },
-          includeCancelled
-            ? {}
-            : { status: { not: DrivingLessonStatus.CANCELLED } },
+          includeCancelled ? {} : { status: { not: LessonStatus.CANCELLED } },
         ],
       },
       select: practiceLessonViewSelect,

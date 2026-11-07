@@ -204,12 +204,14 @@ export class LessonsController {
     description:
       'ADMIN створює заняття будь-якому студенту своєї автошколи; інструктор — лише для себе і лише своєму студенту. ' +
       'Без instructorId і carId беруться інструктор і авто, призначені студенту під час допуску до практики. ' +
+      "Місце зустрічі (meetingPlace) обов'язкове. " +
       `${CREATE_RULES} ${PRACTICE_CHECKS}`,
   })
   @ApiCreatedResponse({ type: PracticeLessonDto })
   @ApiBadRequestResponse({
     description:
-      'Некоректне тіло, зайве поле, або scheduledAt без зсуву чи в минулому. Тіло містить errors: [{ field, message }].',
+      'Некоректне тіло, зайве поле, порожній чи задовгий meetingPlace, або scheduledAt без зсуву чи в минулому. ' +
+      'Тіло містить errors: [{ field, message }].',
   })
   @ApiForbiddenResponse({
     description:
@@ -313,8 +315,9 @@ export class LessonsController {
   @ApiOperation({
     summary: 'Редагувати практичне заняття',
     description:
-      'ADMIN змінює durationMin, instructorId і carId; інструктор — лише durationMin і carId свого заняття. ' +
-      'Старе заняття без авто бере авто, призначене студенту. ' +
+      'ADMIN змінює durationMin, instructorId, carId і meetingPlace; інструктор — лише durationMin, carId і meetingPlace свого заняття. ' +
+      'Зміна лише meetingPlace не перевіряє розклад. ' +
+      'Старе заняття без авто бере авто, призначене студенту, коли змінюється розклад. ' +
       `${SCHEDULE_RULES} ${PRACTICE_CHECKS}`,
   })
   @ApiParam({

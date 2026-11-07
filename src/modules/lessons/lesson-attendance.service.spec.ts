@@ -373,7 +373,7 @@ describe('LessonAttendanceService', () => {
       expect(error.message).toBe(LESSON_NOT_FOUND_MESSAGE);
       expect(prisma.lesson.findFirst).toHaveBeenCalledWith(
         expect.objectContaining({
-          where: { id: 'lesson-1', group: { organizationId: 'org-1' } },
+          where: { id: 'lesson-1', organizationId: 'org-1' },
         }),
       );
     });
@@ -693,7 +693,9 @@ describe('LessonAttendanceService', () => {
       expect(rawSql(0)).toBe(
         'SELECT id FROM groups WHERE id = $1::uuid AND organization_id = $2::uuid FOR SHARE',
       );
-      expect(rawSql(1)).toContain('FOR UPDATE OF l');
+      expect(rawSql(1)).toBe(
+        'SELECT id FROM lessons WHERE id = $1::uuid AND organization_id = $2::uuid FOR UPDATE',
+      );
       const order = [
         prisma.$queryRaw.mock.invocationCallOrder[0],
         prisma.$queryRaw.mock.invocationCallOrder[1],

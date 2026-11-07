@@ -63,13 +63,13 @@ describe('schedule locks', () => {
     });
   });
 
-  it('locks a theory lesson row scoped to the organization through its group', async () => {
+  it('locks a theory lesson row scoped to the organization', async () => {
     await lockTheoryLesson(tx as never, 'lesson-1', 'org-1');
 
     expect(executed(tx.$queryRaw)).toEqual({
       text:
-        'SELECT l.id FROM lessons l JOIN groups g ON g.id = l.group_id ' +
-        'WHERE l.id = $1::uuid AND g.organization_id = $2::uuid FOR UPDATE OF l',
+        'SELECT id FROM lessons ' +
+        'WHERE id = $1::uuid AND organization_id = $2::uuid FOR UPDATE',
       values: ['lesson-1', 'org-1'],
     });
   });

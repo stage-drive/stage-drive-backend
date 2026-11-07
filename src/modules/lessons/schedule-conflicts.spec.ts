@@ -1,9 +1,5 @@
 import { ConflictException } from '@nestjs/common';
-import {
-  DrivingLessonStatus,
-  EnrollmentStatus,
-  LessonStatus,
-} from '@prisma/client';
+import { EnrollmentStatus, LessonStatus } from '@prisma/client';
 import {
   LESSON_SCHEDULE_CONFLICT_MESSAGE,
   LessonConflict,
@@ -135,7 +131,7 @@ describe('findPracticeConflicts', () => {
     expect(practiceArgs.where).toEqual({
       id: { not: 'lesson-1' },
       organizationId: 'org-1',
-      status: DrivingLessonStatus.SCHEDULED,
+      status: LessonStatus.SCHEDULED,
       scheduledAt: candidateWindow(input.slot),
       OR: [
         { instructorId: 'instructor-1' },
@@ -145,10 +141,10 @@ describe('findPracticeConflicts', () => {
     });
     const [theoryArgs] = tx.lesson.findMany.mock.calls[0];
     expect(theoryArgs.where).toEqual({
+      organizationId: 'org-1',
       status: LessonStatus.SCHEDULED,
       scheduledAt: candidateWindow(input.slot),
       group: {
-        organizationId: 'org-1',
         enrollments: {
           some: { studentId: 'student-1', status: EnrollmentStatus.ACTIVE },
         },
@@ -163,7 +159,7 @@ describe('findPracticeConflicts', () => {
     expect(practiceArgs.where).not.toHaveProperty('id');
     expect(practiceArgs.where).toMatchObject({
       organizationId: 'org-1',
-      status: DrivingLessonStatus.SCHEDULED,
+      status: LessonStatus.SCHEDULED,
     });
   });
 
@@ -270,15 +266,15 @@ describe('findTheoryConflicts', () => {
     const [theoryArgs] = tx.lesson.findMany.mock.calls[0];
     expect(theoryArgs.where).toEqual({
       id: { not: 'lesson-1' },
+      organizationId: 'org-1',
       status: LessonStatus.SCHEDULED,
       scheduledAt: candidateWindow(input.slot),
-      group: { organizationId: 'org-1' },
       OR: [{ groupId: 'group-1' }, { group: { teacherId: 'teacher-1' } }],
     });
     const [practiceArgs] = tx.drivingLesson.findMany.mock.calls[0];
     expect(practiceArgs.where).toEqual({
       organizationId: 'org-1',
-      status: DrivingLessonStatus.SCHEDULED,
+      status: LessonStatus.SCHEDULED,
       scheduledAt: candidateWindow(input.slot),
       student: {
         enrollments: {
@@ -294,8 +290,8 @@ describe('findTheoryConflicts', () => {
     const [theoryArgs] = tx.lesson.findMany.mock.calls[0];
     expect(theoryArgs.where).not.toHaveProperty('id');
     expect(theoryArgs.where).toMatchObject({
+      organizationId: 'org-1',
       status: LessonStatus.SCHEDULED,
-      group: { organizationId: 'org-1' },
     });
   });
 

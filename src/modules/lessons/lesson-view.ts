@@ -49,6 +49,7 @@ export const practiceLessonViewSelect = {
   car: {
     select: { id: true, plateNumber: true, category: true, transmission: true },
   },
+  meetingPlace: true,
 } satisfies Prisma.DrivingLessonSelect;
 
 export type PracticeLessonView = Prisma.DrivingLessonGetPayload<{
@@ -97,6 +98,7 @@ export function toPracticeLessonDto(
           transmission: row.car.transmission,
         }
       : null,
+    meetingPlace: row.meetingPlace,
     cancelledAt: row.cancelledAt,
     cancellationReason: row.cancellationReason,
     updatedAt: row.updatedAt,

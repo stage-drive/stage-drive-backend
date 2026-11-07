@@ -194,10 +194,7 @@ export class LessonAttendanceService {
     lessonId: string,
   ): Promise<AttendanceLessonRow> {
     const lesson = await client.lesson.findFirst({
-      where: {
-        id: lessonId,
-        group: { organizationId: actor.organizationId },
-      },
+      where: { id: lessonId, organizationId: actor.organizationId },
       select: attendanceLessonSelect,
     });
     if (!lesson) {

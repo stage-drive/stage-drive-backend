@@ -349,6 +349,15 @@ export class InstructorDashboardLessonDto {
 
   @ApiProperty()
   scheduledAt: Date;
+
+  @ApiProperty({
+    type: String,
+    nullable: true,
+    example: 'Автодром, вул. Промислова, 5',
+    description:
+      'Місце зустрічі; null лише для старого заняття, створеного до появи поля.',
+  })
+  meetingPlace: string | null;
 }
 
 export class InstructorDashboardStatsDto {

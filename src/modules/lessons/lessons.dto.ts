@@ -5,12 +5,7 @@ import {
   ApiPropertyOptional,
   getSchemaPath,
 } from '@nestjs/swagger';
-import {
-  DrivingLessonStatus,
-  LessonStatus,
-  LicenseCategory,
-  Transmission,
-} from '@prisma/client';
+import { LessonStatus, LicenseCategory, Transmission } from '@prisma/client';
 import { Transform } from 'class-transformer';
 import {
   IsBoolean,
@@ -36,6 +31,8 @@ export const LESSON_MAX_DURATION_MIN = 240;
 export const LESSON_TOPIC_MAX_LENGTH = 200;
 /** Збігається з VarChar(500) колонки cancellation_reason. */
 export const CANCELLATION_REASON_MAX_LENGTH = 500;
+/** Збігається з VarChar(255) колонки meeting_place. */
+export const MEETING_PLACE_MAX_LENGTH = 255;
 
 /** Збігаються з @default у колонках duration_min. */
 export const THEORY_DEFAULT_DURATION_MIN = 90;
@@ -44,6 +41,8 @@ export const PRACTICE_DEFAULT_DURATION_MIN = 60;
 export const REQUIRED_FIELD_MESSAGE = "Заповніть обов'язкове поле.";
 export const LESSON_TOPIC_LENGTH_MESSAGE = `Тема має містити не більше ${LESSON_TOPIC_MAX_LENGTH} символів.`;
 export const CANCELLATION_REASON_LENGTH_MESSAGE = `Причина має містити не більше ${CANCELLATION_REASON_MAX_LENGTH} символів.`;
+export const MEETING_PLACE_LENGTH_MESSAGE = `Місце зустрічі має містити не більше ${MEETING_PLACE_MAX_LENGTH} символів.`;
+export const MEETING_PLACE_TYPE_MESSAGE = 'meetingPlace має бути рядком.';
 export const LESSON_DURATION_MESSAGE = `Тривалість має бути цілим числом хвилин від ${LESSON_MIN_DURATION_MIN} до ${LESSON_MAX_DURATION_MIN}.`;
 export const SCHEDULED_AT_FORMAT_MESSAGE =
   'scheduledAt має бути датою й часом ISO 8601 з часовим зсувом, наприклад 2026-11-03T10:00:00+02:00.';
@@ -72,6 +71,8 @@ export const INCLUDE_CANCELLED_MESSAGE =
   'includeCancelled має бути true або false.';
 
 const DURATION_DESCRIPTION = `Тривалість у хвилинах, ціле число від ${LESSON_MIN_DURATION_MIN} до ${LESSON_MAX_DURATION_MIN}.`;
+
+const MEETING_PLACE_EXAMPLE = 'Автодром, вул. Промислова, 5';
 
 const TIMING_DESCRIPTION =
   'UPCOMING — ще не почалося, IN_PROGRESS — триває, FINISHED — закінчилося. ' +
@@ -183,6 +184,22 @@ export class UpdatePracticeLessonDto {
   @ValidateIf((_, value) => value !== undefined)
   @IsUUID('4', { message: 'carId має бути UUID.' })
   carId?: string;
+
+  @ApiPropertyOptional({
+    example: MEETING_PLACE_EXAMPLE,
+    maxLength: MEETING_PLACE_MAX_LENGTH,
+    description:
+      'Нове місце зустрічі. Зміна лише meetingPlace не перевіряє розклад. Пробіли по краях обрізаються.',
+  })
+  @Transform(trimString)
+  @ValidateIf((_, value) => value !== undefined)
+  @IsPlainText()
+  @MaxLength(MEETING_PLACE_MAX_LENGTH, {
+    message: MEETING_PLACE_LENGTH_MESSAGE,
+  })
+  @IsNotEmpty({ message: REQUIRED_FIELD_MESSAGE })
+  @IsString({ message: MEETING_PLACE_TYPE_MESSAGE })
+  meetingPlace?: string;
 }
 
 export class RescheduleLessonDto {
@@ -358,10 +375,10 @@ export class PracticeLessonDto {
   type: 'PRACTICE';
 
   @ApiProperty({
-    enum: DrivingLessonStatus,
-    example: DrivingLessonStatus.SCHEDULED,
+    enum: LessonStatus,
+    example: LessonStatus.SCHEDULED,
   })
-  status: DrivingLessonStatus;
+  status: LessonStatus;
 
   @ApiProperty({ example: '2026-11-03T08:00:00.000Z' })
   scheduledAt: Date;
@@ -387,6 +404,16 @@ export class PracticeLessonDto {
     description: 'null лише для старого заняття без авто.',
   })
   car: LessonCarDto | null;
+
+  @ApiProperty({
+    type: String,
+    nullable: true,
+    example: MEETING_PLACE_EXAMPLE,
+    maxLength: MEETING_PLACE_MAX_LENGTH,
+    description:
+      'Де інструктор зустрічає студента; null лише для старого заняття, створеного до появи поля.',
+  })
+  meetingPlace: string | null;
 
   @ApiProperty({
     type: Date,
@@ -603,4 +630,20 @@ export class CreatePracticeLessonDto {
   @ValidateIf((_, value) => value !== undefined)
   @IsUUID('4', { message: 'carId має бути UUID.' })
   carId?: string;
+
+  @ApiProperty({
+    example: MEETING_PLACE_EXAMPLE,
+    maxLength: MEETING_PLACE_MAX_LENGTH,
+    description:
+      'Де інструктор зустрічає студента. Пробіли по краях обрізаються.',
+  })
+  @Transform(trimString)
+  @IsPlainText()
+  @MaxLength(MEETING_PLACE_MAX_LENGTH, {
+    message: MEETING_PLACE_LENGTH_MESSAGE,
+  })
+  @IsNotEmpty({ message: REQUIRED_FIELD_MESSAGE })
+  @IsString({ message: MEETING_PLACE_TYPE_MESSAGE })
+  @IsDefined({ message: REQUIRED_FIELD_MESSAGE })
+  meetingPlace: string;
 }
