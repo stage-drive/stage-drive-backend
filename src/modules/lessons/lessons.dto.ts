@@ -100,7 +100,7 @@ function optionalBoolean({ value }: { value: unknown }): unknown {
  * Межа вікна розкладу в query: той самий формат, що scheduledAt. Повторений
  * параметр приходить масивом і теж відхиляється.
  */
-function IsScheduleBoundary() {
+export function IsScheduleBoundary() {
   return applyDecorators(
     IsISO8601({ strict: true }, { message: SCHEDULE_RANGE_FORMAT_MESSAGE }),
     Matches(ZONED_DATE_TIME_PATTERN, {
@@ -112,7 +112,7 @@ function IsScheduleBoundary() {
 }
 
 /** Необов'язкова тривалість; null відхиляється, як і будь-яке не-ціле число. */
-function IsLessonDuration() {
+export function IsLessonDuration() {
   return applyDecorators(
     IsInt({ message: LESSON_DURATION_MESSAGE }),
     Min(LESSON_MIN_DURATION_MIN, { message: LESSON_DURATION_MESSAGE }),
@@ -122,7 +122,7 @@ function IsLessonDuration() {
 }
 
 /** Обов'язковий початок заняття: ISO 8601 з часовим зсувом. */
-function IsScheduledAt() {
+export function IsScheduledAt() {
   return applyDecorators(
     IsISO8601({ strict: true }, { message: SCHEDULED_AT_FORMAT_MESSAGE }),
     Matches(ZONED_DATE_TIME_PATTERN, { message: SCHEDULED_AT_FORMAT_MESSAGE }),
@@ -512,10 +512,17 @@ export class LessonConflictDto {
   })
   resourceId: string;
 
-  @ApiProperty({ enum: ['THEORY', 'PRACTICE'], example: 'PRACTICE' })
+  @ApiProperty({
+    enum: ['THEORY', 'PRACTICE', 'SLOT'],
+    example: 'PRACTICE',
+    description: 'SLOT — слот практики, з яким перетинається новий час.',
+  })
   lessonType: string;
 
-  @ApiProperty({ description: 'Id заняття, з яким перетинається новий час.' })
+  @ApiProperty({
+    description:
+      'Id заняття, з яким перетинається новий час; для lessonType SLOT — id слоту.',
+  })
   lessonId: string;
 
   @ApiProperty({ example: '2026-11-03T08:00:00.000Z' })
