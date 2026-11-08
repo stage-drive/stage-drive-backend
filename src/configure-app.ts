@@ -21,7 +21,7 @@ export function configureApp(app: NestExpressApplication) {
   app.enableCors({
     origin: parseCorsOrigins(),
     credentials: true,
-    methods: ['GET', 'POST', 'PATCH', 'DELETE'],
+    methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE'],
     allowedHeaders: ['Content-Type', 'Authorization', 'Accept'],
   });
   app.useStaticAssets(join(process.cwd(), 'uploads'), { prefix: '/uploads/' });

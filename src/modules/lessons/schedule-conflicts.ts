@@ -10,8 +10,12 @@ const MINUTE_MS = 60_000;
 export type ConflictResource =
   'TEACHER' | 'INSTRUCTOR' | 'GROUP' | 'CAR' | 'STUDENT';
 
-/** SLOT — слот практики; у конфлікті з ним lessonId містить id слоту. */
-export type LessonType = 'THEORY' | 'PRACTICE' | 'SLOT';
+/**
+ * SLOT — слот практики; у конфлікті з ним lessonId містить id слоту.
+ * TIME_OFF — недоступність інструктора; lessonId містить її id, scheduledAt і
+ * endsAt — її межі.
+ */
+export type LessonType = 'THEORY' | 'PRACTICE' | 'SLOT' | 'TIME_OFF';
 
 export type ScheduleSlot = { start: Date; end: Date };
 
@@ -177,8 +181,76 @@ export async function findTheoryConflicts(
 }
 
 /**
- * Практика: інші заняття цього інструктора, авто чи студента, а також
- * теорія груп, де студент має ACTIVE-зарахування.
+ * Недоступності інструктора, що перетинають інтервал. Межі зберігаються
+ * обидві, тож перетин рахує сама БД, без candidateWindow.
+ */
+export async function findInstructorTimeOffs(
+  tx: Prisma.TransactionClient,
+  input: {
+    organizationId: string;
+    instructorId: string;
+    interval: ScheduleSlot;
+  },
+): Promise<{ id: string; startsAt: Date; endsAt: Date }[]> {
+  return tx.instructorTimeOff.findMany({
+    where: {
+      organizationId: input.organizationId,
+      instructorId: input.instructorId,
+      startsAt: { lt: input.interval.end },
+      endsAt: { gt: input.interval.start },
+    },
+    select: { id: true, startsAt: true, endsAt: true },
+    orderBy: [{ startsAt: 'asc' }, { id: 'asc' }],
+  });
+}
+
+function timeOffConflict(
+  instructorId: string,
+  row: { id: string; startsAt: Date; endsAt: Date },
+): LessonConflict {
+  return {
+    resource: 'INSTRUCTOR',
+    resourceId: instructorId,
+    lessonType: 'TIME_OFF',
+    lessonId: row.id,
+    scheduledAt: row.startsAt,
+    endsAt: row.endsAt,
+  };
+}
+
+/**
+ * Нова недоступність інструктора: SCHEDULED-практика цього інструктора, що
+ * її перетинає. Такі заняття адмін спершу скасовує чи переносить.
+ */
+export async function findTimeOffConflicts(
+  tx: Prisma.TransactionClient,
+  input: {
+    organizationId: string;
+    instructorId: string;
+    interval: ScheduleSlot;
+  },
+): Promise<LessonConflict[]> {
+  const lessons = await tx.drivingLesson.findMany({
+    where: {
+      organizationId: input.organizationId,
+      instructorId: input.instructorId,
+      status: LessonStatus.SCHEDULED,
+      scheduledAt: candidateWindow(input.interval),
+    },
+    select: { id: true, scheduledAt: true, durationMin: true },
+  });
+  return sortConflicts(
+    lessons
+      .filter((row) => overlaps(input.interval, row))
+      .map((row) =>
+        toConflict('INSTRUCTOR', input.instructorId, 'PRACTICE', row),
+      ),
+  );
+}
+
+/**
+ * Практика: інші заняття цього інструктора, авто чи студента, теорія груп,
+ * де студент має ACTIVE-зарахування, і недоступність інструктора.
  */
 export async function findPracticeConflicts(
   tx: Prisma.TransactionClient,
@@ -230,7 +302,16 @@ export async function findPracticeConflicts(
     select: { id: true, scheduledAt: true, durationMin: true },
   });
 
+  const timeOffs = await findInstructorTimeOffs(tx, {
+    organizationId: input.organizationId,
+    instructorId: input.instructorId,
+    interval: input.slot,
+  });
+
   const conflicts: LessonConflict[] = [];
+  for (const row of timeOffs) {
+    conflicts.push(timeOffConflict(input.instructorId, row));
+  }
   for (const row of practice.filter((r) => overlaps(input.slot, r))) {
     if (row.instructorId === input.instructorId) {
       conflicts.push(

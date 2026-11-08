@@ -513,15 +513,17 @@ export class LessonConflictDto {
   resourceId: string;
 
   @ApiProperty({
-    enum: ['THEORY', 'PRACTICE', 'SLOT'],
+    enum: ['THEORY', 'PRACTICE', 'SLOT', 'TIME_OFF'],
     example: 'PRACTICE',
-    description: 'SLOT — слот практики, з яким перетинається новий час.',
+    description:
+      'SLOT — слот практики, з яким перетинається новий час. ' +
+      'TIME_OFF — недоступність інструктора (відпустка, лікарняний тощо); scheduledAt і endsAt — її межі.',
   })
   lessonType: string;
 
   @ApiProperty({
     description:
-      'Id заняття, з яким перетинається новий час; для lessonType SLOT — id слоту.',
+      'Id заняття, з яким перетинається новий час; для lessonType SLOT — id слоту, для TIME_OFF — id недоступності.',
   })
   lessonId: string;
 

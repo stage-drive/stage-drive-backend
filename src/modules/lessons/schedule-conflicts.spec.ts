@@ -9,6 +9,7 @@ import {
   findSlotConflicts,
   findStudentSlotBlockers,
   findTheoryConflicts,
+  findTimeOffConflicts,
   isSlotFree,
   lessonSlot,
   overlaps,
@@ -114,6 +115,7 @@ describe('findPracticeConflicts', () => {
   const tx = {
     drivingLesson: { findMany: jest.fn() },
     lesson: { findMany: jest.fn() },
+    instructorTimeOff: { findMany: jest.fn() },
   };
   const input = {
     organizationId: 'org-1',
@@ -127,6 +129,7 @@ describe('findPracticeConflicts', () => {
   beforeEach(() => {
     tx.drivingLesson.findMany.mockReset().mockResolvedValue([]);
     tx.lesson.findMany.mockReset().mockResolvedValue([]);
+    tx.instructorTimeOff.findMany.mockReset().mockResolvedValue([]);
   });
 
   it('queries only other SCHEDULED lessons of the organization in the window', async () => {
@@ -172,6 +175,39 @@ describe('findPracticeConflicts', () => {
     await expect(findPracticeConflicts(tx as never, input)).resolves.toEqual(
       [],
     );
+  });
+
+  it('asks the database for time off of the instructor that overlaps the slot', async () => {
+    await findPracticeConflicts(tx as never, input);
+
+    const [timeOffArgs] = tx.instructorTimeOff.findMany.mock.calls[0];
+    expect(timeOffArgs.where).toEqual({
+      organizationId: 'org-1',
+      instructorId: 'instructor-1',
+      startsAt: { lt: at('2026-11-03T11:00:00Z') },
+      endsAt: { gt: at('2026-11-03T10:00:00Z') },
+    });
+  });
+
+  it('reports time off of the instructor as an INSTRUCTOR conflict', async () => {
+    tx.instructorTimeOff.findMany.mockResolvedValue([
+      {
+        id: 'time-off-1',
+        startsAt: at('2026-11-02T22:00:00Z'),
+        endsAt: at('2026-11-03T22:00:00Z'),
+      },
+    ]);
+
+    await expect(findPracticeConflicts(tx as never, input)).resolves.toEqual([
+      {
+        resource: 'INSTRUCTOR',
+        resourceId: 'instructor-1',
+        lessonType: 'TIME_OFF',
+        lessonId: 'time-off-1',
+        scheduledAt: at('2026-11-02T22:00:00Z'),
+        endsAt: at('2026-11-03T22:00:00Z'),
+      },
+    ]);
   });
 
   it('ignores a candidate that ends before the slot starts', async () => {
@@ -355,6 +391,65 @@ describe('findTheoryConflicts', () => {
         endsAt: at('2026-11-03T18:00:00Z'),
       },
     ]);
+  });
+});
+
+describe('findTimeOffConflicts', () => {
+  const tx = { drivingLesson: { findMany: jest.fn() } };
+  // Лікарняний на весь день 3.11 за Києвом.
+  const input = {
+    organizationId: 'org-1',
+    instructorId: 'instructor-1',
+    interval: {
+      start: at('2026-11-02T22:00:00Z'),
+      end: at('2026-11-03T22:00:00Z'),
+    },
+  };
+
+  beforeEach(() => {
+    tx.drivingLesson.findMany.mockReset().mockResolvedValue([]);
+  });
+
+  it('queries SCHEDULED practice of the instructor in the window', async () => {
+    await findTimeOffConflicts(tx as never, input);
+
+    const [args] = tx.drivingLesson.findMany.mock.calls[0];
+    expect(args.where).toEqual({
+      organizationId: 'org-1',
+      instructorId: 'instructor-1',
+      status: LessonStatus.SCHEDULED,
+      scheduledAt: candidateWindow(input.interval),
+    });
+  });
+
+  it('reports overlapping lessons in time order and skips touching ones', async () => {
+    tx.drivingLesson.findMany.mockResolvedValue([
+      { id: 'late', scheduledAt: at('2026-11-03T15:00:00Z'), durationMin: 60 },
+      // Закінчується рівно на початку недоступності: не перетинається.
+      {
+        id: 'before',
+        scheduledAt: at('2026-11-02T21:00:00Z'),
+        durationMin: 60,
+      },
+      // Почався напередодні й заходить у недоступність.
+      {
+        id: 'across',
+        scheduledAt: at('2026-11-02T21:30:00Z'),
+        durationMin: 60,
+      },
+    ]);
+
+    const conflicts = await findTimeOffConflicts(tx as never, input);
+
+    expect(conflicts.map((c) => c.lessonId)).toEqual(['across', 'late']);
+    expect(conflicts[0]).toEqual({
+      resource: 'INSTRUCTOR',
+      resourceId: 'instructor-1',
+      lessonType: 'PRACTICE',
+      lessonId: 'across',
+      scheduledAt: at('2026-11-02T21:30:00Z'),
+      endsAt: at('2026-11-02T22:30:00Z'),
+    });
   });
 });
 
