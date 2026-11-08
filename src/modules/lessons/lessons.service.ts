@@ -22,6 +22,7 @@ import {
   lockTheoryLesson,
   scheduleLockKey,
 } from '../../common/prisma/schedule-lock';
+import { localDate } from '../../common/time/zoned-time';
 import { PrismaService } from '../../prisma/prisma.service';
 import { GROUP_NOT_FOUND_MESSAGE } from '../groups/groups.service';
 import { STUDENT_NOT_FOUND_MESSAGE } from '../students/students.service';
@@ -285,16 +286,6 @@ function assertCreatableAt(scheduledAt: Date, now: Date): void {
   if (scheduledAt.getTime() <= now.getTime()) {
     throw fieldError('scheduledAt', LESSON_CREATE_IN_PAST_MESSAGE);
   }
-}
-
-/** Місцева дата у форматі YYYY-MM-DD (en-CA). */
-function localDate(instant: Date, timeZone: string): string {
-  return new Intl.DateTimeFormat('en-CA', {
-    timeZone,
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
-  }).format(instant);
 }
 
 /** Дати групи зберігаються як UTC-північ дня, тож ISO-рядок дає саму дату. */

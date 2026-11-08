@@ -125,6 +125,25 @@ enum AttendanceStatus {
   EXCUSED
 }
 
+/// День тижня робочого графіка інструктора.
+enum DayOfWeek {
+  MONDAY
+  TUESDAY
+  WEDNESDAY
+  THURSDAY
+  FRIDAY
+  SATURDAY
+  SUNDAY
+}
+
+/// Причина недоступності інструктора. На розрахунок вільного часу не впливає.
+enum TimeOffType {
+  VACATION
+  SICK_LEAVE
+  DAY_OFF
+  OTHER
+}
+
 model Organization {
   id                      String                   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   name                    String                   @db.VarChar(255)
@@ -149,6 +168,8 @@ model Organization {
   courseLessonCompletions CourseLessonCompletion[]
   courseProgressRecords   CourseProgress[]
   practiceSlots           PracticeSlot[]
+  instructorWorkingHours  InstructorWorkingHours[]
+  instructorTimeOffs      InstructorTimeOff[]
 
   @@index([deletedAt])
   @@map("organizations")
@@ -193,8 +214,12 @@ model User {
   courseProgressRecords    CourseProgress[]         @relation("StudentCourseProgress")
   practiceSlots            PracticeSlot[]           @relation("InstructorPracticeSlots")
   createdPracticeSlots     PracticeSlot[]           @relation("CreatedPracticeSlots")
+  workingHours             InstructorWorkingHours[] @relation("InstructorWorkingHours")
+  timeOffs                 InstructorTimeOff[]      @relation("InstructorTimeOffs")
+  createdTimeOffs          InstructorTimeOff[]      @relation("CreatedInstructorTimeOffs")
 
-  /// Ціль складеного FK з practice_slots: слот не прив’язати до інструктора іншої автошколи.
+  /// Ціль складених FK з practice_slots, instructor_working_hours і instructor_time_offs:
+  /// запис не прив’язати до інструктора іншої автошколи.
   @@unique([id, organizationId])
   @@index([deletedAt])
   @@index([organizationId])
@@ -631,6 +656,54 @@ model PracticeSlot {
   @@index([carId, scheduledAt])
   @@index([createdById])
   @@map("practice_slots")
+}
+
+/// Робочий інтервал інструктора в день тижня, у часі автошколи (Organization.timezone).
+/// Кілька рядків на день: перерва — проміжок між ними. Хвилини від півночі: 540 = 09:00.
+/// CHECK у міграції: 0 <= start_minute < end_minute <= 1440. Неперетин рядків одного дня
+/// перевіряє сервіс: PUT замінює тиждень цілком.
+model InstructorWorkingHours {
+  id             String       @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  organizationId String       @map("organization_id") @db.Uuid
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  /// Cascade: графік — налаштування, а не історія.
+  instructorId   String       @map("instructor_id") @db.Uuid
+  instructor     User         @relation("InstructorWorkingHours", fields: [instructorId, organizationId], references: [id, organizationId], onDelete: Cascade)
+  dayOfWeek      DayOfWeek    @map("day_of_week")
+  startMinute    Int          @map("start_minute") @db.SmallInt
+  endMinute      Int          @map("end_minute") @db.SmallInt
+  createdAt      DateTime     @default(now()) @map("created_at")
+  updatedAt      DateTime     @default(now()) @updatedAt @map("updated_at")
+
+  @@index([instructorId, dayOfWeek])
+  @@index([organizationId])
+  @@map("instructor_working_hours")
+}
+
+/// Недоступність інструктора: відпустка, лікарняний, вихідний або кілька годин.
+/// Напіввідкритий інтервал [startsAt, endsAt), як у занять. Цілий день — від місцевої
+/// півночі до півночі наступного дня в Organization.timezone (рахує сервіс).
+/// CHECK у міграції: ends_at > starts_at.
+model InstructorTimeOff {
+  id             String       @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  organizationId String       @map("organization_id") @db.Uuid
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  instructorId   String       @map("instructor_id") @db.Uuid
+  instructor     User         @relation("InstructorTimeOffs", fields: [instructorId, organizationId], references: [id, organizationId], onDelete: Cascade)
+  startsAt       DateTime     @map("starts_at")
+  endsAt         DateTime     @map("ends_at")
+  type           TimeOffType  @default(DAY_OFF)
+  reason         String?      @db.VarChar(500)
+  createdById    String?      @map("created_by_id") @db.Uuid
+  createdBy      User?        @relation("CreatedInstructorTimeOffs", fields: [createdById], references: [id], onDelete: SetNull)
+  createdAt      DateTime     @default(now()) @map("created_at")
+  updatedAt      DateTime     @default(now()) @updatedAt @map("updated_at")
+
+  /// Індекси під пошук перетинів і список: ресурс + вікно часу.
+  @@index([instructorId, startsAt])
+  @@index([organizationId, startsAt])
+  @@index([createdById])
+  @@map("instructor_time_offs")
 }
 
 /// Відвідування студентом теоретичного заняття: один рядок на пару (заняття, студент) — актуальний статус.

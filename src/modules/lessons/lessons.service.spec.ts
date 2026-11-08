@@ -231,6 +231,7 @@ describe('LessonsService', () => {
       create: jest.fn(),
     },
     enrollment: { findMany: jest.fn() },
+    instructorTimeOff: { findMany: jest.fn() },
     lessonAttendance: { count: jest.fn() },
     user: { findUnique: jest.fn(), findFirst: jest.fn() },
     car: { findUnique: jest.fn() },
@@ -284,6 +285,7 @@ describe('LessonsService', () => {
     prisma.organization.findUnique.mockResolvedValue(organization);
     prisma.lesson.findMany.mockResolvedValue([]);
     prisma.drivingLesson.findMany.mockResolvedValue([]);
+    prisma.instructorTimeOff.findMany.mockResolvedValue([]);
     prisma.enrollment.findMany.mockResolvedValue([{ groupId: 'group-1' }]);
     prisma.lessonAttendance.count.mockResolvedValue(0);
     prisma.user.findUnique.mockResolvedValue(activeInstructor);
