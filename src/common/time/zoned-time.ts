@@ -121,3 +121,9 @@ export function addDays(date: string, days: number): string {
     .toISOString()
     .slice(0, 10);
 }
+
+/** День тижня місцевої дати за ISO: 1 — понеділок, 7 — неділя. Без поясу. */
+export function isoWeekday(date: string): number {
+  const day = new Date(parseLocalDate(date)).getUTCDay();
+  return day === 0 ? 7 : day;
+}

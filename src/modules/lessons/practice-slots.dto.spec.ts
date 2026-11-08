@@ -7,7 +7,6 @@ import {
   SCHEDULED_AT_FORMAT_MESSAGE,
 } from './lessons.dto';
 import {
-  AvailablePracticeSlotQueryDto,
   CreatePracticeSlotDto,
   PracticeSlotListQueryDto,
   UpdatePracticeSlotDto,
@@ -212,51 +211,4 @@ describe('PracticeSlotListQueryDto', () => {
       fieldErrors('organizationId', 'property organizationId should not exist'),
     );
   });
-});
-
-describe('AvailablePracticeSlotQueryDto', () => {
-  it('accepts an empty query', async () => {
-    await expect(
-      validate(AvailablePracticeSlotQueryDto, {}, 'query'),
-    ).resolves.toEqual({});
-  });
-
-  it('accepts a window', async () => {
-    const query = {
-      from: '2026-11-16T00:00:00+02:00',
-      to: '2026-11-23T00:00:00+02:00',
-    };
-
-    await expect(
-      validate(AvailablePracticeSlotQueryDto, query, 'query'),
-    ).resolves.toEqual(query);
-  });
-
-  it.each(['from', 'to'] as const)(
-    'rejects %s without an offset',
-    async (field) => {
-      await expect(
-        errorsFor(
-          AvailablePracticeSlotQueryDto,
-          { [field]: '2026-11-16T00:00:00' },
-          'query',
-        ),
-      ).resolves.toEqual(fieldErrors(field, SCHEDULE_RANGE_FORMAT_MESSAGE));
-    },
-  );
-
-  it.each(['instructorId', 'carId', 'studentId'] as const)(
-    'rejects %s: the student and instructor come from the token',
-    async (field) => {
-      await expect(
-        errorsFor(
-          AvailablePracticeSlotQueryDto,
-          { [field]: INSTRUCTOR_ID },
-          'query',
-        ),
-      ).resolves.toEqual(
-        fieldErrors(field, `property ${field} should not exist`),
-      );
-    },
-  );
 });

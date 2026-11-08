@@ -21,7 +21,6 @@ describe('PracticeSlotsController', () => {
     ['remove', [UserRole.ADMIN]],
     ['list', [UserRole.ADMIN, UserRole.INSTRUCTOR]],
     ['findOne', [UserRole.ADMIN, UserRole.INSTRUCTOR]],
-    ['listAvailable', [UserRole.STUDENT]],
   ] as const)('restricts %s to %j', (method, expected) => {
     const roles = new Reflector().get<UserRole[]>(
       ROLES_KEY,
@@ -45,19 +44,6 @@ describe('PracticeSlotsController', () => {
     ).toBe(status);
   });
 
-  // Nest реєструє маршрути в порядку методів прототипу: якщо GET :id стоїть
-  // першим, GET /available потрапляє у findOne і ParseUUIDPipe дає 400.
-  it('declares GET available before GET :id', () => {
-    const methods = Object.getOwnPropertyNames(
-      PracticeSlotsController.prototype,
-    );
-
-    expect(methods.indexOf('listAvailable')).toBeGreaterThan(-1);
-    expect(methods.indexOf('listAvailable')).toBeLessThan(
-      methods.indexOf('findOne'),
-    );
-  });
-
   describe('endpoints', () => {
     const user = { id: 'admin-1', organizationId: 'org-1' };
     const id = 'slot-1';
@@ -68,7 +54,6 @@ describe('PracticeSlotsController', () => {
       remove: jest.fn().mockResolvedValue(undefined),
       list: jest.fn().mockResolvedValue(response),
       findOne: jest.fn().mockResolvedValue(response),
-      listAvailable: jest.fn().mockResolvedValue(response),
     };
     const controller = new PracticeSlotsController(
       practiceSlotsService as unknown as PracticeSlotsService,
@@ -94,18 +79,6 @@ describe('PracticeSlotsController', () => {
         response,
       );
       expect(practiceSlotsService.list).toHaveBeenCalledWith(user, query);
-    });
-
-    it('listAvailable passes the current user and query to the service', async () => {
-      const query = { from: '2026-11-16T00:00:00+02:00' };
-
-      await expect(
-        controller.listAvailable(user as never, query),
-      ).resolves.toBe(response);
-      expect(practiceSlotsService.listAvailable).toHaveBeenCalledWith(
-        user,
-        query,
-      );
     });
 
     it('findOne passes the current user and id to the service', async () => {

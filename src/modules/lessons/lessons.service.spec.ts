@@ -39,8 +39,7 @@ import {
   LESSON_GROUP_NOT_OPEN_MESSAGE,
   LESSON_HAS_ATTENDANCE_MESSAGE,
   LESSON_IN_PAST_MESSAGE,
-  LESSON_INSTRUCTOR_ASSIGN_MESSAGE,
-  LESSON_INSTRUCTOR_CHANGE_MESSAGE,
+  LESSON_INSTRUCTOR_FIELDS_MESSAGE,
   LESSON_NOT_CANCELLABLE_MESSAGE,
   LESSON_NOT_EDITABLE_MESSAGE,
   LESSON_NOT_FOUND_MESSAGE,
@@ -51,7 +50,7 @@ import {
   NO_THEORY_LESSON_FIELDS_MESSAGE,
   PRACTICE_CAR_REQUIRED_MESSAGE,
   PRACTICE_INSTRUCTOR_REQUIRED_MESSAGE,
-  STUDENT_NOT_ASSIGNED_MESSAGE,
+  STUDENT_CANCEL_TOO_LATE_MESSAGE,
   STUDENT_NOT_IN_PRACTICE_MESSAGE,
 } from './lessons.service';
 import { LESSON_SCHEDULE_CONFLICT_MESSAGE } from './schedule-conflicts';
@@ -346,6 +345,7 @@ describe('LessonsService', () => {
     });
 
     it.each([
+      ['INSTRUCTOR', instructorActor],
       ['TEACHER', teacherActor],
       ['STUDENT', studentActor],
       ['OWNER', ownerActor],
@@ -361,12 +361,12 @@ describe('LessonsService', () => {
       expect(prisma.$transaction).not.toHaveBeenCalled();
     });
 
-    it('forbids an instructor from changing another instructor lesson', async () => {
+    it('forbids an instructor from editing another instructor lesson', async () => {
       givenPractice(practiceRow({ lesson: { instructorId: 'instructor-2' } }));
 
       const error = await caught(
-        service.reschedulePractice(instructorActor as never, 'lesson-1', {
-          scheduledAt: '2026-11-03T10:00:00+02:00',
+        service.updatePractice(instructorActor as never, 'lesson-1', {
+          meetingPlace: 'Біля офісу автошколи',
         }),
       );
 
@@ -374,25 +374,23 @@ describe('LessonsService', () => {
       expect(prisma.drivingLesson.update).not.toHaveBeenCalled();
     });
 
-    it('lets an instructor reschedule their own lesson', async () => {
-      await service.reschedulePractice(instructorActor as never, 'lesson-1', {
-        scheduledAt: '2026-11-03T10:00:00+02:00',
-      });
+    it.each([
+      ['instructorId', { instructorId: 'instructor-1' }],
+      ['durationMin', { durationMin: 90 }],
+      ['carId', { carId: 'car-2' }],
+      ['carId with meetingPlace', { carId: 'car-2', meetingPlace: 'Автодром' }],
+    ])(
+      'forbids an instructor from changing %s before the transaction',
+      async (_, payload) => {
+        const error = await caught(
+          service.updatePractice(instructorActor as never, 'lesson-1', payload),
+        );
 
-      expect(prisma.drivingLesson.update).toHaveBeenCalledTimes(1);
-    });
-
-    it('forbids an instructor from changing instructorId before the transaction', async () => {
-      const error = await caught(
-        service.updatePractice(instructorActor as never, 'lesson-1', {
-          instructorId: 'instructor-1',
-        }),
-      );
-
-      expect(error).toBeInstanceOf(ForbiddenException);
-      expect(error.message).toBe(LESSON_INSTRUCTOR_CHANGE_MESSAGE);
-      expect(prisma.$transaction).not.toHaveBeenCalled();
-    });
+        expect(error).toBeInstanceOf(ForbiddenException);
+        expect(error.message).toBe(LESSON_INSTRUCTOR_FIELDS_MESSAGE);
+        expect(prisma.$transaction).not.toHaveBeenCalled();
+      },
+    );
 
     it('rejects an empty edit body without reading the lesson', async () => {
       const error = await caught(
@@ -1256,9 +1254,73 @@ describe('LessonsService', () => {
         expect(prisma.drivingLesson.update).not.toHaveBeenCalled();
       });
 
+      describe('by the student', () => {
+        it('lets a student cancel their own lesson more than 24 hours ahead', async () => {
+          await service.cancelPractice(studentActor as never, 'lesson-1', {
+            reason: 'Захворів',
+          });
+
+          expect(updateData(prisma.drivingLesson.update)).toMatchObject({
+            status: LessonStatus.CANCELLED,
+            cancelledById: 'student-1',
+            cancellationReason: 'Захворів',
+          });
+        });
+
+        it('accepts exactly 24 hours ahead', async () => {
+          givenPractice(
+            practiceRow({
+              lesson: { scheduledAt: new Date('2026-10-22T10:00:00.000Z') },
+            }),
+          );
+
+          await service.cancelPractice(studentActor as never, 'lesson-1', {});
+
+          expect(prisma.drivingLesson.update).toHaveBeenCalledTimes(1);
+        });
+
+        it('refuses less than 24 hours ahead and keeps the lesson', async () => {
+          givenPractice(
+            practiceRow({
+              lesson: { scheduledAt: new Date('2026-10-22T09:59:00.000Z') },
+            }),
+          );
+
+          const error = await caught(
+            service.cancelPractice(studentActor as never, 'lesson-1', {}),
+          );
+
+          expect(error).toBeInstanceOf(ConflictException);
+          expect(error.message).toBe(STUDENT_CANCEL_TOO_LATE_MESSAGE);
+          expect(prisma.drivingLesson.update).not.toHaveBeenCalled();
+        });
+
+        it('lets an admin cancel the same lesson within 24 hours', async () => {
+          givenPractice(
+            practiceRow({
+              lesson: { scheduledAt: new Date('2026-10-21T12:00:00.000Z') },
+            }),
+          );
+
+          await service.cancelPractice(admin as never, 'lesson-1', {});
+
+          expect(prisma.drivingLesson.update).toHaveBeenCalledTimes(1);
+        });
+
+        it('forbids a student from cancelling a lesson of another student', async () => {
+          givenPractice(practiceRow({ lesson: { studentId: 'student-2' } }));
+
+          const error = await caught(
+            service.cancelPractice(studentActor as never, 'lesson-1', {}),
+          );
+
+          expect(error).toBeInstanceOf(ForbiddenException);
+          expect(prisma.drivingLesson.update).not.toHaveBeenCalled();
+        });
+      });
+
       it.each([
         ['TEACHER', teacherActor],
-        ['STUDENT', studentActor],
         ['OWNER', ownerActor],
       ])('forbids %s without touching the database', async (_, actor) => {
         const error = await caught(
@@ -1943,52 +2005,8 @@ describe('LessonsService', () => {
         },
       );
 
-      it('makes the instructor actor the instructor of the lesson', async () => {
-        await service.createPractice(instructorActor as never, payload);
-
-        expect(createData(prisma.drivingLesson.create)).toMatchObject({
-          instructorId: 'instructor-1',
-        });
-      });
-
-      it('lets an instructor pass their own id', async () => {
-        await service.createPractice(instructorActor as never, {
-          ...payload,
-          instructorId: 'instructor-1',
-        });
-
-        expect(prisma.drivingLesson.create).toHaveBeenCalledTimes(1);
-      });
-
-      it('forbids an instructor from booking another instructor before the transaction', async () => {
-        const error = await caught(
-          service.createPractice(instructorActor as never, {
-            ...payload,
-            instructorId: 'instructor-2',
-          }),
-        );
-
-        expect(error).toBeInstanceOf(ForbiddenException);
-        expect(error.message).toBe(LESSON_INSTRUCTOR_ASSIGN_MESSAGE);
-        expect(prisma.organization.findUnique).not.toHaveBeenCalled();
-        expect(prisma.$transaction).not.toHaveBeenCalled();
-      });
-
-      it('forbids an instructor from booking a student of another instructor', async () => {
-        prisma.user.findFirst.mockResolvedValue(
-          studentRow({ profile: { instructorId: 'instructor-2' } }),
-        );
-
-        const error = await caught(
-          service.createPractice(instructorActor as never, payload),
-        );
-
-        expect(error).toBeInstanceOf(ForbiddenException);
-        expect(error.message).toBe(STUDENT_NOT_ASSIGNED_MESSAGE);
-        expect(prisma.drivingLesson.create).not.toHaveBeenCalled();
-      });
-
       it.each([
+        ['INSTRUCTOR', instructorActor],
         ['TEACHER', teacherActor],
         ['STUDENT', studentActor],
         ['OWNER', ownerActor],

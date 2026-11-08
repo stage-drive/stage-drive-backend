@@ -20,13 +20,13 @@ describe('LessonsController', () => {
 
   it.each([
     ['createTheory', [UserRole.ADMIN, UserRole.TEACHER]],
-    ['createPractice', [UserRole.ADMIN, UserRole.INSTRUCTOR]],
+    ['createPractice', [UserRole.ADMIN]],
     ['updateTheory', [UserRole.ADMIN, UserRole.TEACHER]],
     ['rescheduleTheory', [UserRole.ADMIN, UserRole.TEACHER]],
     ['updatePractice', [UserRole.ADMIN, UserRole.INSTRUCTOR]],
-    ['reschedulePractice', [UserRole.ADMIN, UserRole.INSTRUCTOR]],
+    ['reschedulePractice', [UserRole.ADMIN]],
     ['cancelTheory', [UserRole.ADMIN, UserRole.TEACHER]],
-    ['cancelPractice', [UserRole.ADMIN, UserRole.INSTRUCTOR]],
+    ['cancelPractice', [UserRole.ADMIN, UserRole.INSTRUCTOR, UserRole.STUDENT]],
     ['getAttendance', [UserRole.ADMIN, UserRole.TEACHER]],
     ['updateAttendance', [UserRole.ADMIN, UserRole.TEACHER]],
     [

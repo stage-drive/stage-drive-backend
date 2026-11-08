@@ -5,27 +5,20 @@ import {
   Logger,
   NotFoundException,
 } from '@nestjs/common';
-import { CarStatus, Prisma, User, UserRole, UserStatus } from '@prisma/client';
+import { Prisma, User, UserRole } from '@prisma/client';
 import {
   lockPracticeSlot,
   lockScheduleResources,
   scheduleLockKey,
 } from '../../common/prisma/schedule-lock';
 import { PrismaService } from '../../prisma/prisma.service';
-import { STUDENT_NOT_FOUND_MESSAGE } from '../students/students.service';
 import { PRACTICE_DEFAULT_DURATION_MIN } from './lessons.dto';
-import {
-  practiceStudentSelect,
-  requireInstructor,
-  requirePracticeProfile,
-  requireSlotCar,
-} from './practice-rules';
+import { requireInstructor, requireSlotCar } from './practice-rules';
 import {
   practiceSlotViewSelect,
   toPracticeSlotDto,
 } from './practice-slot-view';
 import {
-  AvailablePracticeSlotQueryDto,
   CreatePracticeSlotDto,
   PracticeSlotDto,
   PracticeSlotListDto,
@@ -36,12 +29,9 @@ import {
   ScheduleSlot,
   candidateWindow,
   findSlotConflicts,
-  findStudentSlotBlockers,
-  isSlotFree,
   lessonSlot,
   overlaps,
   scheduleConflict,
-  spanOf,
 } from './schedule-conflicts';
 import { fieldError, resolveRange } from './schedule-range';
 
@@ -50,7 +40,6 @@ export const PRACTICE_SLOT_VIEW_ROLES = [
   UserRole.ADMIN,
   UserRole.INSTRUCTOR,
 ] as const;
-export const PRACTICE_SLOT_AVAILABLE_ROLES = [UserRole.STUDENT] as const;
 
 export const SLOT_NOT_FOUND_MESSAGE = 'Practice slot not found';
 export const SLOT_IN_PAST_MESSAGE =
@@ -61,8 +50,6 @@ export const SLOT_ALREADY_STARTED_MESSAGE =
   'Слот уже почався: змінити чи видалити його не можна.';
 export const NO_SLOT_FIELDS_MESSAGE =
   'Немає полів для оновлення (instructorId, carId, scheduledAt, durationMin).';
-export const PRACTICE_PROFILE_INCOMPLETE_MESSAGE =
-  'Профіль практики не завершено: немає інструктора, категорії чи коробки передач. Зверніться до адміністратора автошколи.';
 
 const MINUTE_MS = 60_000;
 
@@ -287,74 +274,6 @@ export class PracticeSlotsService {
     };
   }
 
-  /**
-   * Слоти, на які студент може записатися: починаються у вікні [from, to) і в
-   * майбутньому, інструктор студента ACTIVE, авто AVAILABLE і підходить
-   * студенту, час не зайнятий інструктором, авто чи самим студентом. Без
-   * транзакції: це знімок, бронювання перевірить усе ще раз під ключами.
-   * Як у list: 403 і 400 — до запитів у БД, потім 404, потім 409.
-   */
-  async listAvailable(
-    actor: User,
-    query: AvailablePracticeSlotQueryDto,
-  ): Promise<PracticeSlotListDto> {
-    assertRole(actor, PRACTICE_SLOT_AVAILABLE_ROLES);
-    const now = new Date();
-    const range = resolveRange(query, now);
-    const organization = await this.requireOrganization(actor.organizationId);
-    const profile = await this.requireBookingProfile(actor);
-
-    // Статуси інструктора й авто — на момент запиту: після створення слоту
-    // інструктора могли заблокувати, авто — перевести в MAINTENANCE чи
-    // переприв'язати. gt: now ховає слоти, що вже почалися, навіть коли from
-    // у минулому.
-    const slots = await this.prisma.practiceSlot.findMany({
-      where: {
-        organizationId: actor.organizationId,
-        instructorId: profile.instructorId,
-        scheduledAt: { gt: now, gte: range.start, lt: range.end },
-        instructor: {
-          is: {
-            role: UserRole.INSTRUCTOR,
-            status: UserStatus.ACTIVE,
-            deletedAt: null,
-          },
-        },
-        car: {
-          is: {
-            status: CarStatus.AVAILABLE,
-            instructorId: profile.instructorId,
-            category: profile.category,
-            transmission: profile.transmission,
-          },
-        },
-      },
-      select: practiceSlotSelect,
-      orderBy: [{ scheduledAt: 'asc' }, { id: 'asc' }],
-    });
-
-    // Зайнятість одним набором запитів на всі слоти, а не запитом на слот.
-    const blockers =
-      slots.length === 0
-        ? []
-        : await findStudentSlotBlockers(this.prisma, {
-            organizationId: actor.organizationId,
-            studentId: actor.id,
-            instructorId: profile.instructorId,
-            carIds: [...new Set(slots.map((slot) => slot.carId))],
-            interval: spanOf(slots),
-          });
-
-    return {
-      from: range.start,
-      to: range.end,
-      timezone: organization.timezone,
-      items: slots
-        .filter((slot) => isSlotFree(slot, blockers, actor.id))
-        .map(toPracticeSlotDto),
-    };
-  }
-
   /** Слот іншої організації — 404, чужий слот для INSTRUCTOR — 403. */
   async findOne(actor: User, slotId: string): Promise<PracticeSlotDto> {
     assertRole(actor, PRACTICE_SLOT_VIEW_ROLES);
@@ -444,33 +363,6 @@ export class PracticeSlotsService {
       throw new ForbiddenException('Insufficient permissions');
     }
     return actor.id;
-  }
-
-  /**
-   * Студент з токена з допуском PRACTICE і повним профілем практики.
-   * Бронювання викликатиме те саме. Без категорії чи коробки авто не
-   * підібрати, без інструктора — слоти.
-   */
-  private async requireBookingProfile(actor: User) {
-    const student = await this.prisma.user.findFirst({
-      where: {
-        id: actor.id,
-        organizationId: actor.organizationId,
-        role: UserRole.STUDENT,
-        deletedAt: null,
-        studentProfile: { is: { organizationId: actor.organizationId } },
-      },
-      select: practiceStudentSelect,
-    });
-    if (!student) {
-      throw new NotFoundException(STUDENT_NOT_FOUND_MESSAGE);
-    }
-    const { instructorId, category, transmission } =
-      requirePracticeProfile(student);
-    if (!instructorId || !category || !transmission) {
-      throw new ConflictException(PRACTICE_PROFILE_INCOMPLETE_MESSAGE);
-    }
-    return { instructorId, category, transmission };
   }
 
   private async requireOrganization(organizationId: string) {

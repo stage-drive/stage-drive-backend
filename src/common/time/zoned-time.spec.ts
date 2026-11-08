@@ -1,5 +1,6 @@
 import {
   addDays,
+  isoWeekday,
   localDate,
   startOfLocalDay,
   zonedTimeToUtc,
@@ -130,5 +131,17 @@ describe('addDays', () => {
     ['2026-10-24', 1, '2026-10-25'],
   ])('%s + %d → %s', (date, days, expected) => {
     expect(addDays(date, days)).toBe(expected);
+  });
+});
+
+describe('isoWeekday', () => {
+  it.each([
+    ['2026-11-16', 1],
+    ['2026-11-18', 3],
+    ['2026-11-21', 6],
+    ['2026-11-22', 7],
+    ['2028-02-29', 2],
+  ])('%s → %d', (date, expected) => {
+    expect(isoWeekday(date)).toBe(expected);
   });
 });

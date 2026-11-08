@@ -1,6 +1,7 @@
 import { ConflictException, NotFoundException } from '@nestjs/common';
 import {
   CarStatus,
+  EnrollmentStatus,
   LicenseCategory,
   Prisma,
   TrainingStatus,
@@ -8,6 +9,10 @@ import {
   UserRole,
   UserStatus,
 } from '@prisma/client';
+import {
+  lockScheduleResources,
+  scheduleLockKey,
+} from '../../common/prisma/schedule-lock';
 import {
   CAR_NOT_FOUND_MESSAGE,
   INSTRUCTOR_NOT_ACTIVE_MESSAGE,
@@ -23,7 +28,8 @@ import { lessonPersonSelect } from './lesson-view';
 
 /**
  * Перевірки студента, інструктора й авто практики. Спільні для практичних
- * занять (LessonsService) і слотів (PracticeSlotsService).
+ * занять (LessonsService), бронювання (PracticeLessonsService) і слотів
+ * (PracticeSlotsService).
  */
 
 export const STUDENT_NOT_IN_PRACTICE_MESSAGE =
@@ -167,4 +173,26 @@ export async function requireSlotCar(
   if (car.status !== CarStatus.AVAILABLE) {
     throw new ConflictException(CAR_NOT_AVAILABLE_MESSAGE);
   }
+}
+
+/**
+ * Advisory-ключі практичного заняття: інструктор, авто, студент і його групи з
+ * ACTIVE-зарахуванням. Спільний ключ group: серіалізує практику студента з
+ * теорією його групи. Ті самі ключі беруть створення, зміна і бронювання
+ * заняття, тож паралельний запис не проскочить між перевіркою і записом.
+ */
+export async function lockPracticeResources(
+  tx: Prisma.TransactionClient,
+  input: { instructorId: string; carId: string; studentId: string },
+): Promise<void> {
+  const studentGroups = await tx.enrollment.findMany({
+    where: { studentId: input.studentId, status: EnrollmentStatus.ACTIVE },
+    select: { groupId: true },
+  });
+  await lockScheduleResources(tx, [
+    scheduleLockKey('instructor', input.instructorId),
+    scheduleLockKey('car', input.carId),
+    scheduleLockKey('student', input.studentId),
+    ...studentGroups.map((row) => scheduleLockKey('group', row.groupId)),
+  ]);
 }

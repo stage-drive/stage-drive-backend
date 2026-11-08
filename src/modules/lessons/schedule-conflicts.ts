@@ -407,17 +407,6 @@ export type SlotBlocker = {
   durationMin: number;
 };
 
-/** Інтервал від найранішого початку до найпізнішого кінця. rows не порожній. */
-export function spanOf(
-  rows: readonly { scheduledAt: Date; durationMin: number }[],
-): ScheduleSlot {
-  const start = Math.min(...rows.map((row) => row.scheduledAt.getTime()));
-  const end = Math.max(
-    ...rows.map((row) => lessonEnd(row.scheduledAt, row.durationMin).getTime()),
-  );
-  return { start: new Date(start), end: new Date(end) };
-}
-
 /**
  * Зайнятість для списку доступних слотів: SCHEDULED-практика інструктора,
  * цих авто чи студента і SCHEDULED-теорія груп з ACTIVE-зарахуванням
