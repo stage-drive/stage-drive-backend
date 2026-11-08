@@ -57,10 +57,14 @@ import {
 import type { PersonalScheduleDto } from '../../src/modules/lessons/lessons.dto';
 import { PersonalScheduleService } from '../../src/modules/lessons/personal-schedule.service';
 import {
+  PracticeLessonsService,
+  SLOT_NOT_OPEN_MESSAGE,
+  STUDENT_HAS_ACTIVE_LESSON_MESSAGE,
+} from '../../src/modules/lessons/practice-lessons.service';
+import {
   PracticeSlotsService,
   SLOT_ALREADY_STARTED_MESSAGE,
 } from '../../src/modules/lessons/practice-slots.service';
-import { STUDENT_NOT_IN_PRACTICE_MESSAGE } from '../../src/modules/lessons/practice-rules';
 import type { LessonConflict } from '../../src/modules/lessons/schedule-conflicts';
 import { StudentsService } from '../../src/modules/students/students.service';
 import type { PrismaService } from '../../src/prisma/prisma.service';
@@ -130,6 +134,7 @@ describe('Lesson schedule (integration, real Postgres)', () => {
   let attendanceService: LessonAttendanceService;
   let slotsService: PracticeSlotsService;
   let instructorScheduleService: InstructorScheduleService;
+  let practiceLessonsService: PracticeLessonsService;
   let sequence = 0;
 
   beforeAll(async () => {
@@ -157,6 +162,7 @@ describe('Lesson schedule (integration, real Postgres)', () => {
     attendanceService = new LessonAttendanceService(service);
     slotsService = new PracticeSlotsService(service);
     instructorScheduleService = new InstructorScheduleService(service);
+    practiceLessonsService = new PracticeLessonsService(service);
     jest.spyOn(Logger.prototype, 'log').mockImplementation(() => undefined);
   });
 
@@ -2076,126 +2082,6 @@ describe('Lesson schedule (integration, real Postgres)', () => {
         await booking.catch(() => undefined);
       }
     });
-
-    // Prisma-фільтри за складеними зв'язками instructor і car мок не
-    // перевіряє, тож тут — на реальній БД.
-    describe('available for a student', () => {
-      const day = () => ({
-        from: at(0).toISOString(),
-        to: at(24).toISOString(),
-      });
-
-      const availableIds = async (student: User) =>
-        (await slotsService.listAvailable(student, day())).items.map(
-          (item) => item.id,
-        );
-
-      it('lists slots of the student instructor only, never of another school', async () => {
-        const school = await createSchool();
-        const other = await createSchool();
-        const own = await slot(school, { scheduledAt: at(10) });
-        await slot(school, {
-          scheduledAt: at(12),
-          instructorId: school.otherInstructor.id,
-          carId: school.car3.id,
-        });
-        await slot(other, { scheduledAt: at(14) });
-
-        await expect(availableIds(school.student1)).resolves.toEqual([own.id]);
-      });
-
-      it('hides a slot whose car is unavailable, reassigned or does not fit the student', async () => {
-        const school = await createSchool();
-        const onCar1 = await slot(school, { scheduledAt: at(10) });
-        const onCar2 = await slot(school, {
-          scheduledAt: at(12),
-          carId: school.car2.id,
-        });
-
-        // Будь-яке авто інструктора студента з його категорією й коробкою.
-        await expect(availableIds(school.student1)).resolves.toEqual([
-          onCar1.id,
-          onCar2.id,
-        ]);
-
-        await prisma.car.update({
-          where: { id: school.car1.id },
-          data: { status: CarStatus.MAINTENANCE },
-        });
-        await expect(availableIds(school.student1)).resolves.toEqual([
-          onCar2.id,
-        ]);
-
-        await prisma.car.update({
-          where: { id: school.car2.id },
-          data: { transmission: Transmission.AUTOMATIC },
-        });
-        await expect(availableIds(school.student1)).resolves.toEqual([]);
-
-        await prisma.car.update({
-          where: { id: school.car1.id },
-          data: {
-            status: CarStatus.AVAILABLE,
-            instructorId: school.otherInstructor.id,
-          },
-        });
-        await expect(availableIds(school.student1)).resolves.toEqual([]);
-      });
-
-      it('hides slots of a BLOCKED instructor', async () => {
-        const school = await createSchool();
-        await slot(school, { scheduledAt: at(10) });
-
-        await prisma.user.update({
-          where: { id: school.instructor.id },
-          data: { status: UserStatus.BLOCKED },
-        });
-
-        await expect(availableIds(school.student1)).resolves.toEqual([]);
-      });
-
-      it('hides a slot taken by a lesson of another student and shows it again after cancellation', async () => {
-        const school = await createSchool();
-        const taken = await slot(school, { scheduledAt: at(10) });
-        const free = await slot(school, { scheduledAt: at(12) });
-
-        // Пряме заняття того самого інструктора з іншим авто (car2 студента 2).
-        const lesson = await lessonsService.createPractice(school.admin, {
-          studentId: school.student2.id,
-          scheduledAt: at(10, 30).toISOString(),
-          meetingPlace: 'Автодром',
-        });
-        await expect(availableIds(school.student1)).resolves.toEqual([free.id]);
-
-        await lessonsService.cancelPractice(school.admin, lesson.id, {});
-        await expect(availableIds(school.student1)).resolves.toEqual([
-          taken.id,
-          free.id,
-        ]);
-      });
-
-      it('hides a slot during theory of the student group', async () => {
-        const school = await createSchool();
-        await slot(school, { scheduledAt: at(10) });
-        const free = await slot(school, { scheduledAt: at(12) });
-        await school.theory(at(9, 30), 90);
-
-        await expect(availableIds(school.student1)).resolves.toEqual([free.id]);
-      });
-
-      it('rejects a student without practice access with 409', async () => {
-        const school = await createSchool();
-        await slot(school, { scheduledAt: at(10) });
-        await prisma.student.update({
-          where: { userId: school.student1.id },
-          data: { trainingStatus: TrainingStatus.ACTIVE },
-        });
-
-        await expect(
-          slotsService.listAvailable(school.student1, day()),
-        ).rejects.toThrow(STUDENT_NOT_IN_PRACTICE_MESSAGE);
-      });
-    });
   });
 
   describe('instructor schedule', () => {
@@ -2496,6 +2382,279 @@ describe('Lesson schedule (integration, real Postgres)', () => {
         commit.resolve();
         await timeOff.catch(() => undefined);
       }
+    });
+  });
+
+  describe('practice booking', () => {
+    type School = Awaited<ReturnType<typeof createSchool>>;
+
+    /** День тижня DAY: у цих тестах пояс автошколи — UTC, тож at(h) = h:00. */
+    const DAY_OF_WEEK = [
+      DayOfWeek.SUNDAY,
+      DayOfWeek.MONDAY,
+      DayOfWeek.TUESDAY,
+      DayOfWeek.WEDNESDAY,
+      DayOfWeek.THURSDAY,
+      DayOfWeek.FRIDAY,
+      DayOfWeek.SATURDAY,
+    ][DAY.getUTCDay()];
+
+    const day = () => ({ from: at(0).toISOString(), to: at(24).toISOString() });
+
+    /** Інструктор працює 09:00–13:00 і 14:00–18:00: слоти 9, 11, 14, 16. */
+    async function openSchool(): Promise<School> {
+      const school = await createSchool();
+      await prisma.organization.update({
+        where: { id: school.organization.id },
+        data: { timezone: 'UTC' },
+      });
+      await instructorScheduleService.replaceWorkingHours(
+        school.admin,
+        school.instructor.id,
+        {
+          intervals: [
+            { dayOfWeek: DAY_OF_WEEK, start: '09:00', end: '13:00' },
+            { dayOfWeek: DAY_OF_WEEK, start: '14:00', end: '18:00' },
+          ],
+        },
+      );
+      return school;
+    }
+
+    const freeHours = async (student: User) =>
+      (await practiceLessonsService.listAvailable(student, day())).items.map(
+        (item) => item.scheduledAt.getUTCHours(),
+      );
+
+    const bookAt = (student: User, hour: number) =>
+      practiceLessonsService.book(student, {
+        scheduledAt: at(hour).toISOString(),
+      });
+
+    it('computes the free hours from the working week of the student instructor only', async () => {
+      const school = await openSchool();
+      const other = await createSchool();
+      await instructorScheduleService.replaceWorkingHours(
+        school.admin,
+        school.otherInstructor.id,
+        {
+          intervals: [{ dayOfWeek: DAY_OF_WEEK, start: '06:00', end: '08:00' }],
+        },
+      );
+
+      await expect(freeHours(school.student1)).resolves.toEqual([
+        9, 11, 14, 16,
+      ]);
+      // Інша автошкола без графіка — порожньо, і чужі слоти не просочуються.
+      await expect(freeHours(other.student1)).resolves.toEqual([]);
+    });
+
+    it('hides hours taken by time off, the instructor, and theory of the student group', async () => {
+      const school = await openSchool();
+      await instructorScheduleService.createTimeOff(
+        school.admin,
+        school.instructor.id,
+        { startsAt: at(16).toISOString(), endsAt: at(18).toISOString() },
+      );
+      // Той самий інструктор з іншим студентом і авто о 11:00.
+      const lesson = await lessonsService.createPractice(school.admin, {
+        studentId: school.student2.id,
+        scheduledAt: at(11).toISOString(),
+        durationMin: 120,
+        meetingPlace: 'Автодром',
+      });
+      // Теорія групи студента 09:30–11:00.
+      await school.theory(at(9, 30), 90);
+
+      await expect(freeHours(school.student1)).resolves.toEqual([14]);
+
+      await lessonsService.cancelPractice(school.admin, lesson.id, {});
+      await expect(freeHours(school.student1)).resolves.toEqual([11, 14]);
+    });
+
+    it('offers nothing while the car is in maintenance or the instructor is blocked', async () => {
+      const school = await openSchool();
+
+      await prisma.car.update({
+        where: { id: school.car1.id },
+        data: { status: CarStatus.MAINTENANCE },
+      });
+      await expect(freeHours(school.student1)).resolves.toEqual([]);
+
+      await prisma.car.update({
+        where: { id: school.car1.id },
+        data: { status: CarStatus.AVAILABLE },
+      });
+      await prisma.user.update({
+        where: { id: school.instructor.id },
+        data: { status: UserStatus.BLOCKED },
+      });
+      await expect(freeHours(school.student1)).resolves.toEqual([]);
+    });
+
+    it('books a 120-minute lesson that then blocks the hour for others', async () => {
+      const school = await openSchool();
+
+      const booked = await bookAt(school.student1, 9);
+
+      expect(booked).toMatchObject({
+        status: LessonStatus.SCHEDULED,
+        durationMin: 120,
+        scheduledAt: at(9),
+        endsAt: at(11),
+        meetingPlace: null,
+      });
+      expect(booked.instructor.id).toBe(school.instructor.id);
+      expect(booked.student.id).toBe(school.student1.id);
+      expect(booked.car?.id).toBe(school.car1.id);
+      await expect(conflictsOf(bookAt(school.student2, 9))).resolves.toEqual([
+        'INSTRUCTOR/PRACTICE',
+      ]);
+      await expect(freeHours(school.student2)).resolves.toEqual([11, 14, 16]);
+    });
+
+    it('lets a student hold one lesson at a time and book again after cancelling it', async () => {
+      const school = await openSchool();
+      const first = await bookAt(school.student1, 9);
+
+      await expect(bookAt(school.student1, 14)).rejects.toThrow(
+        STUDENT_HAS_ACTIVE_LESSON_MESSAGE,
+      );
+      const listed = await practiceLessonsService.listAvailable(
+        school.student1,
+        day(),
+      );
+      expect(listed.activeLesson).toMatchObject({ id: first.id });
+
+      // DAY — через тиждень, тож студент встигає скасувати за 24 години.
+      await lessonsService.cancelPractice(school.student1, first.id, {});
+      await expect(bookAt(school.student1, 14)).resolves.toMatchObject({
+        scheduledAt: at(14),
+      });
+    });
+
+    it('refuses a time off the grid, in the break or outside the working hours', async () => {
+      const school = await openSchool();
+
+      for (const hour of [10, 13, 17, 19]) {
+        await expect(bookAt(school.student1, hour)).rejects.toThrow(
+          SLOT_NOT_OPEN_MESSAGE,
+        );
+      }
+      await expect(
+        prisma.drivingLesson.count({
+          where: { studentId: school.student1.id },
+        }),
+      ).resolves.toBe(0);
+    });
+
+    it('lets only one of two students booking the same hour at once win', async () => {
+      const school = await openSchool();
+
+      const results = await Promise.allSettled([
+        bookAt(school.student1, 9),
+        bookAt(school.student2, 9),
+      ]);
+
+      expect(results.filter((r) => r.status === 'fulfilled')).toHaveLength(1);
+      const [rejected] = results.filter((r) => r.status === 'rejected');
+      expect(rejected.reason).toBeInstanceOf(ConflictException);
+      await expect(
+        prisma.drivingLesson.count({
+          where: { instructorId: school.instructor.id, scheduledAt: at(9) },
+        }),
+      ).resolves.toBe(1);
+    });
+
+    it('lets only one of two parallel bookings of the same student win', async () => {
+      const school = await openSchool();
+
+      const results = await Promise.allSettled([
+        bookAt(school.student1, 9),
+        bookAt(school.student1, 14),
+      ]);
+
+      expect(results.filter((r) => r.status === 'fulfilled')).toHaveLength(1);
+      await expect(
+        prisma.drivingLesson.count({
+          where: { studentId: school.student1.id },
+        }),
+      ).resolves.toBe(1);
+    });
+
+    it('makes a booking wait for time off of the same instructor and see it', async () => {
+      const school = await openSchool();
+      const inserted = deferred();
+      const commit = deferred();
+
+      // In-flight time off: holds the instructor key and has inserted the whole day.
+      const timeOff = prisma.$transaction(async (tx) => {
+        await lockScheduleResources(tx, [
+          scheduleLockKey('instructor', school.instructor.id),
+        ]);
+        await tx.instructorTimeOff.create({
+          data: {
+            organizationId: school.organization.id,
+            instructorId: school.instructor.id,
+            startsAt: at(0),
+            endsAt: at(24),
+          },
+        });
+        inserted.resolve();
+        await commit.promise;
+      });
+
+      try {
+        await inserted.promise;
+        const booking = bookAt(school.student1, 9);
+        const state = track(booking);
+
+        await delay(LOCK_WAIT_MS);
+        expect(state.settled).toBe(false);
+
+        commit.resolve();
+        await timeOff;
+
+        await expect(conflictsOf(booking)).resolves.toEqual([
+          'INSTRUCTOR/TIME_OFF',
+        ]);
+      } finally {
+        commit.resolve();
+        await timeOff.catch(() => undefined);
+      }
+    });
+
+    it('lists lessons of the school for ADMIN with filters, hiding cancelled ones by default', async () => {
+      const school = await openSchool();
+      const other = await openSchool();
+      const booked = await bookAt(school.student1, 9);
+      const byAdmin = await lessonsService.createPractice(school.admin, {
+        studentId: school.student2.id,
+        scheduledAt: at(14).toISOString(),
+        meetingPlace: 'Автодром',
+      });
+      await bookAt(other.student1, 9);
+      await lessonsService.cancelPractice(school.admin, byAdmin.id, {});
+
+      const ids = async (query: object) =>
+        (
+          await practiceLessonsService.list(school.admin, {
+            ...day(),
+            ...query,
+          })
+        ).items.map((item) => item.id);
+
+      await expect(ids({})).resolves.toEqual([booked.id]);
+      await expect(ids({ includeCancelled: true })).resolves.toEqual([
+        booked.id,
+        byAdmin.id,
+      ]);
+      await expect(
+        ids({ includeCancelled: true, studentId: school.student2.id }),
+      ).resolves.toEqual([byAdmin.id]);
+      await expect(
+        ids({ instructorId: school.otherInstructor.id }),
+      ).resolves.toEqual([]);
     });
   });
 });

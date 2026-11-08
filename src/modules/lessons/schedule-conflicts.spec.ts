@@ -15,7 +15,6 @@ import {
   overlaps,
   scheduleConflict,
   sortConflicts,
-  spanOf,
 } from './schedule-conflicts';
 
 const at = (iso: string) => new Date(iso);
@@ -604,21 +603,6 @@ describe('findSlotConflicts', () => {
       'lesson-late',
       'slot-car',
     ]);
-  });
-});
-
-describe('spanOf', () => {
-  it('runs from the earliest start to the latest end, not the last row end', () => {
-    const span = spanOf([
-      { scheduledAt: at('2026-11-03T10:00:00Z'), durationMin: 240 },
-      { scheduledAt: at('2026-11-03T11:00:00Z'), durationMin: 60 },
-      { scheduledAt: at('2026-11-03T09:00:00Z'), durationMin: 30 },
-    ]);
-
-    expect(span).toEqual({
-      start: at('2026-11-03T09:00:00Z'),
-      end: at('2026-11-03T14:00:00Z'),
-    });
   });
 });
 

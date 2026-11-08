@@ -53,7 +53,10 @@ import {
 } from './lessons.dto';
 import {
   LessonsService,
+  PRACTICE_LESSON_CANCEL_ROLES,
   PRACTICE_LESSON_EDIT_ROLES,
+  PRACTICE_LESSON_SCHEDULE_ROLES,
+  STUDENT_CANCEL_MIN_HOURS,
   THEORY_LESSON_EDIT_ROLES,
 } from './lessons.service';
 import {
@@ -86,9 +89,10 @@ const THEORY_CHECKS =
   'студенти групи не мають практики в цей час.';
 
 const PRACTICE_CHECKS =
-  'Перевіряється: інструктор ACTIVE і не зайнятий, авто AVAILABLE, призначене інструктору, ' +
-  'з категорією й коробкою як у студента, і не зайняте, студент у статусі PRACTICE без іншої практики ' +
-  'чи теорії своєї групи в цей час.';
+  'Перевіряється: інструктор ACTIVE, не зайнятий і не в недоступності (відпустка, лікарняний), ' +
+  'авто AVAILABLE, призначене інструктору, з категорією й коробкою як у студента, і не зайняте, ' +
+  'студент у статусі PRACTICE без іншої практики чи теорії своєї групи в цей час. ' +
+  'Робочий графік інструктора не перевіряється: так ADMIN додає разову зміну.';
 
 const CREATE_RULES =
   `Тривалість — ціле число хвилин від ${LESSON_MIN_DURATION_MIN} до ${LESSON_MAX_DURATION_MIN}. ` +
@@ -198,11 +202,11 @@ export class LessonsController {
 
   @Post('practice')
   @HttpCode(HttpStatus.CREATED)
-  @Roles(...PRACTICE_LESSON_EDIT_ROLES)
+  @Roles(...PRACTICE_LESSON_SCHEDULE_ROLES)
   @ApiOperation({
     summary: 'Створити практичне заняття',
     description:
-      'ADMIN створює заняття будь-якому студенту своєї автошколи; інструктор — лише для себе і лише своєму студенту. ' +
+      'ADMIN створює заняття будь-якому студенту своєї автошколи. Студенти бронюють самі через POST /lessons/practice/book. ' +
       'Без instructorId і carId беруться інструктор і авто, призначені студенту під час допуску до практики. ' +
       "Місце зустрічі (meetingPlace) обов'язкове. " +
       `${CREATE_RULES} ${PRACTICE_CHECKS}`,
@@ -213,10 +217,7 @@ export class LessonsController {
       'Некоректне тіло, зайве поле, порожній чи задовгий meetingPlace, або scheduledAt без зсуву чи в минулому. ' +
       'Тіло містить errors: [{ field, message }].',
   })
-  @ApiForbiddenResponse({
-    description:
-      'Роль не ADMIN чи INSTRUCTOR, інструктор передав чужий instructorId або створює заняття не своєму студенту.',
-  })
+  @ApiForbiddenResponse({ description: 'Роль не ADMIN.' })
   @ApiNotFoundResponse({
     description:
       'Студента, інструктора чи авто не знайдено, або вони належать іншій автошколі.',
@@ -315,7 +316,8 @@ export class LessonsController {
   @ApiOperation({
     summary: 'Редагувати практичне заняття',
     description:
-      'ADMIN змінює durationMin, instructorId, carId і meetingPlace; інструктор — лише durationMin, carId і meetingPlace свого заняття. ' +
+      'ADMIN змінює durationMin, instructorId, carId і meetingPlace; інструктор — лише meetingPlace свого заняття ' +
+      '(наприклад, після бронювання студентом без місця зустрічі). ' +
       'Зміна лише meetingPlace не перевіряє розклад. ' +
       'Старе заняття без авто бере авто, призначене студенту, коли змінюється розклад. ' +
       `${SCHEDULE_RULES} ${PRACTICE_CHECKS}`,
@@ -332,7 +334,7 @@ export class LessonsController {
   })
   @ApiForbiddenResponse({
     description:
-      'Роль не ADMIN чи INSTRUCTOR, інструктор редагує чуже заняття, або інструктор змінює instructorId.',
+      'Роль не ADMIN чи INSTRUCTOR, інструктор редагує чуже заняття, або інструктор змінює щось, крім meetingPlace.',
   })
   @ApiNotFoundResponse({
     description:
@@ -351,11 +353,11 @@ export class LessonsController {
   }
 
   @Patch('practice/:id/reschedule')
-  @Roles(...PRACTICE_LESSON_EDIT_ROLES)
+  @Roles(...PRACTICE_LESSON_SCHEDULE_ROLES)
   @ApiOperation({
     summary: 'Перенести практичне заняття',
     description:
-      'ADMIN або інструктор заняття переносить його на нову дату й час. ' +
+      'ADMIN переносить заняття на нову дату й час. Студент переносить так: скасовує заняття й бронює інший слот. ' +
       'scheduledAt — ISO 8601 з часовим зсувом. ' +
       `${SCHEDULE_RULES} ${PRACTICE_CHECKS}`,
   })
@@ -370,10 +372,7 @@ export class LessonsController {
       'Некоректне тіло, scheduledAt без зсуву чи в минулому, або id не UUID. ' +
       'Тіло містить errors: [{ field, message }].',
   })
-  @ApiForbiddenResponse({
-    description:
-      'Роль не ADMIN чи INSTRUCTOR, або інструктор переносить чуже заняття.',
-  })
+  @ApiForbiddenResponse({ description: 'Роль не ADMIN.' })
   @ApiNotFoundResponse({
     description: 'Заняття не знайдено або воно належить іншій автошколі.',
   })
@@ -421,10 +420,14 @@ export class LessonsController {
 
   @Post('practice/:id/cancel')
   @HttpCode(HttpStatus.OK)
-  @Roles(...PRACTICE_LESSON_EDIT_ROLES)
+  @Roles(...PRACTICE_LESSON_CANCEL_ROLES)
   @ApiOperation({
     summary: 'Скасувати практичне заняття',
-    description: `ADMIN або інструктор заняття скасовує його. Тіло необов'язкове. Інструктор, студент і авто лишаються в занятті. ${CANCEL_RULES}`,
+    description:
+      'ADMIN, інструктор заняття або студент заняття скасовує його. ' +
+      `Студент — не пізніше ніж за ${STUDENT_CANCEL_MIN_HOURS} години до початку. ` +
+      "Тіло необов'язкове. Інструктор, студент і авто лишаються в занятті, а час знову стає вільним для запису. " +
+      CANCEL_RULES,
   })
   @ApiParam({
     name: 'id',
@@ -435,12 +438,14 @@ export class LessonsController {
   @ApiBadRequestResponse({ description: CANCEL_BAD_REQUEST_DESCRIPTION })
   @ApiForbiddenResponse({
     description:
-      'Роль не ADMIN чи INSTRUCTOR, або інструктор скасовує чуже заняття.',
+      'Роль не ADMIN, INSTRUCTOR чи STUDENT, або інструктор чи студент скасовує чуже заняття.',
   })
   @ApiNotFoundResponse({
     description: 'Заняття не знайдено або воно належить іншій автошколі.',
   })
-  @ApiConflictResponse({ description: CANCEL_CONFLICT_DESCRIPTION })
+  @ApiConflictResponse({
+    description: `${CANCEL_CONFLICT_DESCRIPTION} Для студента — до початку менше ${STUDENT_CANCEL_MIN_HOURS} годин.`,
+  })
   cancelPractice(
     @CurrentUser() user: User,
     @Param('id', new ParseUUIDPipe({ version: '4' })) id: string,

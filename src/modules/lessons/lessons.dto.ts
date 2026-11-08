@@ -78,7 +78,7 @@ const TIMING_DESCRIPTION =
   'UPCOMING — ще не почалося, IN_PROGRESS — триває, FINISHED — закінчилося. ' +
   'Рахується за часом сервера; status минулого заняття зазвичай SCHEDULED.';
 
-function trimString({ value }: { value: unknown }): unknown {
+export function trimString({ value }: { value: unknown }): unknown {
   return typeof value === 'string' ? value.trim() : value;
 }
 
@@ -86,7 +86,7 @@ function trimString({ value }: { value: unknown }): unknown {
  * Query-параметри приходять рядками, а enableImplicitConversion вимкнено.
  * Усе, крім 'true' і 'false', лишається як є і падає на IsBoolean.
  */
-function optionalBoolean({ value }: { value: unknown }): unknown {
+export function optionalBoolean({ value }: { value: unknown }): unknown {
   if (value === 'true') {
     return true;
   }

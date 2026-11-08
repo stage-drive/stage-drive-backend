@@ -7,7 +7,6 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import {
-  EnrollmentStatus,
   GroupStatus,
   LessonStatus,
   Prisma,
@@ -45,6 +44,7 @@ import {
 } from './lessons.dto';
 import {
   assertInstructorActive,
+  lockPracticeResources,
   practiceStudentSelect,
   requireInstructor,
   requirePracticeCar,
@@ -63,10 +63,24 @@ export const THEORY_LESSON_EDIT_ROLES = [
   UserRole.TEACHER,
 ] as const;
 
+/** Створення й перенесення практики: розкладом керує лише ADMIN. */
+export const PRACTICE_LESSON_SCHEDULE_ROLES = [UserRole.ADMIN] as const;
+
+/** Редагування: INSTRUCTOR змінює лише місце зустрічі свого заняття. */
 export const PRACTICE_LESSON_EDIT_ROLES = [
   UserRole.ADMIN,
   UserRole.INSTRUCTOR,
 ] as const;
+
+/** Скасування: STUDENT — лише своє заняття і не пізніше ніж за 24 години. */
+export const PRACTICE_LESSON_CANCEL_ROLES = [
+  UserRole.ADMIN,
+  UserRole.INSTRUCTOR,
+  UserRole.STUDENT,
+] as const;
+
+/** Студент скасовує своє заняття не пізніше ніж за стільки годин до початку. */
+export const STUDENT_CANCEL_MIN_HOURS = 24;
 
 export const LESSON_NOT_FOUND_MESSAGE = 'Lesson not found';
 export const LESSON_NOT_EDITABLE_MESSAGE =
@@ -85,8 +99,9 @@ export const LESSON_TEACHER_NOT_ACTIVE_MESSAGE =
 export { STUDENT_NOT_IN_PRACTICE_MESSAGE } from './practice-rules';
 export const PRACTICE_CAR_REQUIRED_MESSAGE =
   'Для практичного заняття потрібен автомобіль. Передайте carId.';
-export const LESSON_INSTRUCTOR_CHANGE_MESSAGE =
-  'Змінити інструктора заняття може лише ADMIN.';
+export const LESSON_INSTRUCTOR_FIELDS_MESSAGE =
+  'Інструктор може змінити лише місце зустрічі (meetingPlace). Решту змінює ADMIN.';
+export const STUDENT_CANCEL_TOO_LATE_MESSAGE = `Скасувати заняття можна не пізніше ніж за ${STUDENT_CANCEL_MIN_HOURS} години до початку. Зверніться до адміністратора автошколи.`;
 export const NO_THEORY_LESSON_FIELDS_MESSAGE =
   'Немає дозволених полів для оновлення (topic, durationMin).';
 export const NO_PRACTICE_LESSON_FIELDS_MESSAGE =
@@ -101,12 +116,10 @@ export const LESSON_GROUP_NOT_OPEN_MESSAGE =
   'Заняття можна створити лише для групи зі статусом PLANNED або ACTIVE.';
 export const PRACTICE_INSTRUCTOR_REQUIRED_MESSAGE =
   'Студенту не призначено інструктора. Передайте instructorId.';
-export const LESSON_INSTRUCTOR_ASSIGN_MESSAGE =
-  'Інструктор може створити заняття лише для себе.';
-export const STUDENT_NOT_ASSIGNED_MESSAGE =
-  'Інструктор може створити заняття лише для свого студента.';
 export const LESSON_HAS_ATTENDANCE_MESSAGE =
   'Заняття з відміченим відвідуванням не можна перенести.';
+
+const HOUR_MS = 60 * 60_000;
 
 const OPEN_GROUP_STATUSES: GroupStatus[] = [
   GroupStatus.PLANNED,
@@ -219,10 +232,8 @@ export async function lockTheoryLessonWithGroup(
   await lockTheoryLesson(tx, lessonId, organizationId);
 }
 
-function assertCanEditPractice(actor: User): void {
-  if (
-    !(PRACTICE_LESSON_EDIT_ROLES as readonly UserRole[]).includes(actor.role)
-  ) {
+function assertRole(actor: User, roles: readonly UserRole[]): void {
+  if (!roles.includes(actor.role)) {
     throw new ForbiddenException('Insufficient permissions');
   }
 }
@@ -378,22 +389,15 @@ export class LessonsService {
 
   /**
    * Нове практичне заняття студента. Інструктор і авто без явних id беруться з
-   * допуску студента до практики. INSTRUCTOR створює заняття лише для себе і
-   * лише своєму студенту. Рядка заняття ще немає, тож row-lock не береться.
+   * допуску студента до практики. Робочий графік інструктора не перевіряється:
+   * так ADMIN додає разову зміну; недоступність — перевіряється. Рядка заняття
+   * ще немає, тож row-lock не береться.
    */
   async createPractice(
     actor: User,
     payload: CreatePracticeLessonDto,
   ): Promise<PracticeLessonDto> {
-    assertCanEditPractice(actor);
-    const isInstructor = actor.role === UserRole.INSTRUCTOR;
-    if (
-      isInstructor &&
-      payload.instructorId !== undefined &&
-      payload.instructorId !== actor.id
-    ) {
-      throw new ForbiddenException(LESSON_INSTRUCTOR_ASSIGN_MESSAGE);
-    }
+    assertRole(actor, PRACTICE_LESSON_SCHEDULE_ROLES);
     const scheduledAt = new Date(payload.scheduledAt);
     const durationMin = payload.durationMin ?? PRACTICE_DEFAULT_DURATION_MIN;
     assertCreatableAt(scheduledAt, new Date());
@@ -413,14 +417,9 @@ export class LessonsService {
       if (!student) {
         throw new NotFoundException(STUDENT_NOT_FOUND_MESSAGE);
       }
-      if (isInstructor && student.studentProfile?.instructorId !== actor.id) {
-        throw new ForbiddenException(STUDENT_NOT_ASSIGNED_MESSAGE);
-      }
       const profile = requirePracticeProfile(student);
 
-      const instructorId = isInstructor
-        ? actor.id
-        : (payload.instructorId ?? profile.instructorId);
+      const instructorId = payload.instructorId ?? profile.instructorId;
       if (!instructorId) {
         throw new ConflictException(PRACTICE_INSTRUCTOR_REQUIRED_MESSAGE);
       }
@@ -496,12 +495,18 @@ export class LessonsService {
     lessonId: string,
     payload: UpdatePracticeLessonDto,
   ): Promise<PracticeLessonDto> {
-    assertCanEditPractice(actor);
+    assertRole(actor, PRACTICE_LESSON_EDIT_ROLES);
     if (isEmptyPayload(payload)) {
       throw fieldError('body', NO_PRACTICE_LESSON_FIELDS_MESSAGE);
     }
-    if (payload.instructorId !== undefined && actor.role !== UserRole.ADMIN) {
-      throw new ForbiddenException(LESSON_INSTRUCTOR_CHANGE_MESSAGE);
+    // Зміна тривалості, авто чи інструктора — це зміна розкладу: лише ADMIN.
+    if (
+      actor.role !== UserRole.ADMIN &&
+      (payload.durationMin !== undefined ||
+        payload.instructorId !== undefined ||
+        payload.carId !== undefined)
+    ) {
+      throw new ForbiddenException(LESSON_INSTRUCTOR_FIELDS_MESSAGE);
     }
     return this.changePractice(actor, lessonId, {
       durationMin: payload.durationMin,
@@ -516,7 +521,7 @@ export class LessonsService {
     lessonId: string,
     payload: RescheduleLessonDto,
   ): Promise<PracticeLessonDto> {
-    assertCanEditPractice(actor);
+    assertRole(actor, PRACTICE_LESSON_SCHEDULE_ROLES);
     return this.changePractice(actor, lessonId, {
       scheduledAt: new Date(payload.scheduledAt),
       durationMin: payload.durationMin,
@@ -565,15 +570,17 @@ export class LessonsService {
   }
 
   /**
-   * Те саме для практики: звільняється час інструктора, авто і студента.
-   * Інструктор, авто і студент лишаються в занятті як історія.
+   * Те саме для практики: звільняється час інструктора, авто і студента, і
+   * година знову з'являється серед вільних слотів. Інструктор, авто і студент
+   * лишаються в занятті як історія. STUDENT скасовує лише своє заняття і не
+   * пізніше ніж за STUDENT_CANCEL_MIN_HOURS до початку.
    */
   async cancelPractice(
     actor: User,
     lessonId: string,
     payload: CancelLessonDto,
   ): Promise<PracticeLessonDto> {
-    assertCanEditPractice(actor);
+    assertRole(actor, PRACTICE_LESSON_CANCEL_ROLES);
     await this.requireOrganization(actor.organizationId);
     const now = new Date();
 
@@ -581,6 +588,13 @@ export class LessonsService {
       const lesson = await this.lockPracticeForChange(tx, actor, lessonId);
       assertEditable(lesson.status, LESSON_NOT_CANCELLABLE_MESSAGE);
       assertNotStarted(lesson.scheduledAt, now);
+      if (
+        actor.role === UserRole.STUDENT &&
+        lesson.scheduledAt.getTime() - now.getTime() <
+          STUDENT_CANCEL_MIN_HOURS * HOUR_MS
+      ) {
+        throw new ConflictException(STUDENT_CANCEL_TOO_LATE_MESSAGE);
+      }
 
       return tx.drivingLesson.update({
         where: { id: lesson.id },
@@ -842,16 +856,7 @@ export class LessonsService {
       slot: ScheduleSlot;
     },
   ): Promise<void> {
-    const studentGroups = await tx.enrollment.findMany({
-      where: { studentId: input.studentId, status: EnrollmentStatus.ACTIVE },
-      select: { groupId: true },
-    });
-    await lockScheduleResources(tx, [
-      scheduleLockKey('instructor', input.instructorId),
-      scheduleLockKey('car', input.carId),
-      scheduleLockKey('student', input.studentId),
-      ...studentGroups.map((row) => scheduleLockKey('group', row.groupId)),
-    ]);
+    await lockPracticeResources(tx, input);
     const conflicts = await findPracticeConflicts(tx, {
       organizationId: actor.organizationId,
       ...input,
@@ -892,7 +897,7 @@ export class LessonsService {
 
   /**
    * Блокує заняття (FOR UPDATE) і читає його. Заняття іншої організації — 404,
-   * чуже заняття для INSTRUCTOR — 403.
+   * чуже заняття для INSTRUCTOR чи STUDENT — 403.
    */
   private async lockPracticeForChange(
     tx: Prisma.TransactionClient,
@@ -909,8 +914,9 @@ export class LessonsService {
       throw new NotFoundException(LESSON_NOT_FOUND_MESSAGE);
     }
     if (
-      actor.role === UserRole.INSTRUCTOR &&
-      lesson.instructorId !== actor.id
+      (actor.role === UserRole.INSTRUCTOR &&
+        lesson.instructorId !== actor.id) ||
+      (actor.role === UserRole.STUDENT && lesson.studentId !== actor.id)
     ) {
       throw new ForbiddenException('Insufficient permissions');
     }
