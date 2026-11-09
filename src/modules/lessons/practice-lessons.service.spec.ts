@@ -7,10 +7,12 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import {
+  BookingConfirmation,
   CarStatus,
   DayOfWeek,
   LessonStatus,
   LicenseCategory,
+  PaymentStatus,
   TrainingStatus,
   Transmission,
   User,
@@ -30,6 +32,8 @@ import { SCHEDULE_RANGE_ORDER_MESSAGE } from './lessons.dto';
 import { STUDENT_NOT_IN_PRACTICE_MESSAGE } from './practice-rules';
 import {
   BOOKING_IN_PAST_MESSAGE,
+  BOOKING_TOO_SOON_MESSAGE,
+  NO_PRACTICE_ACCESS_MESSAGE,
   PRACTICE_PROFILE_INCOMPLETE_MESSAGE,
   PracticeLessonsService,
   SLOT_NOT_OPEN_MESSAGE,
@@ -116,6 +120,9 @@ describe('PracticeLessonsService', () => {
       student: { id: 'student-1', firstName: 'Ірина', lastName: 'Коваль' },
       car: carView,
       meetingPlace: null as string | null,
+      confirmationStatus: BookingConfirmation.CONFIRMED as BookingConfirmation,
+      confirmedAt: NOW,
+      paymentStatus: PaymentStatus.PAID,
       ...overrides,
     };
   }
@@ -138,6 +145,8 @@ describe('PracticeLessonsService', () => {
     $executeRaw: jest.fn(),
     $transaction: jest.fn(),
   };
+
+  const payment = { resolveForLesson: jest.fn() };
 
   let service: PracticeLessonsService;
   let log: jest.SpyInstance;
@@ -203,7 +212,11 @@ describe('PracticeLessonsService', () => {
     log = jest
       .spyOn(Logger.prototype, 'log')
       .mockImplementation(() => undefined);
-    service = new PracticeLessonsService(prisma as unknown as PrismaService);
+    payment.resolveForLesson.mockResolvedValue(PaymentStatus.PAID);
+    service = new PracticeLessonsService(
+      prisma as unknown as PrismaService,
+      payment,
+    );
   });
 
   afterEach(() => {
@@ -288,17 +301,47 @@ describe('PracticeLessonsService', () => {
       expect(result.items.map((item) => item.id)).toEqual(['lesson-2']);
     });
 
-    it.each([
-      UserRole.INSTRUCTOR,
-      UserRole.STUDENT,
-      UserRole.TEACHER,
-      UserRole.OWNER,
-    ])('forbids %s before the database', async (role) => {
-      const error = await caught(service.list(actor(role), range));
+    it('shows an instructor only their own lessons', async () => {
+      prisma.drivingLesson.findMany.mockResolvedValue([]);
+
+      await service.list(actor(UserRole.INSTRUCTOR, 'instructor-1'), {
+        ...range,
+        confirmationStatus: BookingConfirmation.PENDING,
+      });
+
+      const [{ where }] = prisma.drivingLesson.findMany.mock.calls[0] as [
+        { where: { AND: object[] } },
+      ];
+      expect(where.AND).toEqual([
+        { organizationId: 'org-1' },
+        expect.objectContaining({ scheduledAt: expect.any(Object) }),
+        { status: { not: LessonStatus.CANCELLED } },
+        { instructorId: 'instructor-1' },
+        { confirmationStatus: BookingConfirmation.PENDING },
+      ]);
+    });
+
+    it('forbids an instructor asking for another instructor before the database', async () => {
+      const error = await caught(
+        service.list(actor(UserRole.INSTRUCTOR, 'instructor-1'), {
+          ...range,
+          instructorId: 'instructor-2',
+        }),
+      );
 
       expect(error).toBeInstanceOf(ForbiddenException);
       expectNoDatabaseCalls();
     });
+
+    it.each([UserRole.STUDENT, UserRole.TEACHER, UserRole.OWNER])(
+      'forbids %s before the database',
+      async (role) => {
+        const error = await caught(service.list(actor(role), range));
+
+        expect(error).toBeInstanceOf(ForbiddenException);
+        expectNoDatabaseCalls();
+      },
+    );
   });
 
   describe('listAvailable', () => {
@@ -461,14 +504,43 @@ describe('PracticeLessonsService', () => {
       expect(error.message).toBe(PRACTICE_PROFILE_INCOMPLETE_MESSAGE);
     });
 
-    it('answers 409 for a student without practice access', async () => {
+    it('answers 403 with the no-access message for a student without practice access', async () => {
       prisma.user.findFirst.mockResolvedValue(
         studentRow({ trainingStatus: TrainingStatus.ACTIVE }),
       );
 
       const error = await caught(service.listAvailable(student, monday));
 
+      expect(error).toBeInstanceOf(ForbiddenException);
+      expect(error.message).toBe(NO_PRACTICE_ACCESS_MESSAGE);
+      expect(prisma.instructorWorkingHours.findMany).not.toHaveBeenCalled();
+    });
+
+    it('answers 409 for a blocked student who still has practice access', async () => {
+      prisma.user.findFirst.mockResolvedValue({
+        ...studentRow(),
+        status: UserStatus.BLOCKED,
+      });
+
+      const error = await caught(service.listAvailable(student, monday));
+
+      expect(error).toBeInstanceOf(ConflictException);
       expect(error.message).toBe(STUDENT_NOT_IN_PRACTICE_MESSAGE);
+    });
+
+    it('hides slots that start less than 3 hours from now', async () => {
+      // Понеділок 08:00 за Києвом: найраніший слот — 11:00.
+      jest.setSystemTime(at('2026-11-16T06:00:00.000Z'));
+
+      const result = await service.listAvailable(student, monday);
+
+      expect(
+        result.items.map((item) => item.scheduledAt.toISOString()),
+      ).toEqual([
+        '2026-11-16T09:00:00.000Z',
+        '2026-11-16T12:00:00.000Z',
+        '2026-11-16T14:00:00.000Z',
+      ]);
     });
 
     it('answers 404 without a student profile', async () => {
@@ -524,12 +596,21 @@ describe('PracticeLessonsService', () => {
             scheduledAt: at('2026-11-16T07:00:00.000Z'),
             durationMin: 120,
             meetingPlace: null,
+            confirmationStatus: BookingConfirmation.PENDING,
+            paymentStatus: PaymentStatus.PAID,
           },
         }),
       );
+      expect(payment.resolveForLesson).toHaveBeenCalledWith(prisma, {
+        organizationId: 'org-1',
+        studentId: 'student-1',
+      });
       expect(result).toMatchObject({
         type: 'PRACTICE',
         status: LessonStatus.SCHEDULED,
+        bookingStatus: 'PENDING',
+        confirmationStatus: BookingConfirmation.PENDING,
+        paymentStatus: PaymentStatus.PAID,
         endsAt: at('2026-11-16T09:00:00.000Z'),
       });
       expect(log).toHaveBeenCalledWith(
@@ -665,6 +746,28 @@ describe('PracticeLessonsService', () => {
         fieldErrors('scheduledAt', BOOKING_IN_PAST_MESSAGE),
       );
       expectNoDatabaseCalls();
+    });
+
+    it('refuses a start less than 3 hours ahead before the database', async () => {
+      const error = await caught(
+        service.book(student, { scheduledAt: '2026-11-10T12:59:00Z' }),
+      );
+
+      expect(error).toBeInstanceOf(ConflictException);
+      expect(error.message).toBe(BOOKING_TOO_SOON_MESSAGE);
+      expectNoDatabaseCalls();
+    });
+
+    it('answers 403 when the student has no practice access, before locking', async () => {
+      prisma.user.findFirst.mockResolvedValue(
+        studentRow({ trainingStatus: TrainingStatus.ACTIVE }),
+      );
+
+      const error = await caught(service.book(student, request));
+
+      expect(error).toBeInstanceOf(ForbiddenException);
+      expect(error.message).toBe(NO_PRACTICE_ACCESS_MESSAGE);
+      expect(prisma.$transaction).not.toHaveBeenCalled();
     });
 
     it('answers 409 when the practice profile is incomplete, before locking', async () => {

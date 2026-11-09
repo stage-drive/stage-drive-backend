@@ -31,7 +31,7 @@ describe('DashboardService', () => {
     group: { findMany: jest.fn() },
     lesson: { findMany: jest.fn() },
     enrollment: { findMany: jest.fn() },
-    drivingLesson: { findMany: jest.fn() },
+    drivingLesson: { findMany: jest.fn(), count: jest.fn() },
   };
 
   let service: DashboardService;
@@ -45,6 +45,7 @@ describe('DashboardService', () => {
     prisma.lesson.findMany.mockResolvedValue([]);
     prisma.enrollment.findMany.mockResolvedValue([]);
     prisma.drivingLesson.findMany.mockResolvedValue([]);
+    prisma.drivingLesson.count.mockResolvedValue(0);
     service = new DashboardService(prisma as unknown as PrismaService);
   });
 
@@ -635,10 +636,23 @@ describe('DashboardService', () => {
         email: 'instructor@example.com',
         status: UserStatus.ACTIVE,
       },
-      stats: { studentsTotal: 0, upcomingLessonsTotal: 0 },
+      stats: {
+        studentsTotal: 0,
+        upcomingLessonsTotal: 0,
+        pendingRequestsTotal: 0,
+      },
       upcomingLessons: [],
     });
 
+    expect(prisma.drivingLesson.count).toHaveBeenCalledWith({
+      where: {
+        instructorId: 'instructor-1',
+        organizationId: 'org-1',
+        scheduledAt: { gte: expect.any(Date) },
+        status: 'SCHEDULED',
+        confirmationStatus: 'PENDING',
+      },
+    });
     expect(prisma.drivingLesson.findMany).toHaveBeenCalledWith(
       expect.objectContaining({
         where: {
@@ -661,7 +675,7 @@ describe('DashboardService', () => {
     });
   });
 
-  it('maps upcoming lessons with the student name and meeting place', async () => {
+  it('maps upcoming lessons with the student name, meeting place and booking status', async () => {
     const scheduledAt = new Date('2026-10-05T09:00:00.000Z');
     prisma.drivingLesson.findMany.mockResolvedValueOnce([
       {
@@ -669,6 +683,7 @@ describe('DashboardService', () => {
         studentId: 'student-1',
         scheduledAt,
         meetingPlace: 'Автодром',
+        confirmationStatus: 'CONFIRMED',
         student: { firstName: 'Олена', lastName: 'Петренко' },
       },
       {
@@ -676,13 +691,16 @@ describe('DashboardService', () => {
         studentId: 'student-1',
         scheduledAt,
         meetingPlace: null,
+        confirmationStatus: 'PENDING',
         student: { firstName: 'Олена', lastName: 'Петренко' },
       },
     ]);
+    prisma.drivingLesson.count.mockResolvedValue(1);
 
     const result = await service.getInstructorDashboard(instructor as never);
 
     expect(result.stats.upcomingLessonsTotal).toBe(2);
+    expect(result.stats.pendingRequestsTotal).toBe(1);
     expect(result.upcomingLessons).toEqual([
       {
         id: 'lesson-1',
@@ -690,6 +708,7 @@ describe('DashboardService', () => {
         studentName: 'Олена Петренко',
         scheduledAt,
         meetingPlace: 'Автодром',
+        bookingStatus: 'CONFIRMED',
       },
       {
         id: 'lesson-2',
@@ -697,6 +716,7 @@ describe('DashboardService', () => {
         studentName: 'Олена Петренко',
         scheduledAt,
         meetingPlace: null,
+        bookingStatus: 'PENDING',
       },
     ]);
   });

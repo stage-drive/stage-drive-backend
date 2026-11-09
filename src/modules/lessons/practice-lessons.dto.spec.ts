@@ -12,6 +12,7 @@ import {
 import {
   AvailablePracticeSlotQueryDto,
   BookPracticeLessonDto,
+  CONFIRMATION_STATUS_MESSAGE,
   PracticeLessonListQueryDto,
 } from './practice-lessons.dto';
 
@@ -75,7 +76,22 @@ describe('PracticeLessonListQueryDto', () => {
     });
   });
 
+  it('accepts a confirmation status filter', async () => {
+    await expect(
+      validate(
+        PracticeLessonListQueryDto,
+        { confirmationStatus: 'PENDING' },
+        'query',
+      ),
+    ).resolves.toEqual({ confirmationStatus: 'PENDING' });
+  });
+
   it.each([
+    [
+      'confirmationStatus',
+      { confirmationStatus: 'WAITING' },
+      CONFIRMATION_STATUS_MESSAGE,
+    ],
     ['instructorId', { instructorId: 'x' }, 'instructorId має бути UUID.'],
     ['studentId', { studentId: 'x' }, 'studentId має бути UUID.'],
     [

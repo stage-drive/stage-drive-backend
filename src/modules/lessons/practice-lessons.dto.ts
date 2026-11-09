@@ -1,7 +1,9 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
+import { BookingConfirmation } from '@prisma/client';
 import { Transform } from 'class-transformer';
 import {
   IsBoolean,
+  IsEnum,
   IsNotEmpty,
   IsOptional,
   IsString,
@@ -36,7 +38,10 @@ const TO_DESCRIPTION =
   `Кінець вікна, не включно. За замовчуванням — from + ${SCHEDULE_DEFAULT_RANGE_DAYS} днів. ` +
   `Має бути пізніше за from, але не більше ніж на ${SCHEDULE_MAX_RANGE_DAYS} днів.`;
 
-/** Список практичних занять автошколи для ADMIN. Організація — з access token. */
+export const CONFIRMATION_STATUS_MESSAGE =
+  'confirmationStatus має бути PENDING, CONFIRMED або REJECTED.';
+
+/** Список практичних занять: ADMIN — автошколи, INSTRUCTOR — свої. Організація — з access token. */
 export class PracticeLessonListQueryDto {
   @ApiPropertyOptional({
     format: 'date-time',
@@ -56,7 +61,8 @@ export class PracticeLessonListQueryDto {
 
   @ApiPropertyOptional({
     format: 'uuid',
-    description: 'Лише заняття цього інструктора.',
+    description:
+      'Лише заняття цього інструктора. INSTRUCTOR може передати тільки свій id (без нього — і так лише свої).',
   })
   @IsUUID('4', { message: 'instructorId має бути UUID.' })
   @IsOptional()
@@ -79,6 +85,16 @@ export class PracticeLessonListQueryDto {
   @IsBoolean({ message: INCLUDE_CANCELLED_MESSAGE })
   @IsOptional()
   includeCancelled?: boolean;
+
+  @ApiPropertyOptional({
+    enum: BookingConfirmation,
+    description:
+      'Лише заняття з цим підтвердженням. PENDING — запити, що чекають відповіді інструктора. ' +
+      'REJECTED — скасовані, тож потрібен і includeCancelled=true.',
+  })
+  @IsEnum(BookingConfirmation, { message: CONFIRMATION_STATUS_MESSAGE })
+  @IsOptional()
+  confirmationStatus?: BookingConfirmation;
 }
 
 export class PracticeLessonListDto {

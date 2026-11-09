@@ -7,6 +7,7 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import {
+  BookingConfirmation,
   GroupStatus,
   LessonStatus,
   Prisma,
@@ -16,7 +17,6 @@ import {
 } from '@prisma/client';
 import { lockGroup } from '../../common/prisma/group-lock';
 import {
-  lockPracticeLesson,
   lockScheduleResources,
   lockTheoryLesson,
   scheduleLockKey,
@@ -33,6 +33,7 @@ import {
 import {
   CancelLessonDto,
   CreatePracticeLessonDto,
+  LESSON_NOT_FOUND_MESSAGE,
   CreateTheoryLessonDto,
   PRACTICE_DEFAULT_DURATION_MIN,
   PracticeLessonDto,
@@ -42,6 +43,11 @@ import {
   UpdatePracticeLessonDto,
   UpdateTheoryLessonDto,
 } from './lessons.dto';
+import {
+  lockPracticeLessonForChange,
+  practiceLessonSelect,
+} from './practice-lesson-row';
+import { PracticePaymentService } from './practice-payment.service';
 import {
   assertInstructorActive,
   lockPracticeResources,
@@ -80,9 +86,10 @@ export const PRACTICE_LESSON_CANCEL_ROLES = [
 ] as const;
 
 /** Студент скасовує своє заняття не пізніше ніж за стільки годин до початку. */
-export const STUDENT_CANCEL_MIN_HOURS = 24;
+export const STUDENT_CANCEL_MIN_HOURS = 2;
 
-export const LESSON_NOT_FOUND_MESSAGE = 'Lesson not found';
+/** Живе в lessons.dto.ts: його беруть і хелпери рядка практичного заняття. */
+export { LESSON_NOT_FOUND_MESSAGE } from './lessons.dto';
 export const LESSON_NOT_EDITABLE_MESSAGE =
   'Змінювати можна лише заняття зі статусом SCHEDULED.';
 export const LESSON_GROUP_CLOSED_MESSAGE =
@@ -101,7 +108,9 @@ export const PRACTICE_CAR_REQUIRED_MESSAGE =
   'Для практичного заняття потрібен автомобіль. Передайте carId.';
 export const LESSON_INSTRUCTOR_FIELDS_MESSAGE =
   'Інструктор може змінити лише місце зустрічі (meetingPlace). Решту змінює ADMIN.';
-export const STUDENT_CANCEL_TOO_LATE_MESSAGE = `Скасувати заняття можна не пізніше ніж за ${STUDENT_CANCEL_MIN_HOURS} години до початку. Зверніться до адміністратора автошколи.`;
+export const STUDENT_CANCEL_TOO_LATE_MESSAGE = `Скасувати підтверджене заняття можна не пізніше ніж за ${STUDENT_CANCEL_MIN_HOURS} години до початку. Зверніться до адміністратора автошколи.`;
+/** Причина, коли інструктор скасовує заняття без пояснення (вимога «Не можу провести заняття»). */
+export const INSTRUCTOR_CANCEL_DEFAULT_REASON = 'Не можу провести заняття';
 export const NO_THEORY_LESSON_FIELDS_MESSAGE =
   'Немає дозволених полів для оновлення (topic, durationMin).';
 export const NO_PRACTICE_LESSON_FIELDS_MESSAGE =
@@ -155,37 +164,6 @@ const theoryLessonSelect = {
 
 type TheoryLessonRow = Prisma.LessonGetPayload<{
   select: typeof theoryLessonSelect;
-}>;
-
-/** Надмножина practiceLessonViewSelect: решта полів потрібна перевіркам запису. */
-const practiceLessonSelect = {
-  id: true,
-  instructorId: true,
-  studentId: true,
-  carId: true,
-  scheduledAt: true,
-  durationMin: true,
-  status: true,
-  meetingPlace: true,
-  cancelledAt: true,
-  cancellationReason: true,
-  updatedAt: true,
-  instructor: {
-    select: {
-      ...lessonPersonSelect,
-      role: true,
-      status: true,
-      deletedAt: true,
-    },
-  },
-  student: { select: practiceStudentSelect },
-  car: {
-    select: { id: true, plateNumber: true, category: true, transmission: true },
-  },
-} satisfies Prisma.DrivingLessonSelect;
-
-type PracticeLessonRow = Prisma.DrivingLessonGetPayload<{
-  select: typeof practiceLessonSelect;
 }>;
 
 type TheoryChange = {
@@ -326,7 +304,10 @@ function assertTeacherActive(teacher: {
 export class LessonsService {
   private readonly logger = new Logger(LessonsService.name);
 
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly payment: PracticePaymentService,
+  ) {}
 
   /**
    * Нове теоретичне заняття групи. Викладач заняття — викладач групи. Порядок
@@ -443,6 +424,12 @@ export class LessonsService {
         slot: lessonSlot(scheduledAt, durationMin),
       });
 
+      const paymentStatus = await this.payment.resolveForLesson(tx, {
+        organizationId: actor.organizationId,
+        studentId: student.id,
+      });
+
+      // Заняття від ADMIN не чекає підтвердження інструктора.
       return tx.drivingLesson.create({
         data: {
           organizationId: actor.organizationId,
@@ -452,6 +439,10 @@ export class LessonsService {
           scheduledAt,
           durationMin,
           meetingPlace: payload.meetingPlace,
+          confirmationStatus: BookingConfirmation.CONFIRMED,
+          confirmedAt: new Date(),
+          confirmedById: actor.id,
+          paymentStatus,
         },
         select: practiceLessonSelect,
       });
@@ -572,8 +563,10 @@ export class LessonsService {
   /**
    * Те саме для практики: звільняється час інструктора, авто і студента, і
    * година знову з'являється серед вільних слотів. Інструктор, авто і студент
-   * лишаються в занятті як історія. STUDENT скасовує лише своє заняття і не
-   * пізніше ніж за STUDENT_CANCEL_MIN_HOURS до початку.
+   * лишаються в занятті як історія. STUDENT скасовує лише своє заняття:
+   * запит, що чекає підтвердження, — будь-коли до початку, підтверджене
+   * заняття — не пізніше ніж за STUDENT_CANCEL_MIN_HOURS. Інструктор без
+   * причини скасовує з INSTRUCTOR_CANCEL_DEFAULT_REASON.
    */
   async cancelPractice(
     actor: User,
@@ -585,16 +578,21 @@ export class LessonsService {
     const now = new Date();
 
     const saved = await this.prisma.$transaction(async (tx) => {
-      const lesson = await this.lockPracticeForChange(tx, actor, lessonId);
+      const lesson = await lockPracticeLessonForChange(tx, actor, lessonId);
       assertEditable(lesson.status, LESSON_NOT_CANCELLABLE_MESSAGE);
       assertNotStarted(lesson.scheduledAt, now);
       if (
         actor.role === UserRole.STUDENT &&
+        lesson.confirmationStatus === BookingConfirmation.CONFIRMED &&
         lesson.scheduledAt.getTime() - now.getTime() <
           STUDENT_CANCEL_MIN_HOURS * HOUR_MS
       ) {
         throw new ConflictException(STUDENT_CANCEL_TOO_LATE_MESSAGE);
       }
+      const defaultReason =
+        actor.role === UserRole.INSTRUCTOR
+          ? INSTRUCTOR_CANCEL_DEFAULT_REASON
+          : null;
 
       return tx.drivingLesson.update({
         where: { id: lesson.id },
@@ -602,7 +600,7 @@ export class LessonsService {
           status: LessonStatus.CANCELLED,
           cancelledAt: now,
           cancelledById: actor.id,
-          cancellationReason: payload.reason ?? null,
+          cancellationReason: payload.reason ?? defaultReason,
         },
         select: practiceLessonSelect,
       });
@@ -713,7 +711,7 @@ export class LessonsService {
     const now = new Date();
 
     const result = await this.prisma.$transaction(async (tx) => {
-      const lesson = await this.lockPracticeForChange(tx, actor, lessonId);
+      const lesson = await lockPracticeLessonForChange(tx, actor, lessonId);
       assertEditable(lesson.status);
 
       // Старе заняття без авто бере авто, призначене студенту, але лише разом
@@ -889,34 +887,6 @@ export class LessonsService {
     if (
       actor.role === UserRole.TEACHER &&
       lesson.group.teacherId !== actor.id
-    ) {
-      throw new ForbiddenException('Insufficient permissions');
-    }
-    return lesson;
-  }
-
-  /**
-   * Блокує заняття (FOR UPDATE) і читає його. Заняття іншої організації — 404,
-   * чуже заняття для INSTRUCTOR чи STUDENT — 403.
-   */
-  private async lockPracticeForChange(
-    tx: Prisma.TransactionClient,
-    actor: User,
-    lessonId: string,
-  ): Promise<PracticeLessonRow> {
-    // Паралельна зміна того самого заняття чекає на цю транзакцію.
-    await lockPracticeLesson(tx, lessonId, actor.organizationId);
-    const lesson = await tx.drivingLesson.findFirst({
-      where: { id: lessonId, organizationId: actor.organizationId },
-      select: practiceLessonSelect,
-    });
-    if (!lesson) {
-      throw new NotFoundException(LESSON_NOT_FOUND_MESSAGE);
-    }
-    if (
-      (actor.role === UserRole.INSTRUCTOR &&
-        lesson.instructorId !== actor.id) ||
-      (actor.role === UserRole.STUDENT && lesson.studentId !== actor.id)
     ) {
       throw new ForbiddenException('Insufficient permissions');
     }

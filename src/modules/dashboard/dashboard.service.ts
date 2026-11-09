@@ -1,5 +1,6 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
 import {
+  BookingConfirmation,
   EnrollmentStatus,
   InvitationStatus,
   LessonStatus,
@@ -300,28 +301,38 @@ export class DashboardService {
     );
     const now = new Date();
 
-    const [upcomingLessons, distinctStudents] = await Promise.all([
-      this.prisma.drivingLesson.findMany({
-        where: {
-          instructorId: instructor.id,
-          organizationId: instructor.organizationId,
-          scheduledAt: { gte: now },
-          status: LessonStatus.SCHEDULED,
-        },
-        include: { student: { select: { firstName: true, lastName: true } } },
-        orderBy: { scheduledAt: 'asc' },
-        take: 5,
-      }),
-      this.prisma.drivingLesson.findMany({
-        where: {
-          instructorId: instructor.id,
-          organizationId: instructor.organizationId,
-          status: LessonStatus.SCHEDULED,
-        },
-        select: { studentId: true },
-        distinct: ['studentId'],
-      }),
-    ]);
+    const [upcomingLessons, distinctStudents, pendingRequestsTotal] =
+      await Promise.all([
+        this.prisma.drivingLesson.findMany({
+          where: {
+            instructorId: instructor.id,
+            organizationId: instructor.organizationId,
+            scheduledAt: { gte: now },
+            status: LessonStatus.SCHEDULED,
+          },
+          include: { student: { select: { firstName: true, lastName: true } } },
+          orderBy: { scheduledAt: 'asc' },
+          take: 5,
+        }),
+        this.prisma.drivingLesson.findMany({
+          where: {
+            instructorId: instructor.id,
+            organizationId: instructor.organizationId,
+            status: LessonStatus.SCHEDULED,
+          },
+          select: { studentId: true },
+          distinct: ['studentId'],
+        }),
+        this.prisma.drivingLesson.count({
+          where: {
+            instructorId: instructor.id,
+            organizationId: instructor.organizationId,
+            scheduledAt: { gte: now },
+            status: LessonStatus.SCHEDULED,
+            confirmationStatus: BookingConfirmation.PENDING,
+          },
+        }),
+      ]);
 
     return {
       organization: {
@@ -340,6 +351,7 @@ export class DashboardService {
       stats: {
         studentsTotal: distinctStudents.length,
         upcomingLessonsTotal: upcomingLessons.length,
+        pendingRequestsTotal,
       },
       upcomingLessons: upcomingLessons.map((lesson) => ({
         id: lesson.id,
@@ -347,6 +359,10 @@ export class DashboardService {
         studentName: `${lesson.student.firstName} ${lesson.student.lastName}`,
         scheduledAt: lesson.scheduledAt,
         meetingPlace: lesson.meetingPlace,
+        bookingStatus:
+          lesson.confirmationStatus === BookingConfirmation.PENDING
+            ? 'PENDING'
+            : 'CONFIRMED',
       })),
     };
   }
