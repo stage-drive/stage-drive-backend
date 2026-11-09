@@ -55,7 +55,7 @@ export class GoogleAuthService {
       if (!user) {
         fail();
       }
-      this.assertAllowed(user);
+      await this.assertAllowed(user);
     }
 
     await this.prisma.oAuthAuthorization.deleteMany({
@@ -183,7 +183,7 @@ export class GoogleAuthService {
         if (!currentUser) {
           fail();
         }
-        this.assertAllowed(currentUser);
+        await this.assertAllowed(currentUser);
         await this.linkAccount(currentUser.id, profile);
         return this.authorizeUser(currentUser);
       }
@@ -192,7 +192,7 @@ export class GoogleAuthService {
       if (!existingUser) {
         throw new UnauthorizedException(GOOGLE_ACCOUNT_NOT_FOUND_MESSAGE);
       }
-      this.assertAllowed(existingUser);
+      await this.assertAllowed(existingUser);
       await this.linkAccount(existingUser.id, profile);
       return this.authorizeUser(existingUser);
     }
@@ -212,12 +212,21 @@ export class GoogleAuthService {
     });
   }
 
-  private assertAllowed(user: User) {
-    assertSignInAllowed(user);
+  /**
+   * User тут завантажено без організації, тож її статус і deletedAt
+   * підтягуються окремо: заблокована або видалена автошкола не пускає
+   * і через Google, як і через пароль.
+   */
+  private async assertAllowed(user: User): Promise<void> {
+    const organization = await this.prisma.organization.findUnique({
+      where: { id: user.organizationId },
+      select: { status: true, deletedAt: true },
+    });
+    assertSignInAllowed({ ...user, organization });
   }
 
   private async authorizeUser(user: User) {
-    this.assertAllowed(user);
+    await this.assertAllowed(user);
     const session = await this.sessionFor(user);
     await this.authService.recordLogin(user.id);
     return session;

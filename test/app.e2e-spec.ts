@@ -18,6 +18,15 @@ import {
 } from '../src/common/files/image-upload';
 import { UNSAFE_TEXT_MESSAGE } from '../src/common/validators/plain-text.decorator';
 import { configureApp } from '../src/configure-app';
+import {
+  ORGANIZATION_EMAIL_MESSAGE,
+  ORGANIZATION_PHONE_MESSAGE,
+  ORGANIZATION_REQUIRED_FIELD_MESSAGE,
+} from '../src/modules/organization/organization.dto';
+import {
+  NO_ORGANIZATION_FIELDS_MESSAGE,
+  ORGANIZATION_EMAIL_TAKEN_MESSAGE,
+} from '../src/modules/organization/organization.service';
 import { NO_MEMBER_FIELDS_MESSAGE } from '../src/modules/users/users.service';
 import {
   ACCESS_DENIED_MESSAGE,
@@ -1627,6 +1636,340 @@ describe('API (e2e)', () => {
       .expect(200);
 
     expect(response.body).toMatchObject({ name: 'New School Name' });
+  });
+
+  describe('organization settings', () => {
+    const logosDir = join(process.cwd(), 'uploads', 'logos');
+    const PNG = Buffer.concat([
+      Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+      Buffer.alloc(64),
+    ]);
+    const school = {
+      ...organization,
+      slug: 'stage-drive-school',
+      email: 'info@stagedrive.ua',
+      phone: '+380441234567',
+      address: 'м. Київ, вул. Хрещатик, 1',
+      status: 'ACTIVE',
+      deletedAt: null as Date | null,
+    };
+    const publicSchool = {
+      id: organization.id,
+      name: school.name,
+      email: school.email,
+      phone: school.phone,
+      address: school.address,
+      logoUrl: null,
+      timezone: school.timezone,
+    };
+    const actors: Record<TestUser['role'], TestUser> = {
+      OWNER: owner,
+      ADMIN: admin,
+      TEACHER: teacher,
+      INSTRUCTOR: instructor,
+      STUDENT: pupil,
+    };
+    let emailOwner: { id: string } | null;
+    let logosBefore: Set<string>;
+
+    beforeEach(() => {
+      emailOwner = null;
+      prismaMock.organization.findUnique.mockImplementation(
+        (args: { where: { id?: string; email?: string } }) =>
+          Promise.resolve(
+            args.where.email !== undefined
+              ? emailOwner
+              : { ...school, id: args.where.id },
+          ),
+      );
+      prismaMock.organization.update.mockImplementation(
+        (args: { where: { id: string }; data: Record<string, unknown> }) =>
+          Promise.resolve({ ...school, id: args.where.id, ...args.data }),
+      );
+      mkdirSync(logosDir, { recursive: true });
+      logosBefore = new Set(readdirSync(logosDir));
+    });
+
+    // uploads/ — спільний каталог розробника: прибираємо лише нові файли.
+    afterEach(() => {
+      for (const name of newLogoFiles()) {
+        rmSync(join(logosDir, name), { recursive: true, force: true });
+      }
+    });
+
+    function newLogoFiles(): string[] {
+      return readdirSync(logosDir).filter((name) => !logosBefore.has(name));
+    }
+
+    function bearer(user: TestUser): string {
+      return `Bearer ${signAccessToken(user.id)}`;
+    }
+
+    function withDeletedOrganization() {
+      const fallback =
+        prismaMock.user.findUnique.getMockImplementation() as (args: {
+          where: { id?: string; email?: string };
+        }) => Promise<unknown>;
+      prismaMock.user.findUnique.mockImplementation(
+        (args: { where: { id?: string; email?: string } }) =>
+          args.where.id === owner.id || args.where.email === owner.email
+            ? Promise.resolve({
+                ...owner,
+                organization: { ...school, deletedAt: new Date('2026-11-01') },
+              })
+            : fallback(args),
+      );
+    }
+
+    it.each(Object.keys(actors) as TestUser['role'][])(
+      'GET /api/organization returns contact details to %s',
+      async (role) => {
+        const response = await request(app.getHttpServer())
+          .get('/api/organization')
+          .set('Authorization', bearer(actors[role]))
+          .expect(200);
+
+        expect(response.body).toEqual(publicSchool);
+        expect(prismaMock.organization.findUnique).toHaveBeenCalledWith({
+          where: { id: organization.id },
+        });
+      },
+    );
+
+    it('GET /api/organization requires an access token', async () => {
+      await request(app.getHttpServer()).get('/api/organization').expect(401);
+    });
+
+    it('GET /api/organization reads the organization of the caller only', async () => {
+      const otherOrganizationId = '99999999-9999-4999-8999-999999999999';
+      const fallback =
+        prismaMock.user.findUnique.getMockImplementation() as (args: {
+          where: { id?: string };
+        }) => Promise<unknown>;
+      prismaMock.user.findUnique.mockImplementation(
+        (args: { where: { id?: string } }) =>
+          args.where.id === admin.id
+            ? Promise.resolve({ ...admin, organizationId: otherOrganizationId })
+            : fallback(args),
+      );
+
+      const response = await request(app.getHttpServer())
+        .get('/api/organization')
+        .set('Authorization', bearer(admin))
+        .expect(200);
+
+      expect(response.body).toMatchObject({ id: otherOrganizationId });
+      expect(prismaMock.organization.findUnique).toHaveBeenCalledWith({
+        where: { id: otherOrganizationId },
+      });
+      expect(prismaMock.organization.findUnique).not.toHaveBeenCalledWith({
+        where: { id: organization.id },
+      });
+    });
+
+    it.each(['OWNER', 'ADMIN'] as const)(
+      'PATCH /api/organization lets %s update name and contact details',
+      async (role) => {
+        const response = await request(app.getHttpServer())
+          .patch('/api/organization')
+          .set('Authorization', bearer(actors[role]))
+          .send({
+            name: ' Автошкола Drive ',
+            email: ' New@StageDrive.UA ',
+            phone: '+380501112233',
+            address: 'м. Львів, пл. Ринок, 1',
+          })
+          .expect(200);
+
+        expect(prismaMock.organization.update).toHaveBeenCalledWith({
+          where: { id: organization.id },
+          data: {
+            name: 'Автошкола Drive',
+            email: 'new@stagedrive.ua',
+            phone: '+380501112233',
+            address: 'м. Львів, пл. Ринок, 1',
+          },
+        });
+        expect(response.body).toEqual({
+          ...publicSchool,
+          name: 'Автошкола Drive',
+          email: 'new@stagedrive.ua',
+          phone: '+380501112233',
+          address: 'м. Львів, пл. Ринок, 1',
+        });
+      },
+    );
+
+    it.each(['TEACHER', 'INSTRUCTOR', 'STUDENT'] as const)(
+      'PATCH /api/organization is forbidden for %s',
+      async (role) => {
+        const response = await request(app.getHttpServer())
+          .patch('/api/organization')
+          .set('Authorization', bearer(actors[role]))
+          .send({ name: 'Hijacked' })
+          .expect(403);
+
+        expect(response.body).toMatchObject({
+          statusCode: 403,
+          message: 'Insufficient permissions',
+        });
+        expect(prismaMock.organization.update).not.toHaveBeenCalled();
+      },
+    );
+
+    it('PATCH /api/organization requires an access token', async () => {
+      await request(app.getHttpServer())
+        .patch('/api/organization')
+        .send({ name: 'Drive' })
+        .expect(401);
+
+      expect(prismaMock.organization.update).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      ['timezone', 'America/New_York'],
+      ['status', 'BLOCKED'],
+      ['slug', 'hijacked'],
+      ['id', '99999999-9999-4999-8999-999999999999'],
+      ['organizationId', '99999999-9999-4999-8999-999999999999'],
+      ['logoUrl', '/uploads/logos/other.png'],
+    ])(
+      'PATCH /api/organization rejects the read-only field %s',
+      async (field, value) => {
+        const response = await request(app.getHttpServer())
+          .patch('/api/organization')
+          .set('Authorization', bearer(owner))
+          .send({ name: 'Drive', [field]: value })
+          .expect(400);
+
+        expect(response.body).toEqual({
+          statusCode: 400,
+          errors: [{ field, message: `property ${field} should not exist` }],
+        });
+        expect(prismaMock.organization.update).not.toHaveBeenCalled();
+      },
+    );
+
+    it.each([
+      [{ name: '   ' }, 'name', ORGANIZATION_REQUIRED_FIELD_MESSAGE],
+      [{ email: '' }, 'email', ORGANIZATION_REQUIRED_FIELD_MESSAGE],
+      [{ email: 'not-an-email' }, 'email', ORGANIZATION_EMAIL_MESSAGE],
+      [{ phone: 'call us' }, 'phone', ORGANIZATION_PHONE_MESSAGE],
+      [{ address: '<script>x</script>' }, 'address', UNSAFE_TEXT_MESSAGE],
+    ])('PATCH /api/organization validates %j', async (body, field, message) => {
+      const response = await request(app.getHttpServer())
+        .patch('/api/organization')
+        .set('Authorization', bearer(owner))
+        .send(body)
+        .expect(400);
+
+      expect(response.body).toEqual({
+        statusCode: 400,
+        errors: [{ field, message }],
+      });
+      expect(prismaMock.organization.update).not.toHaveBeenCalled();
+    });
+
+    it('PATCH /api/organization rejects a request without allowed fields', async () => {
+      const response = await request(app.getHttpServer())
+        .patch('/api/organization')
+        .set('Authorization', bearer(owner))
+        .send({})
+        .expect(400);
+
+      expect(response.body).toEqual({
+        statusCode: 400,
+        errors: [{ field: 'body', message: NO_ORGANIZATION_FIELDS_MESSAGE }],
+      });
+    });
+
+    it('PATCH /api/organization rejects an email used by another organization', async () => {
+      emailOwner = { id: '99999999-9999-4999-8999-999999999999' };
+
+      const response = await request(app.getHttpServer())
+        .patch('/api/organization')
+        .set('Authorization', bearer(owner))
+        .send({ email: 'taken@example.com' })
+        .expect(409);
+
+      expect(response.body).toEqual({
+        statusCode: 409,
+        errors: [{ field: 'email', message: ORGANIZATION_EMAIL_TAKEN_MESSAGE }],
+      });
+      expect(prismaMock.organization.update).not.toHaveBeenCalled();
+    });
+
+    it('PATCH /api/organization accepts multipart fields with a logo and clears phone with an empty value', async () => {
+      const response = await request(app.getHttpServer())
+        .patch('/api/organization')
+        .set('Authorization', bearer(admin))
+        .field('name', 'Автошкола Drive')
+        .field('phone', '')
+        .attach('logo', PNG, { filename: 'logo.png', contentType: 'image/png' })
+        .expect(200);
+
+      const { logoUrl } = response.body as { logoUrl: string };
+      expect(logoUrl).toMatch(
+        new RegExp(`^/uploads/logos/${organization.id}-[0-9a-f-]{36}\\.png$`),
+      );
+      expect(prismaMock.organization.update).toHaveBeenCalledWith({
+        where: { id: organization.id },
+        data: { name: 'Автошкола Drive', phone: null, logoUrl },
+      });
+      expect(response.body).toMatchObject({ phone: null, logoUrl });
+      expect(newLogoFiles()).toEqual([logoUrl.split('/').pop()]);
+    });
+
+    it('PATCH /api/organization rejects a fake logo and leaves no file', async () => {
+      const response = await request(app.getHttpServer())
+        .patch('/api/organization')
+        .set('Authorization', bearer(owner))
+        .attach('logo', Buffer.from('<html></html>'), {
+          filename: 'logo.html',
+          contentType: 'image/png',
+        })
+        .expect(400);
+
+      expect(response.body).toEqual({
+        statusCode: 400,
+        errors: [{ field: 'logo', message: IMAGE_CONTENT_MESSAGE }],
+      });
+      expect(prismaMock.organization.update).not.toHaveBeenCalled();
+      expect(newLogoFiles()).toEqual([]);
+    });
+
+    it('DELETE /api/organization stays OWNER-only', async () => {
+      await request(app.getHttpServer())
+        .delete('/api/organization')
+        .set('Authorization', bearer(admin))
+        .expect(403);
+
+      expect(prismaMock.organization.update).not.toHaveBeenCalled();
+    });
+
+    it('a deleted organization rejects existing access tokens', async () => {
+      withDeletedOrganization();
+
+      const response = await request(app.getHttpServer())
+        .get('/api/organization')
+        .set('Authorization', bearer(owner))
+        .expect(401);
+
+      expect(response.body).toMatchObject({
+        message: ACCOUNT_NOT_ACTIVE_MESSAGE,
+      });
+    });
+
+    it('a deleted organization rejects sign-in', async () => {
+      withDeletedOrganization();
+
+      const response = await request(app.getHttpServer())
+        .post('/api/auth/login')
+        .send({ email: owner.email, password: 'SecurePassword123' })
+        .expect(403);
+
+      expect(response.body).toMatchObject({ message: ACCESS_DENIED_MESSAGE });
+    });
   });
 
   it('POST /api/invitations without token returns 401', () => {

@@ -1,5 +1,5 @@
 import { ExecutionContext, UnauthorizedException } from '@nestjs/common';
-import { UserStatus } from '@prisma/client';
+import { OrganizationStatus, UserStatus } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
 import { AuthGuard } from './auth.guard';
 import { signAccessToken } from './token';
@@ -49,6 +49,21 @@ describe('AuthGuard', () => {
     await expect(
       guard.canActivate(contextWith(`Bearer ${token}`)),
     ).resolves.toBe(true);
+  });
+
+  it('rejects a valid token once the organization is deleted', async () => {
+    prisma.user.findUnique.mockResolvedValue({
+      ...user,
+      organization: {
+        status: OrganizationStatus.ACTIVE,
+        deletedAt: new Date('2026-11-01'),
+      },
+    });
+    const token = signAccessToken(user.id);
+
+    await expect(
+      guard.canActivate(contextWith(`Bearer ${token}`)),
+    ).rejects.toBeInstanceOf(UnauthorizedException);
   });
 
   it('rejects a token issued before tokensInvalidBefore', async () => {
