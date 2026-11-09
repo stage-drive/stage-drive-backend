@@ -11,6 +11,7 @@ import { AuthGuard } from '../auth/auth.guard';
 import { ROLES_KEY } from '../auth/roles.decorator';
 import { RolesGuard } from '../auth/roles.guard';
 import { PracticeLessonsController } from './practice-lessons.controller';
+import { PracticeLessonWorkflowService } from './practice-lesson-workflow.service';
 import { PracticeLessonsService } from './practice-lessons.service';
 
 type Method = keyof PracticeLessonsController;
@@ -34,9 +35,21 @@ describe('PracticeLessonsController', () => {
   });
 
   it.each<[Method, RequestMethod, string, UserRole[]]>([
-    ['list', RequestMethod.GET, '/', [UserRole.ADMIN]],
+    ['list', RequestMethod.GET, '/', [UserRole.ADMIN, UserRole.INSTRUCTOR]],
     ['listAvailable', RequestMethod.GET, 'available', [UserRole.STUDENT]],
     ['book', RequestMethod.POST, 'book', [UserRole.STUDENT]],
+    [
+      'confirm',
+      RequestMethod.POST,
+      ':id/confirm',
+      [UserRole.ADMIN, UserRole.INSTRUCTOR],
+    ],
+    [
+      'reject',
+      RequestMethod.POST,
+      ':id/reject',
+      [UserRole.ADMIN, UserRole.INSTRUCTOR],
+    ],
   ])('routes %s and restricts it', (method, verb, path, roles) => {
     expect(metadata(METHOD_METADATA, method)).toBe(verb);
     expect(metadata(PATH_METADATA, method)).toBe(path);
@@ -49,8 +62,10 @@ describe('PracticeLessonsController', () => {
     ).toEqual(roles);
   });
 
-  it('answers 201 to a booking', () => {
+  it('answers 201 to a booking and 200 to confirm and reject', () => {
     expect(metadata(HTTP_CODE_METADATA, 'book')).toBe(HttpStatus.CREATED);
+    expect(metadata(HTTP_CODE_METADATA, 'confirm')).toBe(HttpStatus.OK);
+    expect(metadata(HTTP_CODE_METADATA, 'reject')).toBe(HttpStatus.OK);
   });
 
   it('passes the actor and the request to the service', async () => {
@@ -61,8 +76,13 @@ describe('PracticeLessonsController', () => {
       listAvailable: jest.fn().mockResolvedValue(response),
       book: jest.fn().mockResolvedValue(response),
     };
+    const workflowService = {
+      confirm: jest.fn().mockResolvedValue(response),
+      reject: jest.fn().mockResolvedValue(response),
+    };
     const controller = new PracticeLessonsController(
       practiceLessonsService as unknown as PracticeLessonsService,
+      workflowService as unknown as PracticeLessonWorkflowService,
     );
     const query = { from: '2026-11-16T00:00:00Z' };
     const body = { scheduledAt: '2026-11-16T09:00:00+02:00' };
@@ -77,5 +97,14 @@ describe('PracticeLessonsController', () => {
       query,
     );
     expect(practiceLessonsService.book).toHaveBeenCalledWith(user, body);
+
+    await expect(controller.confirm(user, 'lesson-1')).resolves.toBe(response);
+    await expect(
+      controller.reject(user, 'lesson-1', { reason: 'Зайнятий' }),
+    ).resolves.toBe(response);
+    expect(workflowService.confirm).toHaveBeenCalledWith(user, 'lesson-1');
+    expect(workflowService.reject).toHaveBeenCalledWith(user, 'lesson-1', {
+      reason: 'Зайнятий',
+    });
   });
 });

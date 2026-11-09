@@ -425,7 +425,9 @@ export class LessonsController {
     summary: 'Скасувати практичне заняття',
     description:
       'ADMIN, інструктор заняття або студент заняття скасовує його. ' +
-      `Студент — не пізніше ніж за ${STUDENT_CANCEL_MIN_HOURS} години до початку. ` +
+      'Студент відкликає запит, що чекає підтвердження, будь-коли до початку, ' +
+      `а підтверджене заняття скасовує не пізніше ніж за ${STUDENT_CANCEL_MIN_HOURS} години. ` +
+      'Інструктор без reason скасовує з причиною «Не можу провести заняття». ' +
       "Тіло необов'язкове. Інструктор, студент і авто лишаються в занятті, а час знову стає вільним для запису. " +
       CANCEL_RULES,
   })
@@ -444,7 +446,7 @@ export class LessonsController {
     description: 'Заняття не знайдено або воно належить іншій автошколі.',
   })
   @ApiConflictResponse({
-    description: `${CANCEL_CONFLICT_DESCRIPTION} Для студента — до початку менше ${STUDENT_CANCEL_MIN_HOURS} годин.`,
+    description: `${CANCEL_CONFLICT_DESCRIPTION} Для студента — до початку підтвердженого заняття менше ${STUDENT_CANCEL_MIN_HOURS} годин.`,
   })
   cancelPractice(
     @CurrentUser() user: User,

@@ -1,6 +1,7 @@
-import { Prisma } from '@prisma/client';
+import { BookingConfirmation, LessonStatus, Prisma } from '@prisma/client';
 import {
   LessonPersonDto,
+  PracticeBookingStatus,
   PracticeLessonDto,
   TheoryLessonDto,
 } from './lessons.dto';
@@ -50,11 +51,36 @@ export const practiceLessonViewSelect = {
     select: { id: true, plateNumber: true, category: true, transmission: true },
   },
   meetingPlace: true,
+  confirmationStatus: true,
+  confirmedAt: true,
+  paymentStatus: true,
 } satisfies Prisma.DrivingLessonSelect;
 
 export type PracticeLessonView = Prisma.DrivingLessonGetPayload<{
   select: typeof practiceLessonViewSelect;
 }>;
+
+/**
+ * Статус бронювання з пари status + confirmationStatus. Відхилене бронювання
+ * — це скасування з confirmationStatus = REJECTED; запланований рядок без
+ * підтвердження — PENDING.
+ */
+export function practiceBookingStatus(row: {
+  status: LessonStatus;
+  confirmationStatus: BookingConfirmation;
+}): PracticeBookingStatus {
+  if (row.status === LessonStatus.CANCELLED) {
+    return row.confirmationStatus === BookingConfirmation.REJECTED
+      ? 'REJECTED'
+      : 'CANCELLED';
+  }
+  if (row.status === LessonStatus.COMPLETED) {
+    return 'COMPLETED';
+  }
+  return row.confirmationStatus === BookingConfirmation.PENDING
+    ? 'PENDING'
+    : 'CONFIRMED';
+}
 
 /** Лише id та ім'я: рядок може містити статус, роль чи профіль людини. */
 export function toPerson(user: LessonPersonDto): LessonPersonDto {
@@ -101,6 +127,10 @@ export function toPracticeLessonDto(
     meetingPlace: row.meetingPlace,
     cancelledAt: row.cancelledAt,
     cancellationReason: row.cancellationReason,
+    bookingStatus: practiceBookingStatus(row),
+    confirmationStatus: row.confirmationStatus,
+    confirmedAt: row.confirmedAt,
+    paymentStatus: row.paymentStatus,
     updatedAt: row.updatedAt,
   };
 }

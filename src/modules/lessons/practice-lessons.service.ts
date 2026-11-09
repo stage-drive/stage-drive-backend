@@ -6,10 +6,12 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import {
+  BookingConfirmation,
   CarStatus,
   LessonStatus,
   LicenseCategory,
   Prisma,
+  TrainingStatus,
   Transmission,
   User,
   UserRole,
@@ -18,6 +20,7 @@ import {
 import { PrismaService } from '../../prisma/prisma.service';
 import { STUDENT_NOT_FOUND_MESSAGE } from '../students/students.service';
 import {
+  BOOKING_MIN_LEAD_HOURS,
   PRACTICE_BOOKING_DURATION_MIN,
   computeAvailableSlots,
   isSlotStart,
@@ -35,6 +38,7 @@ import {
   requirePracticeCar,
   requirePracticeProfile,
 } from './practice-rules';
+import { PracticePaymentService } from './practice-payment.service';
 import {
   ActivePracticeLessonDto,
   AvailablePracticeSlotListDto,
@@ -55,7 +59,11 @@ import {
 } from './schedule-conflicts';
 import { fieldError, resolveRange } from './schedule-range';
 
-export const PRACTICE_LESSON_LIST_ROLES = [UserRole.ADMIN] as const;
+/** ADMIN бачить усі заняття автошколи, INSTRUCTOR — свої («вхідні» запити). */
+export const PRACTICE_LESSON_LIST_ROLES = [
+  UserRole.ADMIN,
+  UserRole.INSTRUCTOR,
+] as const;
 export const PRACTICE_BOOKING_ROLES = [UserRole.STUDENT] as const;
 
 export const PRACTICE_PROFILE_INCOMPLETE_MESSAGE =
@@ -65,8 +73,12 @@ export const STUDENT_HAS_ACTIVE_LESSON_MESSAGE =
 export const SLOT_NOT_OPEN_MESSAGE =
   'Цей час не відкритий для запису: він поза робочим графіком інструктора.';
 export const BOOKING_IN_PAST_MESSAGE = 'Забронювати можна лише майбутній час.';
+export const BOOKING_TOO_SOON_MESSAGE = `Забронювати можна щонайменше за ${BOOKING_MIN_LEAD_HOURS} години до початку: інструктор має встигнути підтвердити запит.`;
+export const NO_PRACTICE_ACCESS_MESSAGE =
+  'Немає доступу. Пройдіть курс теорії та отримайте допуск до практики.';
 
 const MINUTE_MS = 60_000;
+const HOUR_MS = 60 * MINUTE_MS;
 
 type BookingProfile = {
   instructorId: string;
@@ -136,14 +148,22 @@ function toActiveLessonDto(row: {
 export class PracticeLessonsService {
   private readonly logger = new Logger(PracticeLessonsService.name);
 
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly payment: PracticePaymentService,
+  ) {}
 
-  /** Заняття автошколи, що перетинають вікно [from, to). Без транзакції: це читання. */
+  /**
+   * Заняття, що перетинають вікно [from, to): ADMIN — усі заняття автошколи,
+   * INSTRUCTOR — свої. З confirmationStatus=PENDING це «вхідні» запити
+   * інструктора. Без транзакції: це читання.
+   */
   async list(
     actor: User,
     query: PracticeLessonListQueryDto,
   ): Promise<PracticeLessonListDto> {
     assertRole(actor, PRACTICE_LESSON_LIST_ROLES);
+    const instructorId = this.visibleInstructor(actor, query.instructorId);
     const range = resolveRange(query, new Date());
     const organization = await this.requireOrganization(actor.organizationId);
 
@@ -154,8 +174,11 @@ export class PracticeLessonsService {
     if (!query.includeCancelled) {
       filters.push({ status: { not: LessonStatus.CANCELLED } });
     }
-    if (query.instructorId) {
-      filters.push({ instructorId: query.instructorId });
+    if (instructorId) {
+      filters.push({ instructorId });
+    }
+    if (query.confirmationStatus) {
+      filters.push({ confirmationStatus: query.confirmationStatus });
     }
     if (query.studentId) {
       filters.push({ studentId: query.studentId });
@@ -180,7 +203,8 @@ export class PracticeLessonsService {
 
   /**
    * Вільні слоти інструктора студента на авто студента, що починаються у вікні
-   * [from, to) і в майбутньому. Інструктор не ACTIVE чи авто непридатне —
+   * [from, to) і не раніше ніж за BOOKING_MIN_LEAD_HOURS від поточного моменту.
+   * Інструктор не ACTIVE чи авто непридатне —
    * порожній список. Без транзакції: це знімок, бронювання перевірить усе ще
    * раз під ключами.
    */
@@ -244,7 +268,7 @@ export class PracticeLessonsService {
     const starts = computeAvailableSlots({
       range,
       timeZone: organization.timezone,
-      now,
+      earliestStart: new Date(now.getTime() + BOOKING_MIN_LEAD_HOURS * HOUR_MS),
       durationMin,
       workingHours,
       timeOffs,
@@ -270,6 +294,8 @@ export class PracticeLessonsService {
    * Бронювання слоту студентом. Порядок: advisory-ключі (ті самі, що в
    * createPractice) → одне активне заняття → інструктор → авто → час у сітці
    * робочого графіка → конфлікти (заняття, теорія, недоступність) → запис.
+   * Заняття створюється з confirmationStatus = PENDING: воно вже займає час,
+   * а підтверджує його інструктор чи ADMIN (PracticeLessonWorkflowService).
    */
   async book(
     actor: User,
@@ -280,6 +306,12 @@ export class PracticeLessonsService {
     const scheduledAt = new Date(payload.scheduledAt);
     if (scheduledAt.getTime() <= now.getTime()) {
       throw fieldError('scheduledAt', BOOKING_IN_PAST_MESSAGE);
+    }
+    if (
+      scheduledAt.getTime() - now.getTime() <
+      BOOKING_MIN_LEAD_HOURS * HOUR_MS
+    ) {
+      throw new ConflictException(BOOKING_TOO_SOON_MESSAGE);
     }
     const organization = await this.requireOrganization(actor.organizationId);
     const profile = await this.requireBookingProfile(actor);
@@ -336,6 +368,11 @@ export class PracticeLessonsService {
         throw scheduleConflict(conflicts);
       }
 
+      const paymentStatus = await this.payment.resolveForLesson(tx, {
+        organizationId: actor.organizationId,
+        studentId: actor.id,
+      });
+
       return tx.drivingLesson.create({
         data: {
           organizationId: actor.organizationId,
@@ -345,6 +382,8 @@ export class PracticeLessonsService {
           scheduledAt,
           durationMin,
           meetingPlace: payload.meetingPlace ?? null,
+          confirmationStatus: BookingConfirmation.PENDING,
+          paymentStatus,
         },
         select: practiceLessonViewSelect,
       });
@@ -354,6 +393,20 @@ export class PracticeLessonsService {
       `Practice lesson booked lessonId=${saved.id} studentId=${actor.id} instructorId=${profile.instructorId} carId=${profile.carId} scheduledAt=${saved.scheduledAt.toISOString()} durationMin=${saved.durationMin} organizationId=${actor.organizationId}`,
     );
     return toPracticeLessonDto(saved);
+  }
+
+  /** INSTRUCTOR бачить лише свої заняття; чужий instructorId — 403. */
+  private visibleInstructor(
+    actor: User,
+    requested: string | undefined,
+  ): string | undefined {
+    if (actor.role !== UserRole.INSTRUCTOR) {
+      return requested;
+    }
+    if (requested !== undefined && requested !== actor.id) {
+      throw new ForbiddenException('Insufficient permissions');
+    }
+    return actor.id;
   }
 
   /**
@@ -373,6 +426,10 @@ export class PracticeLessonsService {
     });
     if (!student) {
       throw new NotFoundException(STUDENT_NOT_FOUND_MESSAGE);
+    }
+    // Без допуску розділ практики закритий: ні слотів, ні бронювання.
+    if (student.studentProfile?.trainingStatus !== TrainingStatus.PRACTICE) {
+      throw new ForbiddenException(NO_PRACTICE_ACCESS_MESSAGE);
     }
     const { instructorId, carId, category, transmission } =
       requirePracticeProfile(student);

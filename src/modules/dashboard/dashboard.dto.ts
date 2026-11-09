@@ -358,6 +358,14 @@ export class InstructorDashboardLessonDto {
       'Місце зустрічі; null лише для старого заняття, створеного до появи поля.',
   })
   meetingPlace: string | null;
+
+  @ApiProperty({
+    enum: ['PENDING', 'CONFIRMED'],
+    example: 'PENDING',
+    description:
+      'PENDING — бронювання студента чекає підтвердження інструктора, CONFIRMED — підтверджене.',
+  })
+  bookingStatus: 'PENDING' | 'CONFIRMED';
 }
 
 export class InstructorDashboardStatsDto {
@@ -369,6 +377,13 @@ export class InstructorDashboardStatsDto {
 
   @ApiProperty({ example: 5 })
   upcomingLessonsTotal: number;
+
+  @ApiProperty({
+    description:
+      'Майбутні бронювання студентів, що чекають підтвердження цього INSTRUCTOR.',
+    example: 2,
+  })
+  pendingRequestsTotal: number;
 }
 
 export class InstructorDashboardDto {

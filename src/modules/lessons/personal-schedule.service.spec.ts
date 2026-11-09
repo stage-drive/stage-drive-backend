@@ -5,9 +5,11 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import {
+  BookingConfirmation,
   EnrollmentStatus,
   LessonStatus,
   LicenseCategory,
+  PaymentStatus,
   Transmission,
   User,
   UserRole,
@@ -90,6 +92,9 @@ function practiceRow(
       transmission: Transmission.MANUAL,
     },
     meetingPlace: 'Автодром',
+    confirmationStatus: BookingConfirmation.CONFIRMED,
+    confirmedAt: NOW,
+    paymentStatus: PaymentStatus.PAID,
     ...overrides,
   };
 }
@@ -384,6 +389,10 @@ describe('PersonalScheduleService', () => {
         meetingPlace: 'Автодром',
         cancelledAt: null,
         cancellationReason: null,
+        bookingStatus: 'CONFIRMED',
+        confirmationStatus: BookingConfirmation.CONFIRMED,
+        confirmedAt: NOW,
+        paymentStatus: PaymentStatus.PAID,
         updatedAt: NOW,
       });
     });

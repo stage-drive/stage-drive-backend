@@ -105,7 +105,7 @@ describe('computeAvailableSlots', () => {
   const base = {
     range: MONDAY,
     timeZone: KYIV,
-    now: at('2026-11-10T10:00:00Z'),
+    earliestStart: at('2026-11-10T10:00:00Z'),
     durationMin: PRACTICE_BOOKING_DURATION_MIN,
     workingHours: WEEK,
     timeOffs: [] as { startsAt: Date; endsAt: Date }[],
@@ -128,10 +128,11 @@ describe('computeAvailableSlots', () => {
     expect(iso(computeAvailableSlots(base))).toHaveLength(4);
   });
 
-  it('hides starts that are not in the future', () => {
-    const now = at('2026-11-16T09:00:00Z');
+  it('hides starts before the earliest start and keeps one exactly at it', () => {
+    const earliestStart = at('2026-11-16T09:00:00Z');
 
-    expect(iso(computeAvailableSlots({ ...base, now }))).toEqual([
+    expect(iso(computeAvailableSlots({ ...base, earliestStart }))).toEqual([
+      '2026-11-16T09:00:00.000Z',
       '2026-11-16T12:00:00.000Z',
       '2026-11-16T14:00:00.000Z',
     ]);

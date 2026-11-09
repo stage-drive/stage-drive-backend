@@ -21,6 +21,18 @@ import {
 /** Тривалість заняття, яке бронює студент, і крок сітки слотів. */
 export const PRACTICE_BOOKING_DURATION_MIN = PRACTICE_DEFAULT_DURATION_MIN;
 
+/**
+ * Запит на бронювання чекає підтвердження інструктора щонайдовше до цього
+ * моменту перед початком; потім його відхиляє PracticeRequestExpiryJob.
+ */
+export const CONFIRMATION_DEADLINE_HOURS = 2;
+
+/**
+ * Найменший запас до початку при бронюванні. Більший за дедлайн підтвердження,
+ * щоб в інструктора завжди була щонайменше година на відповідь.
+ */
+export const BOOKING_MIN_LEAD_HOURS = 3;
+
 /** DayOfWeek в порядку ISO: індекс 0 — понеділок. */
 const ISO_DAYS: readonly DayOfWeek[] = Object.values(DayOfWeek);
 
@@ -86,14 +98,15 @@ function overlapsTimeOff(slot: ScheduleSlot, timeOff: TimeOffRow): boolean {
 }
 
 /**
- * Вільні слоти для студента: старти сітки, що ще не настали, не перетинають
- * недоступність інструктора і не зайняті заняттями інструктора, авто чи
- * студента (blockers — з findStudentSlotBlockers).
+ * Вільні слоти для студента: старти сітки не раніше за earliestStart (зараз +
+ * мінімальний запас бронювання), що не перетинають недоступність інструктора
+ * і не зайняті заняттями інструктора, авто чи студента (blockers — з
+ * findStudentSlotBlockers).
  */
 export function computeAvailableSlots(input: {
   range: ScheduleSlot;
   timeZone: string;
-  now: Date;
+  earliestStart: Date;
   durationMin: number;
   workingHours: readonly WorkingHoursRow[];
   timeOffs: readonly TimeOffRow[];
@@ -103,7 +116,7 @@ export function computeAvailableSlots(input: {
   studentId: string;
 }): Date[] {
   return slotStarts(input).filter((scheduledAt) => {
-    if (scheduledAt.getTime() <= input.now.getTime()) {
+    if (scheduledAt.getTime() < input.earliestStart.getTime()) {
       return false;
     }
     const slot = lessonSlot(scheduledAt, input.durationMin);

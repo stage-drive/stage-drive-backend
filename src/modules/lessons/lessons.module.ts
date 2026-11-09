@@ -6,8 +6,11 @@ import { LessonAttendanceService } from './lesson-attendance.service';
 import { LessonsController } from './lessons.controller';
 import { LessonsService } from './lessons.service';
 import { PersonalScheduleService } from './personal-schedule.service';
+import { PracticeLessonWorkflowService } from './practice-lesson-workflow.service';
 import { PracticeLessonsController } from './practice-lessons.controller';
 import { PracticeLessonsService } from './practice-lessons.service';
+import { PracticePaymentService } from './practice-payment.service';
+import { PracticeRequestExpiryJob } from './practice-request-expiry.job';
 
 @Module({
   imports: [AuthModule],
@@ -22,6 +25,9 @@ import { PracticeLessonsService } from './practice-lessons.service';
     LessonAttendanceService,
     InstructorScheduleService,
     PracticeLessonsService,
+    PracticeLessonWorkflowService,
+    PracticePaymentService,
+    PracticeRequestExpiryJob,
   ],
 })
 export class LessonsModule {}

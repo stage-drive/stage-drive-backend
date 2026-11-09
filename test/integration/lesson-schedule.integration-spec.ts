@@ -8,12 +8,14 @@ import {
 import { PrismaPg } from '@prisma/adapter-pg';
 import {
   AttendanceStatus,
+  BookingConfirmation,
   CarStatus,
   DayOfWeek,
   EnrollmentStatus,
   GroupStatus,
   LessonStatus,
   LicenseCategory,
+  PaymentStatus,
   PrismaClient,
   TimeOffType,
   TrainingStatus,
@@ -57,10 +59,19 @@ import {
 import type { PersonalScheduleDto } from '../../src/modules/lessons/lessons.dto';
 import { PersonalScheduleService } from '../../src/modules/lessons/personal-schedule.service';
 import {
+  BOOKING_NOT_PENDING_MESSAGE,
+  PracticeLessonWorkflowService,
+} from '../../src/modules/lessons/practice-lesson-workflow.service';
+import {
   PracticeLessonsService,
   SLOT_NOT_OPEN_MESSAGE,
   STUDENT_HAS_ACTIVE_LESSON_MESSAGE,
 } from '../../src/modules/lessons/practice-lessons.service';
+import { PracticePaymentService } from '../../src/modules/lessons/practice-payment.service';
+import {
+  BOOKING_EXPIRED_REASON,
+  PracticeRequestExpiryJob,
+} from '../../src/modules/lessons/practice-request-expiry.job';
 import type { LessonConflict } from '../../src/modules/lessons/schedule-conflicts';
 import { StudentsService } from '../../src/modules/students/students.service';
 import type { PrismaService } from '../../src/prisma/prisma.service';
@@ -130,6 +141,8 @@ describe('Lesson schedule (integration, real Postgres)', () => {
   let attendanceService: LessonAttendanceService;
   let instructorScheduleService: InstructorScheduleService;
   let practiceLessonsService: PracticeLessonsService;
+  let workflowService: PracticeLessonWorkflowService;
+  let expiryJob: PracticeRequestExpiryJob;
   let sequence = 0;
 
   beforeAll(async () => {
@@ -147,7 +160,8 @@ describe('Lesson schedule (integration, real Postgres)', () => {
     await prisma.$connect();
 
     const service = prisma as unknown as PrismaService;
-    lessonsService = new LessonsService(service);
+    const payment = new PracticePaymentService();
+    lessonsService = new LessonsService(service, payment);
     groupsService = new GroupsService(
       service,
       new StudentsService(service, {} as InvitationEmailQueue),
@@ -156,7 +170,9 @@ describe('Lesson schedule (integration, real Postgres)', () => {
     scheduleService = new PersonalScheduleService(service);
     attendanceService = new LessonAttendanceService(service);
     instructorScheduleService = new InstructorScheduleService(service);
-    practiceLessonsService = new PracticeLessonsService(service);
+    practiceLessonsService = new PracticeLessonsService(service, payment);
+    workflowService = new PracticeLessonWorkflowService(service);
+    expiryJob = new PracticeRequestExpiryJob(service);
     jest.spyOn(Logger.prototype, 'log').mockImplementation(() => undefined);
   });
 
@@ -2230,6 +2246,10 @@ describe('Lesson schedule (integration, real Postgres)', () => {
 
       expect(booked).toMatchObject({
         status: LessonStatus.SCHEDULED,
+        bookingStatus: 'PENDING',
+        confirmationStatus: BookingConfirmation.PENDING,
+        confirmedAt: null,
+        paymentStatus: PaymentStatus.PAID,
         durationMin: 120,
         scheduledAt: at(9),
         endsAt: at(11),
@@ -2386,6 +2406,247 @@ describe('Lesson schedule (integration, real Postgres)', () => {
       await expect(
         ids({ instructorId: school.otherInstructor.id }),
       ).resolves.toEqual([]);
+    });
+  });
+
+  describe('booking approval', () => {
+    type School = Awaited<ReturnType<typeof createSchool>>;
+
+    const DAY_OF_WEEK = [
+      DayOfWeek.SUNDAY,
+      DayOfWeek.MONDAY,
+      DayOfWeek.TUESDAY,
+      DayOfWeek.WEDNESDAY,
+      DayOfWeek.THURSDAY,
+      DayOfWeek.FRIDAY,
+      DayOfWeek.SATURDAY,
+    ][DAY.getUTCDay()];
+
+    /** Як у 'practice booking': пояс UTC, слоти 9, 11, 14, 16. */
+    async function openSchool(): Promise<School> {
+      const school = await createSchool();
+      await prisma.organization.update({
+        where: { id: school.organization.id },
+        data: { timezone: 'UTC' },
+      });
+      await instructorScheduleService.replaceWorkingHours(
+        school.admin,
+        school.instructor.id,
+        {
+          intervals: [
+            { dayOfWeek: DAY_OF_WEEK, start: '09:00', end: '13:00' },
+            { dayOfWeek: DAY_OF_WEEK, start: '14:00', end: '18:00' },
+          ],
+        },
+      );
+      return school;
+    }
+
+    const bookAt = (student: User, hour: number) =>
+      practiceLessonsService.book(student, {
+        scheduledAt: at(hour).toISOString(),
+      });
+
+    /** Запит, що чекає підтвердження, напряму в БД — для часу поза сіткою графіка. */
+    const pendingAt = (school: School, scheduledAt: Date) =>
+      prisma.drivingLesson.create({
+        data: {
+          organizationId: school.organization.id,
+          instructorId: school.instructor.id,
+          studentId: school.student1.id,
+          carId: school.car1.id,
+          scheduledAt,
+          confirmationStatus: BookingConfirmation.PENDING,
+        },
+      });
+
+    const row = (id: string) =>
+      prisma.drivingLesson.findUniqueOrThrow({ where: { id } });
+
+    describe('migration', () => {
+      it('keeps the confirmation consistent with the lesson status', async () => {
+        const school = await createSchool();
+        const lesson = (data: object) =>
+          prisma.drivingLesson.create({
+            data: {
+              organizationId: school.organization.id,
+              instructorId: school.instructor.id,
+              studentId: school.student1.id,
+              carId: school.car1.id,
+              scheduledAt: at(10),
+              ...data,
+            },
+          });
+
+        await expect(
+          lesson({ confirmationStatus: BookingConfirmation.REJECTED }),
+        ).rejects.toThrow();
+        await expect(
+          lesson({
+            confirmationStatus: BookingConfirmation.PENDING,
+            status: LessonStatus.COMPLETED,
+          }),
+        ).rejects.toThrow();
+        await expect(
+          lesson({
+            confirmationStatus: BookingConfirmation.PENDING,
+            confirmedAt: new Date(),
+          }),
+        ).rejects.toThrow();
+        // Значення за замовчуванням: CONFIRMED і PAID.
+        await expect(lesson({})).resolves.toMatchObject({
+          confirmationStatus: BookingConfirmation.CONFIRMED,
+          paymentStatus: PaymentStatus.PAID,
+        });
+      });
+    });
+
+    it('lets the instructor confirm a pending request', async () => {
+      const school = await openSchool();
+      const booked = await bookAt(school.student1, 9);
+
+      const confirmed = await workflowService.confirm(
+        school.instructor,
+        booked.id,
+      );
+
+      expect(confirmed.bookingStatus).toBe('CONFIRMED');
+      await expect(row(booked.id)).resolves.toMatchObject({
+        status: LessonStatus.SCHEDULED,
+        confirmationStatus: BookingConfirmation.CONFIRMED,
+        confirmedById: school.instructor.id,
+      });
+      await expect(
+        workflowService.confirm(school.admin, booked.id),
+      ).rejects.toThrow(BOOKING_NOT_PENDING_MESSAGE);
+    });
+
+    it('frees the hour when the request is rejected', async () => {
+      const school = await openSchool();
+      const booked = await bookAt(school.student1, 9);
+
+      const rejected = await workflowService.reject(school.admin, booked.id, {
+        reason: 'Інструктор на навчанні',
+      });
+
+      expect(rejected).toMatchObject({
+        bookingStatus: 'REJECTED',
+        cancellationReason: 'Інструктор на навчанні',
+      });
+      await expect(bookAt(school.student2, 9)).resolves.toMatchObject({
+        bookingStatus: 'PENDING',
+      });
+    });
+
+    it('shows the instructor their pending requests and nothing of others', async () => {
+      const school = await openSchool();
+      const pending = await bookAt(school.student1, 9);
+      const confirmed = await bookAt(school.student2, 14);
+      await workflowService.confirm(school.admin, confirmed.id);
+
+      const inbox = await practiceLessonsService.list(school.instructor, {
+        from: at(0).toISOString(),
+        to: at(24).toISOString(),
+        confirmationStatus: BookingConfirmation.PENDING,
+      });
+
+      expect(inbox.items.map((item) => item.id)).toEqual([pending.id]);
+      await expect(
+        practiceLessonsService.list(school.otherInstructor, {
+          from: at(0).toISOString(),
+          to: at(24).toISOString(),
+        }),
+      ).resolves.toMatchObject({ items: [] });
+    });
+
+    it('rejects only requests left unanswered until 2 hours before the start', async () => {
+      const school = await createSchool();
+      const soon = await pendingAt(
+        school,
+        new Date(Date.now() + 90 * MINUTE_MS),
+      );
+      const later = await pendingAt(
+        school,
+        new Date(Date.now() + 5 * 60 * MINUTE_MS),
+      );
+
+      await expect(expiryJob.expireOverdue()).resolves.toBeGreaterThanOrEqual(
+        1,
+      );
+
+      await expect(row(soon.id)).resolves.toMatchObject({
+        status: LessonStatus.CANCELLED,
+        confirmationStatus: BookingConfirmation.REJECTED,
+        cancellationReason: BOOKING_EXPIRED_REASON,
+        cancelledById: null,
+      });
+      await expect(row(later.id)).resolves.toMatchObject({
+        status: LessonStatus.SCHEDULED,
+        confirmationStatus: BookingConfirmation.PENDING,
+      });
+    });
+
+    it('lets an in-flight confirmation win over the expiry job', async () => {
+      const school = await createSchool();
+      const lesson = await pendingAt(
+        school,
+        new Date(Date.now() + 90 * MINUTE_MS),
+      );
+      const updated = deferred();
+      const commit = deferred();
+
+      // In-flight confirmation: holds the row lock and has written CONFIRMED.
+      const confirming = prisma.$transaction(async (tx) => {
+        await lockPracticeLesson(tx, lesson.id, school.organization.id);
+        await tx.drivingLesson.update({
+          where: { id: lesson.id },
+          data: {
+            confirmationStatus: BookingConfirmation.CONFIRMED,
+            confirmedAt: new Date(),
+          },
+        });
+        updated.resolve();
+        await commit.promise;
+      });
+
+      try {
+        await updated.promise;
+        const expiring = expiryJob.expireOverdue();
+        const state = track(expiring);
+
+        await delay(LOCK_WAIT_MS);
+        expect(state.settled).toBe(false);
+
+        commit.resolve();
+        await confirming;
+        await expiring;
+
+        await expect(row(lesson.id)).resolves.toMatchObject({
+          status: LessonStatus.SCHEDULED,
+          confirmationStatus: BookingConfirmation.CONFIRMED,
+        });
+      } finally {
+        commit.resolve();
+        await confirming.catch(() => undefined);
+      }
+    });
+
+    it('refuses to confirm a request the expiry job already rejected', async () => {
+      const school = await createSchool();
+      const lesson = await pendingAt(
+        school,
+        new Date(Date.now() + 90 * MINUTE_MS),
+      );
+      await expiryJob.expireOverdue();
+
+      const error: unknown = await workflowService
+        .confirm(school.admin, lesson.id)
+        .catch((caught: unknown) => caught);
+
+      expect(error).toBeInstanceOf(ConflictException);
+      expect((error as ConflictException).getResponse()).toMatchObject({
+        currentStatus: 'REJECTED',
+      });
     });
   });
 });

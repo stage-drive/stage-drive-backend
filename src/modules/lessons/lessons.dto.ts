@@ -5,7 +5,13 @@ import {
   ApiPropertyOptional,
   getSchemaPath,
 } from '@nestjs/swagger';
-import { LessonStatus, LicenseCategory, Transmission } from '@prisma/client';
+import {
+  BookingConfirmation,
+  LessonStatus,
+  LicenseCategory,
+  PaymentStatus,
+  Transmission,
+} from '@prisma/client';
 import { Transform } from 'class-transformer';
 import {
   IsBoolean,
@@ -42,6 +48,21 @@ export const THEORY_DEFAULT_DURATION_MIN = 90;
 export const PRACTICE_DEFAULT_DURATION_MIN = 120;
 
 export const REQUIRED_FIELD_MESSAGE = "Заповніть обов'язкове поле.";
+/** Живе тут, а не в LessonsService: його беруть і хелпери рядка практичного заняття. */
+export const LESSON_NOT_FOUND_MESSAGE = 'Lesson not found';
+
+/**
+ * Статус бронювання практики для клієнтів: один рядок замість пари
+ * status + confirmationStatus. Рахує practiceBookingStatus у lesson-view.ts.
+ */
+export const PRACTICE_BOOKING_STATUSES = [
+  'PENDING',
+  'CONFIRMED',
+  'REJECTED',
+  'CANCELLED',
+  'COMPLETED',
+] as const;
+export type PracticeBookingStatus = (typeof PRACTICE_BOOKING_STATUSES)[number];
 export const LESSON_TOPIC_LENGTH_MESSAGE = `Тема має містити не більше ${LESSON_TOPIC_MAX_LENGTH} символів.`;
 export const CANCELLATION_REASON_LENGTH_MESSAGE = `Причина має містити не більше ${CANCELLATION_REASON_MAX_LENGTH} символів.`;
 export const MEETING_PLACE_LENGTH_MESSAGE = `Місце зустрічі має містити не більше ${MEETING_PLACE_MAX_LENGTH} символів.`;
@@ -434,6 +455,37 @@ export class PracticeLessonDto {
     description: 'Причина скасування; null, якщо її не вказали.',
   })
   cancellationReason: string | null;
+
+  @ApiProperty({
+    enum: PRACTICE_BOOKING_STATUSES,
+    example: 'PENDING',
+    description:
+      'Статус бронювання: PENDING — чекає підтвердження інструктора, CONFIRMED — підтверджене, ' +
+      'REJECTED — відхилене (інструктором, ADMIN чи автоматично, коли ніхто не підтвердив вчасно), ' +
+      'CANCELLED — скасоване, COMPLETED — проведене.',
+  })
+  bookingStatus: PracticeBookingStatus;
+
+  @ApiProperty({
+    enum: BookingConfirmation,
+    example: BookingConfirmation.PENDING,
+  })
+  confirmationStatus: BookingConfirmation;
+
+  @ApiProperty({
+    type: Date,
+    nullable: true,
+    example: null,
+    description: 'Коли бронювання підтверджено; null, поки не підтверджене.',
+  })
+  confirmedAt: Date | null;
+
+  @ApiProperty({
+    enum: PaymentStatus,
+    example: PaymentStatus.PAID,
+    description: 'Оплата заняття. Поки оплат немає, завжди PAID.',
+  })
+  paymentStatus: PaymentStatus;
 
   @ApiProperty()
   updatedAt: Date;

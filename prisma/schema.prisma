@@ -136,6 +136,21 @@ enum DayOfWeek {
   SUNDAY
 }
 
+/// Підтвердження бронювання практики. Бронювання студента — PENDING, доки інструктор
+/// чи ADMIN не підтвердить (CONFIRMED) або не відхилить (REJECTED, разом зі status = CANCELLED).
+/// Заняття, які створює ADMIN, — одразу CONFIRMED.
+enum BookingConfirmation {
+  PENDING
+  CONFIRMED
+  REJECTED
+}
+
+/// Оплата практичного заняття. Поки оплат немає, PracticePaymentService завжди ставить PAID.
+enum PaymentStatus {
+  UNPAID
+  PAID
+}
+
 /// Причина недоступності інструктора. На розрахунок вільного часу не впливає.
 enum TimeOffType {
   VACATION
@@ -207,6 +222,7 @@ model User {
   studentDrivingLessons    DrivingLesson[]          @relation("StudentDrivingLessons")
   cancelledLessons         Lesson[]                 @relation("CancelledLessons")
   cancelledDrivingLessons  DrivingLesson[]          @relation("CancelledDrivingLessons")
+  confirmedDrivingLessons  DrivingLesson[]          @relation("ConfirmedDrivingLessons")
   lessonAttendances        LessonAttendance[]       @relation("StudentAttendances")
   markedAttendances        LessonAttendance[]       @relation("MarkedAttendances")
   courseLessonCompletions  CourseLessonCompletion[] @relation("StudentCourseLessonCompletions")
@@ -593,29 +609,38 @@ model Lesson {
 }
 
 model DrivingLesson {
-  id                 String       @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  organizationId     String       @map("organization_id") @db.Uuid
-  organization       Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  id                 String              @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  organizationId     String              @map("organization_id") @db.Uuid
+  organization       Organization        @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   /// Restrict: заняття — історія навчання, видалення людини не повинно її стирати.
   /// Видалення всієї автошколи працює: Postgres перевіряє Restrict після всіх каскадів.
-  instructorId       String       @map("instructor_id") @db.Uuid
-  instructor         User         @relation("InstructorDrivingLessons", fields: [instructorId], references: [id], onDelete: Restrict)
-  studentId          String       @map("student_id") @db.Uuid
-  student            User         @relation("StudentDrivingLessons", fields: [studentId], references: [id], onDelete: Restrict)
+  instructorId       String              @map("instructor_id") @db.Uuid
+  instructor         User                @relation("InstructorDrivingLessons", fields: [instructorId], references: [id], onDelete: Restrict)
+  studentId          String              @map("student_id") @db.Uuid
+  student            User                @relation("StudentDrivingLessons", fields: [studentId], references: [id], onDelete: Restrict)
   /// Авто заняття. null лише для старих занять студентів без авто.
-  carId              String?      @map("car_id") @db.Uuid
-  car                Car?         @relation(fields: [carId], references: [id], onDelete: SetNull)
-  scheduledAt        DateTime     @map("scheduled_at")
-  durationMin        Int          @default(120) @map("duration_min")
-  status             LessonStatus @default(SCHEDULED)
-  meetingPlace       String?      @map("meeting_place") @db.VarChar(255)
+  carId              String?             @map("car_id") @db.Uuid
+  car                Car?                @relation(fields: [carId], references: [id], onDelete: SetNull)
+  scheduledAt        DateTime            @map("scheduled_at")
+  durationMin        Int                 @default(120) @map("duration_min")
+  status             LessonStatus        @default(SCHEDULED)
+  meetingPlace       String?             @map("meeting_place") @db.VarChar(255)
   /// Аудит скасування. CHECK у міграції: cancelledAt є тоді й лише тоді, коли status = CANCELLED.
-  cancelledAt        DateTime?    @map("cancelled_at")
-  cancelledById      String?      @map("cancelled_by_id") @db.Uuid
-  cancelledBy        User?        @relation("CancelledDrivingLessons", fields: [cancelledById], references: [id], onDelete: SetNull)
-  cancellationReason String?      @map("cancellation_reason") @db.VarChar(500)
-  createdAt          DateTime     @default(now()) @map("created_at")
-  updatedAt          DateTime     @default(now()) @updatedAt @map("updated_at")
+  cancelledAt        DateTime?           @map("cancelled_at")
+  cancelledById      String?             @map("cancelled_by_id") @db.Uuid
+  cancelledBy        User?               @relation("CancelledDrivingLessons", fields: [cancelledById], references: [id], onDelete: SetNull)
+  cancellationReason String?             @map("cancellation_reason") @db.VarChar(500)
+  /// Підтвердження бронювання. CHECK у міграції: REJECTED лише зі status = CANCELLED;
+  /// PENDING — без confirmedAt і не COMPLETED. confirmedAt для CONFIRMED заповнюють сервіси.
+  /// PENDING-заняття має status = SCHEDULED, тож займає час так само, як підтверджене.
+  confirmationStatus BookingConfirmation @default(CONFIRMED) @map("confirmation_status")
+  confirmedAt        DateTime?           @map("confirmed_at")
+  confirmedById      String?             @map("confirmed_by_id") @db.Uuid
+  confirmedBy        User?               @relation("ConfirmedDrivingLessons", fields: [confirmedById], references: [id], onDelete: SetNull)
+  /// Заглушка оплати: поки завжди PAID (PracticePaymentService).
+  paymentStatus      PaymentStatus       @default(PAID) @map("payment_status")
+  createdAt          DateTime            @default(now()) @map("created_at")
+  updatedAt          DateTime            @default(now()) @updatedAt @map("updated_at")
 
   /// Індекси під пошук конфліктів і розклад: ресурс + вікно часу.
   @@index([organizationId, scheduledAt])
@@ -623,6 +648,9 @@ model DrivingLesson {
   @@index([studentId, scheduledAt])
   @@index([carId, scheduledAt])
   @@index([cancelledById])
+  @@index([confirmedById])
+  /// «Вхідні» запити інструктора і фонове відхилення прострочених запитів.
+  @@index([confirmationStatus, scheduledAt])
   @@map("driving_lessons")
 }
 

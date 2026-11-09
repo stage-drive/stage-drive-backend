@@ -7,11 +7,13 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import {
+  BookingConfirmation,
   CarStatus,
   GroupStatus,
   LessonStatus,
   LicenseCategory,
   OrganizationStatus,
+  PaymentStatus,
   Prisma,
   TrainingStatus,
   Transmission,
@@ -39,6 +41,7 @@ import {
   LESSON_GROUP_NOT_OPEN_MESSAGE,
   LESSON_HAS_ATTENDANCE_MESSAGE,
   LESSON_IN_PAST_MESSAGE,
+  INSTRUCTOR_CANCEL_DEFAULT_REASON,
   LESSON_INSTRUCTOR_FIELDS_MESSAGE,
   LESSON_NOT_CANCELLABLE_MESSAGE,
   LESSON_NOT_EDITABLE_MESSAGE,
@@ -131,6 +134,9 @@ describe('LessonsService', () => {
       meetingPlace: 'Автодром' as string | null,
       cancelledAt: null as Date | null,
       cancellationReason: null as string | null,
+      confirmationStatus: BookingConfirmation.CONFIRMED as BookingConfirmation,
+      confirmedAt: new Date('2026-10-20T09:00:00.000Z'),
+      paymentStatus: PaymentStatus.PAID as PaymentStatus,
       updatedAt: new Date('2026-10-20T09:00:00.000Z'),
       instructor: {
         id: 'instructor-1',
@@ -239,6 +245,8 @@ describe('LessonsService', () => {
     $transaction: jest.fn(),
   };
 
+  const payment = { resolveForLesson: jest.fn() };
+
   let service: LessonsService;
   let log: jest.SpyInstance;
 
@@ -299,7 +307,8 @@ describe('LessonsService', () => {
     log = jest
       .spyOn(Logger.prototype, 'log')
       .mockImplementation(() => undefined);
-    service = new LessonsService(prisma as unknown as PrismaService);
+    payment.resolveForLesson.mockResolvedValue(PaymentStatus.PAID);
+    service = new LessonsService(prisma as unknown as PrismaService, payment);
   });
 
   afterEach(() => {
@@ -340,6 +349,10 @@ describe('LessonsService', () => {
         meetingPlace: 'Автодром',
         cancelledAt: null,
         cancellationReason: null,
+        bookingStatus: 'CONFIRMED',
+        confirmationStatus: BookingConfirmation.CONFIRMED,
+        confirmedAt: new Date('2026-10-20T09:00:00.000Z'),
+        paymentStatus: PaymentStatus.PAID,
         updatedAt: new Date('2026-10-20T09:00:00.000Z'),
       });
     });
@@ -1221,6 +1234,10 @@ describe('LessonsService', () => {
           meetingPlace: 'Автодром',
           cancelledAt: NOW,
           cancellationReason: 'Авто на ремонті',
+          bookingStatus: 'CANCELLED',
+          confirmationStatus: BookingConfirmation.CONFIRMED,
+          confirmedAt: new Date('2026-10-20T09:00:00.000Z'),
+          paymentStatus: PaymentStatus.PAID,
           updatedAt: new Date('2026-10-20T09:00:00.000Z'),
         });
       });
@@ -1233,11 +1250,22 @@ describe('LessonsService', () => {
         });
       });
 
-      it('lets an instructor cancel their own lesson', async () => {
+      it('lets an instructor cancel their own lesson with the default reason', async () => {
         await service.cancelPractice(instructorActor as never, 'lesson-1', {});
 
         expect(updateData(prisma.drivingLesson.update)).toMatchObject({
           cancelledById: 'instructor-1',
+          cancellationReason: INSTRUCTOR_CANCEL_DEFAULT_REASON,
+        });
+      });
+
+      it('keeps the reason an instructor gives', async () => {
+        await service.cancelPractice(instructorActor as never, 'lesson-1', {
+          reason: 'Авто зламалося',
+        });
+
+        expect(updateData(prisma.drivingLesson.update)).toMatchObject({
+          cancellationReason: 'Авто зламалося',
         });
       });
 
@@ -1255,7 +1283,7 @@ describe('LessonsService', () => {
       });
 
       describe('by the student', () => {
-        it('lets a student cancel their own lesson more than 24 hours ahead', async () => {
+        it('lets a student cancel their own confirmed lesson more than 2 hours ahead', async () => {
           await service.cancelPractice(studentActor as never, 'lesson-1', {
             reason: 'Захворів',
           });
@@ -1267,10 +1295,10 @@ describe('LessonsService', () => {
           });
         });
 
-        it('accepts exactly 24 hours ahead', async () => {
+        it('accepts exactly 2 hours ahead', async () => {
           givenPractice(
             practiceRow({
-              lesson: { scheduledAt: new Date('2026-10-22T10:00:00.000Z') },
+              lesson: { scheduledAt: new Date('2026-10-21T12:00:00.000Z') },
             }),
           );
 
@@ -1279,10 +1307,10 @@ describe('LessonsService', () => {
           expect(prisma.drivingLesson.update).toHaveBeenCalledTimes(1);
         });
 
-        it('refuses less than 24 hours ahead and keeps the lesson', async () => {
+        it('refuses a confirmed lesson less than 2 hours ahead and keeps it', async () => {
           givenPractice(
             practiceRow({
-              lesson: { scheduledAt: new Date('2026-10-22T09:59:00.000Z') },
+              lesson: { scheduledAt: new Date('2026-10-21T11:59:00.000Z') },
             }),
           );
 
@@ -1295,10 +1323,29 @@ describe('LessonsService', () => {
           expect(prisma.drivingLesson.update).not.toHaveBeenCalled();
         });
 
-        it('lets an admin cancel the same lesson within 24 hours', async () => {
+        it('lets a student withdraw a pending request right before the start', async () => {
           givenPractice(
             practiceRow({
-              lesson: { scheduledAt: new Date('2026-10-21T12:00:00.000Z') },
+              lesson: {
+                scheduledAt: new Date('2026-10-21T10:30:00.000Z'),
+                confirmationStatus: BookingConfirmation.PENDING,
+                confirmedAt: null,
+              },
+            }),
+          );
+
+          await service.cancelPractice(studentActor as never, 'lesson-1', {});
+
+          expect(updateData(prisma.drivingLesson.update)).toMatchObject({
+            status: LessonStatus.CANCELLED,
+            cancelledById: 'student-1',
+          });
+        });
+
+        it('lets an admin cancel the same lesson within 2 hours', async () => {
+          givenPractice(
+            practiceRow({
+              lesson: { scheduledAt: new Date('2026-10-21T11:00:00.000Z') },
             }),
           );
 
@@ -1920,6 +1967,14 @@ describe('LessonsService', () => {
           scheduledAt: new Date('2026-11-03T08:00:00.000Z'),
           durationMin: 120,
           meetingPlace: 'Автодром, вул. Промислова, 5',
+          confirmationStatus: BookingConfirmation.CONFIRMED,
+          confirmedAt: NOW,
+          confirmedById: 'admin-1',
+          paymentStatus: PaymentStatus.PAID,
+        });
+        expect(payment.resolveForLesson).toHaveBeenCalledWith(prisma, {
+          organizationId: 'org-1',
+          studentId: 'student-1',
         });
         expect(result).toMatchObject({
           id: 'lesson-new',
