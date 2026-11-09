@@ -434,14 +434,14 @@ export class UsersService {
     if (input.firstName !== undefined) {
       const firstName = input.firstName.trim();
       if (!firstName) {
-        throw new BadRequestException('firstName cannot be empty');
+        throw fieldError('firstName', EMPTY_FIELD_MESSAGE);
       }
       data.firstName = firstName;
     }
     if (input.lastName !== undefined) {
       const lastName = input.lastName.trim();
       if (!lastName) {
-        throw new BadRequestException('lastName cannot be empty');
+        throw fieldError('lastName', EMPTY_FIELD_MESSAGE);
       }
       data.lastName = lastName;
     }
@@ -450,9 +450,7 @@ export class UsersService {
     }
 
     if (Object.keys(data).length === 0) {
-      throw new BadRequestException(
-        'No allowed fields to update (firstName, lastName, phone)',
-      );
+      throw fieldError('body', NO_MEMBER_FIELDS_MESSAGE);
     }
 
     const updated = await this.prisma.user.update({
@@ -692,21 +690,28 @@ export class UsersService {
     return toOrganizationMember(updated);
   }
 
+  /**
+   * Лише власний аватар: OWNER і ADMIN не змінюють аватари інших користувачів.
+   * Спершу оновлюється запис, потім видаляється старий файл: якщо база
+   * не збереже зміну, користувач лишиться з попереднім робочим аватаром.
+   */
   async setAvatar(user: User, avatarUrl: string) {
-    this.deleteLocalUpload(user.avatarUrl);
     const updated = await this.prisma.user.update({
       where: { id: user.id },
       data: { avatarUrl },
     });
+    if (user.avatarUrl !== avatarUrl) {
+      this.deleteLocalUpload(user.avatarUrl);
+    }
     return toPublicUser(updated);
   }
 
   async deleteAvatar(user: User) {
-    this.deleteLocalUpload(user.avatarUrl);
     const updated = await this.prisma.user.update({
       where: { id: user.id },
       data: { avatarUrl: null },
     });
+    this.deleteLocalUpload(user.avatarUrl);
     return toPublicUser(updated);
   }
 
@@ -755,14 +760,24 @@ export class UsersService {
     return member;
   }
 
+  /**
+   * Викликається після успішного запису в базу, тому не кидає помилок:
+   * збій прибирання старого файлу не повинен ламати вже збережену зміну.
+   */
   private deleteLocalUpload(url?: string | null) {
     if (!url?.startsWith('/uploads/')) {
       return;
     }
     const relative = url.replace(/^\//, '');
     const fullPath = join(process.cwd(), relative);
-    if (existsSync(fullPath)) {
-      unlinkSync(fullPath);
+    try {
+      if (existsSync(fullPath)) {
+        unlinkSync(fullPath);
+      }
+    } catch (error) {
+      this.logger.warn(
+        `Failed to remove previous upload path=${fullPath}: ${String(error)}`,
+      );
     }
   }
 }

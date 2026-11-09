@@ -23,6 +23,16 @@ function collectFieldErrors(
   });
 }
 
+export function fieldBadRequest(
+  field: string,
+  message: string,
+): BadRequestException {
+  return new BadRequestException({
+    statusCode: 400,
+    errors: [{ field, message }],
+  });
+}
+
 export function validationExceptionFactory(
   errors: ValidationError[],
 ): BadRequestException {

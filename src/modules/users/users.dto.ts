@@ -29,6 +29,7 @@ import {
 import { IsPlainText } from '../../common/validators/plain-text.decorator';
 
 const PHONE_REGEX = /^\+?[0-9\s-]{7,20}$/;
+const PROFILE_REQUIRED_FIELD_MESSAGE = "Заповніть обов'язкове поле.";
 
 export class PublicUserDto {
   @ApiProperty({ example: '22222222-2222-2222-2222-222222222222' })
@@ -60,30 +61,37 @@ export class PublicUserDto {
   organizationId: string;
 }
 
+/**
+ * Лише ці поля користувач змінює сам. email, role, status, organizationId
+ * і avatarUrl не входять у DTO, тож глобальний ValidationPipe
+ * (forbidNonWhitelisted) відхиляє запит, у якому вони є.
+ */
 export class UpdateProfileDto {
   @ApiPropertyOptional({ example: 'Іван' })
+  @MaxLength(60, { message: 'Ім’я має містити не більше 60 символів.' })
   @IsPlainText()
+  @IsString({ message: 'firstName має бути рядком.' })
+  @IsNotEmpty({ message: PROFILE_REQUIRED_FIELD_MESSAGE })
   @IsOptional()
-  @IsString()
-  @IsNotEmpty()
-  @MaxLength(60)
   firstName?: string;
 
   @ApiPropertyOptional({ example: 'Петренко' })
+  @MaxLength(60, { message: 'Прізвище має містити не більше 60 символів.' })
   @IsPlainText()
+  @IsString({ message: 'lastName має бути рядком.' })
+  @IsNotEmpty({ message: PROFILE_REQUIRED_FIELD_MESSAGE })
   @IsOptional()
-  @IsString()
-  @IsNotEmpty()
-  @MaxLength(60)
   lastName?: string;
 
   @ApiPropertyOptional({
     nullable: true,
     type: String,
     example: '+380991234567',
+    description: 'Передайте null, щоб очистити телефон.',
   })
+  @Matches(PHONE_REGEX, { message: 'Введіть коректний номер телефону.' })
+  @IsString({ message: 'phone має бути рядком або null.' })
   @IsOptional()
-  @Matches(PHONE_REGEX, { message: 'phone must be a valid phone number' })
   phone?: string | null;
 }
 

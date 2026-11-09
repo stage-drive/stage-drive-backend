@@ -4,10 +4,21 @@ import { Test, TestingModule } from '@nestjs/testing';
 import { Prisma } from '@prisma/client';
 import * as bcrypt from 'bcrypt';
 import { createHash } from 'crypto';
+import { existsSync, mkdirSync, readdirSync, rmSync, writeFileSync } from 'fs';
+import { join } from 'path';
 import request from 'supertest';
 import { App } from 'supertest/types';
 import { AppModule } from '../src/app.module';
+import {
+  IMAGE_CONTENT_MESSAGE,
+  IMAGE_MAX_SIZE,
+  IMAGE_REQUIRED_MESSAGE,
+  IMAGE_TOO_LARGE_MESSAGE,
+  IMAGE_TYPE_MESSAGE,
+} from '../src/common/files/image-upload';
+import { UNSAFE_TEXT_MESSAGE } from '../src/common/validators/plain-text.decorator';
 import { configureApp } from '../src/configure-app';
+import { NO_MEMBER_FIELDS_MESSAGE } from '../src/modules/users/users.service';
 import {
   ACCESS_DENIED_MESSAGE,
   ACCOUNT_NOT_ACTIVE_MESSAGE,
@@ -931,6 +942,339 @@ describe('API (e2e)', () => {
       phone: '+380000000000',
     });
     expect(prismaMock.user.update).toHaveBeenCalled();
+  });
+
+  describe('own profile and avatar', () => {
+    const avatarsDir = join(process.cwd(), 'uploads', 'avatars');
+    const PNG = Buffer.concat([
+      Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+      Buffer.alloc(64),
+    ]);
+    let filesBefore: Set<string>;
+
+    // uploads/ — спільний каталог розробника: прибираємо лише файли,
+    // що з'явилися під час тесту.
+    beforeEach(() => {
+      mkdirSync(avatarsDir, { recursive: true });
+      filesBefore = new Set(readdirSync(avatarsDir));
+    });
+
+    afterEach(() => {
+      for (const name of newAvatarFiles()) {
+        rmSync(join(avatarsDir, name), { recursive: true, force: true });
+      }
+    });
+
+    function newAvatarFiles(): string[] {
+      return readdirSync(avatarsDir).filter((name) => !filesBefore.has(name));
+    }
+
+    function onDisk(url: string): boolean {
+      return existsSync(join(process.cwd(), url.replace(/^\//, '')));
+    }
+
+    function bearer(user: TestUser): string {
+      return `Bearer ${signAccessToken(user.id)}`;
+    }
+
+    function storeOwnerAvatar(name: string): string {
+      writeFileSync(join(avatarsDir, name), PNG);
+      const avatarUrl = `/uploads/avatars/${name}`;
+      const fallback =
+        prismaMock.user.findUnique.getMockImplementation() as (args: {
+          where: { id?: string };
+        }) => Promise<unknown>;
+      prismaMock.user.findUnique.mockImplementation(
+        (args: { where: { id?: string } }) =>
+          args.where.id === owner.id
+            ? Promise.resolve({ ...owner, avatarUrl })
+            : fallback(args),
+      );
+      return avatarUrl;
+    }
+
+    it.each([
+      ['role', { role: 'ADMIN' }],
+      ['email', { email: 'new@example.com' }],
+      [
+        'organizationId',
+        { organizationId: '99999999-9999-4999-8999-999999999999' },
+      ],
+      ['status', { status: 'BLOCKED' }],
+      ['avatarUrl', { avatarUrl: '/uploads/avatars/someone-else.png' }],
+      ['passwordHash', { passwordHash: 'hash' }],
+    ])(
+      'PATCH /api/users/me rejects the protected field %s',
+      async (field, body) => {
+        const response = await request(app.getHttpServer())
+          .patch('/api/users/me')
+          .set('Authorization', bearer(owner))
+          .send({ firstName: 'Petro', ...body })
+          .expect(400);
+
+        expect(response.body).toMatchObject({
+          statusCode: 400,
+          errors: [expect.objectContaining({ field })],
+        });
+        expect(prismaMock.user.update).not.toHaveBeenCalled();
+      },
+    );
+
+    it('PATCH /api/users/me returns a field error for a blank firstName', async () => {
+      const response = await request(app.getHttpServer())
+        .patch('/api/users/me')
+        .set('Authorization', bearer(owner))
+        .send({ firstName: '   ' })
+        .expect(400);
+
+      expect(response.body).toEqual({
+        statusCode: 400,
+        errors: [
+          { field: 'firstName', message: "Заповніть обов'язкове поле." },
+        ],
+      });
+      expect(prismaMock.user.update).not.toHaveBeenCalled();
+    });
+
+    it('PATCH /api/users/me returns a field error for an empty body', async () => {
+      const response = await request(app.getHttpServer())
+        .patch('/api/users/me')
+        .set('Authorization', bearer(owner))
+        .send({})
+        .expect(400);
+
+      expect(response.body).toEqual({
+        statusCode: 400,
+        errors: [{ field: 'body', message: NO_MEMBER_FIELDS_MESSAGE }],
+      });
+    });
+
+    it('PATCH /api/users/me validates the phone format', async () => {
+      const response = await request(app.getHttpServer())
+        .patch('/api/users/me')
+        .set('Authorization', bearer(owner))
+        .send({ phone: 'call me' })
+        .expect(400);
+
+      expect(response.body).toEqual({
+        statusCode: 400,
+        errors: [
+          { field: 'phone', message: 'Введіть коректний номер телефону.' },
+        ],
+      });
+    });
+
+    it('PATCH /api/users/me rejects markup in names', async () => {
+      const response = await request(app.getHttpServer())
+        .patch('/api/users/me')
+        .set('Authorization', bearer(owner))
+        .send({ lastName: '<b>Koval</b>' })
+        .expect(400);
+
+      expect(response.body).toEqual({
+        statusCode: 400,
+        errors: [{ field: 'lastName', message: UNSAFE_TEXT_MESSAGE }],
+      });
+    });
+
+    it('PATCH /api/users/me requires an access token', async () => {
+      await request(app.getHttpServer())
+        .patch('/api/users/me')
+        .send({ firstName: 'Petro' })
+        .expect(401);
+
+      expect(prismaMock.user.update).not.toHaveBeenCalled();
+    });
+
+    it('POST /api/users/me/avatar stores the image under a new name and returns the profile', async () => {
+      const response = await request(app.getHttpServer())
+        .post('/api/users/me/avatar')
+        .set('Authorization', bearer(owner))
+        .attach('file', PNG, { filename: 'me.png', contentType: 'image/png' })
+        .expect(201);
+
+      const { avatarUrl } = response.body as { avatarUrl: string };
+      expect(avatarUrl).toMatch(
+        new RegExp(`^/uploads/avatars/${owner.id}-[0-9a-f-]{36}\\.png$`),
+      );
+      expect(response.body).toMatchObject({ id: owner.id, avatarUrl });
+      expect(prismaMock.user.update).toHaveBeenCalledWith({
+        where: { id: owner.id },
+        data: { avatarUrl },
+      });
+      expect(onDisk(avatarUrl)).toBe(true);
+    });
+
+    it('POST /api/users/me/avatar takes the extension from the image type, not the filename', async () => {
+      const response = await request(app.getHttpServer())
+        .post('/api/users/me/avatar')
+        .set('Authorization', bearer(owner))
+        .attach('file', PNG, { filename: 'me.html', contentType: 'image/png' })
+        .expect(201);
+
+      expect((response.body as { avatarUrl: string }).avatarUrl).toMatch(
+        /\.png$/,
+      );
+    });
+
+    it('POST /api/users/me/avatar replacing a same-format avatar keeps the new file and removes the old one', async () => {
+      const previous = storeOwnerAvatar(`${owner.id}-e2e-previous.png`);
+
+      const response = await request(app.getHttpServer())
+        .post('/api/users/me/avatar')
+        .set('Authorization', bearer(owner))
+        .attach('file', PNG, { filename: 'me.png', contentType: 'image/png' })
+        .expect(201);
+
+      const { avatarUrl } = response.body as { avatarUrl: string };
+      expect(avatarUrl).not.toBe(previous);
+      expect(onDisk(avatarUrl)).toBe(true);
+      expect(onDisk(previous)).toBe(false);
+    });
+
+    it('POST /api/users/me/avatar rejects HTML sent as image/png and leaves no file', async () => {
+      const response = await request(app.getHttpServer())
+        .post('/api/users/me/avatar')
+        .set('Authorization', bearer(owner))
+        .attach('file', Buffer.from('<html><script>alert(1)</script></html>'), {
+          filename: 'avatar.html',
+          contentType: 'image/png',
+        })
+        .expect(400);
+
+      expect(response.body).toEqual({
+        statusCode: 400,
+        errors: [{ field: 'file', message: IMAGE_CONTENT_MESSAGE }],
+      });
+      expect(prismaMock.user.update).not.toHaveBeenCalled();
+      expect(newAvatarFiles()).toEqual([]);
+    });
+
+    it('POST /api/users/me/avatar rejects a format that is not allowed', async () => {
+      const response = await request(app.getHttpServer())
+        .post('/api/users/me/avatar')
+        .set('Authorization', bearer(owner))
+        .attach(
+          'file',
+          Buffer.from('<svg xmlns="http://www.w3.org/2000/svg"/>'),
+          {
+            filename: 'avatar.svg',
+            contentType: 'image/svg+xml',
+          },
+        )
+        .expect(400);
+
+      expect(response.body).toEqual({
+        statusCode: 400,
+        errors: [{ field: 'file', message: IMAGE_TYPE_MESSAGE }],
+      });
+      expect(newAvatarFiles()).toEqual([]);
+    });
+
+    it('POST /api/users/me/avatar rejects an image over 2 MB', async () => {
+      const response = await request(app.getHttpServer())
+        .post('/api/users/me/avatar')
+        .set('Authorization', bearer(owner))
+        .attach('file', Buffer.concat([PNG, Buffer.alloc(IMAGE_MAX_SIZE)]), {
+          filename: 'big.png',
+          contentType: 'image/png',
+        })
+        .expect(413);
+
+      expect(response.body).toEqual({
+        statusCode: 413,
+        errors: [{ field: 'file', message: IMAGE_TOO_LARGE_MESSAGE }],
+      });
+      expect(prismaMock.user.update).not.toHaveBeenCalled();
+      expect(newAvatarFiles()).toEqual([]);
+    });
+
+    it('POST /api/users/me/avatar requires a file', async () => {
+      const response = await request(app.getHttpServer())
+        .post('/api/users/me/avatar')
+        .set('Authorization', bearer(owner))
+        .expect(400);
+
+      expect(response.body).toEqual({
+        statusCode: 400,
+        errors: [{ field: 'file', message: IMAGE_REQUIRED_MESSAGE }],
+      });
+    });
+
+    it('POST /api/users/me/avatar removes the uploaded file when saving fails', async () => {
+      const previous = storeOwnerAvatar(`${owner.id}-e2e-previous.png`);
+      prismaMock.user.update.mockRejectedValueOnce(
+        new Error('database is down'),
+      );
+
+      await request(app.getHttpServer())
+        .post('/api/users/me/avatar')
+        .set('Authorization', bearer(owner))
+        .attach('file', PNG, { filename: 'me.png', contentType: 'image/png' })
+        .expect(500);
+
+      expect(newAvatarFiles()).toEqual([`${owner.id}-e2e-previous.png`]);
+      expect(onDisk(previous)).toBe(true);
+    });
+
+    it('POST /api/users/me/avatar requires an access token and writes nothing', async () => {
+      await request(app.getHttpServer())
+        .post('/api/users/me/avatar')
+        .attach('file', PNG, { filename: 'me.png', contentType: 'image/png' })
+        .expect(401);
+
+      expect(newAvatarFiles()).toEqual([]);
+    });
+
+    it('DELETE /api/users/me/avatar clears the avatar and removes the file', async () => {
+      const current = storeOwnerAvatar(`${owner.id}-e2e-current.png`);
+
+      const response = await request(app.getHttpServer())
+        .delete('/api/users/me/avatar')
+        .set('Authorization', bearer(owner))
+        .expect(200);
+
+      expect(response.body).toMatchObject({ id: owner.id, avatarUrl: null });
+      expect(prismaMock.user.update).toHaveBeenCalledWith({
+        where: { id: owner.id },
+        data: { avatarUrl: null },
+      });
+      expect(onDisk(current)).toBe(false);
+    });
+
+    describe.each([
+      ['OWNER', owner],
+      ['ADMIN', admin],
+    ])("%s cannot change another user's avatar", (_role, actor) => {
+      it('PATCH /api/users/:id rejects avatarUrl', async () => {
+        const response = await request(app.getHttpServer())
+          .patch(`/api/users/${pupil.id}`)
+          .set('Authorization', bearer(actor))
+          .send({ avatarUrl: '/uploads/avatars/replaced.png' })
+          .expect(400);
+
+        expect(response.body).toMatchObject({
+          statusCode: 400,
+          errors: [expect.objectContaining({ field: 'avatarUrl' })],
+        });
+        expect(prismaMock.user.update).not.toHaveBeenCalled();
+      });
+
+      it('has no endpoint to upload or delete it', async () => {
+        await request(app.getHttpServer())
+          .post(`/api/users/${pupil.id}/avatar`)
+          .set('Authorization', bearer(actor))
+          .attach('file', PNG, { filename: 'x.png', contentType: 'image/png' })
+          .expect(404);
+        await request(app.getHttpServer())
+          .delete(`/api/users/${pupil.id}/avatar`)
+          .set('Authorization', bearer(actor))
+          .expect(404);
+
+        expect(prismaMock.user.update).not.toHaveBeenCalled();
+        expect(newAvatarFiles()).toEqual([]);
+      });
+    });
   });
 
   it('PATCH /api/users/me/password changes password', async () => {

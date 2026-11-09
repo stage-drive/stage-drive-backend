@@ -24,12 +24,14 @@ import { AuthGuard } from '../auth/auth.guard';
 import { CurrentUser } from '../auth/current-user.decorator';
 import { Roles } from '../auth/roles.decorator';
 import { RolesGuard } from '../auth/roles.guard';
+import { ImageContentPipe } from '../../common/files/image-content.pipe';
 import {
   IMAGE_MAX_SIZE,
   imageFileFilter,
   imageStorage,
   publicUploadUrl,
 } from '../../common/files/image-upload';
+import { ImageUploadInterceptor } from '../../common/files/image-upload.interceptor';
 import { OrganizationService } from './organization.service';
 import {
   PublicOrganizationDto,
@@ -65,6 +67,7 @@ export class OrganizationController {
   @UseGuards(RolesGuard)
   @Roles(UserRole.OWNER)
   @UseInterceptors(
+    new ImageUploadInterceptor('logo'),
     FileInterceptor('logo', {
       storage: imageStorage('logos', (req) => req.user?.organizationId),
       fileFilter: imageFileFilter,
@@ -74,7 +77,7 @@ export class OrganizationController {
   updateCurrent(
     @CurrentUser() user: User,
     @Body() body: UpdateOrganizationDto,
-    @UploadedFile() file?: Express.Multer.File,
+    @UploadedFile(ImageContentPipe) file?: Express.Multer.File,
   ) {
     return this.organizationService.updateCurrent(
       user,
