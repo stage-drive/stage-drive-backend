@@ -10,13 +10,17 @@ export const ACCOUNT_NOT_ACTIVE_MESSAGE =
 export function assertSignInAllowed(user: {
   status: UserStatus;
   deletedAt?: Date | null;
-  organization?: { status: OrganizationStatus } | null;
+  organization?: {
+    status: OrganizationStatus;
+    deletedAt?: Date | null;
+  } | null;
 }): void {
   if (
     user.deletedAt ||
     user.status === UserStatus.BLOCKED ||
     user.status === UserStatus.ARCHIVED ||
-    user.organization?.status === OrganizationStatus.BLOCKED
+    user.organization?.status === OrganizationStatus.BLOCKED ||
+    user.organization?.deletedAt
   ) {
     throw new ForbiddenException(ACCESS_DENIED_MESSAGE);
   }
@@ -25,12 +29,16 @@ export function assertSignInAllowed(user: {
 export function assertActiveUser(user: {
   status: UserStatus;
   deletedAt?: Date | null;
-  organization?: { status: OrganizationStatus } | null;
+  organization?: {
+    status: OrganizationStatus;
+    deletedAt?: Date | null;
+  } | null;
 }): void {
   if (
     user.deletedAt ||
     user.status !== UserStatus.ACTIVE ||
-    user.organization?.status === OrganizationStatus.BLOCKED
+    user.organization?.status === OrganizationStatus.BLOCKED ||
+    user.organization?.deletedAt
   ) {
     throw new UnauthorizedException(ACCOUNT_NOT_ACTIVE_MESSAGE);
   }

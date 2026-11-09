@@ -1,5 +1,10 @@
 import { UnauthorizedException } from '@nestjs/common';
-import { Prisma, UserRole, UserStatus } from '@prisma/client';
+import {
+  OrganizationStatus,
+  Prisma,
+  UserRole,
+  UserStatus,
+} from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
 import { ACCESS_DENIED_MESSAGE } from './auth-access';
 import { AuthService } from './auth.service';
@@ -91,7 +96,12 @@ describe('GoogleAuthService', () => {
       create: jest.Mock;
     };
     user: { findUnique: jest.Mock; findFirst: jest.Mock; update: jest.Mock };
+    organization: { findUnique: jest.Mock };
   };
+  let organizationRow: {
+    status: OrganizationStatus;
+    deletedAt: Date | null;
+  } | null;
   let oidc: { exchangeCode: jest.Mock; verifyIdToken: jest.Mock };
   let authService: {
     recordLogin: jest.Mock;
@@ -101,8 +111,12 @@ describe('GoogleAuthService', () => {
     authorizations = new Map();
     accounts = [];
     users = [{ ...owner }];
+    organizationRow = { status: OrganizationStatus.ACTIVE, deletedAt: null };
 
     prisma = {
+      organization: {
+        findUnique: jest.fn(() => Promise.resolve(organizationRow)),
+      },
       oAuthAuthorization: {
         deleteMany: jest.fn(
           ({ where }: { where: { expiresAt?: { lt: Date }; id?: string } }) => {
@@ -490,6 +504,56 @@ describe('GoogleAuthService', () => {
     });
 
     expect(accounts).toHaveLength(0);
+  });
+
+  it.each([
+    ['blocked', { status: OrganizationStatus.BLOCKED, deletedAt: null }],
+    [
+      'deleted',
+      { status: OrganizationStatus.ACTIVE, deletedAt: new Date('2026-11-01') },
+    ],
+  ])(
+    'rejects a user whose organization is %s with 403',
+    async (_state, organization) => {
+      users = [{ ...owner, email: 'ada@gmail.com' }];
+      organizationRow = organization;
+      seedPending();
+
+      await expect(
+        service.complete({ code: 'code-1', state: 'state-1' }),
+      ).rejects.toMatchObject({
+        message: ACCESS_DENIED_MESSAGE,
+        status: 403,
+      });
+
+      expect(prisma.organization.findUnique).toHaveBeenCalledWith({
+        where: { id: owner.organizationId },
+        select: { status: true, deletedAt: true },
+      });
+      expect(accounts).toHaveLength(0);
+      expect(authService.recordLogin).not.toHaveBeenCalled();
+    },
+  );
+
+  it('rejects an already linked user whose organization was deleted', async () => {
+    accounts = [
+      {
+        id: 'oauth-1',
+        userId: owner.id,
+        provider: 'GOOGLE',
+        providerAccountId: profile.sub,
+      },
+    ];
+    organizationRow = {
+      status: OrganizationStatus.ACTIVE,
+      deletedAt: new Date('2026-11-01'),
+    };
+    seedPending();
+
+    await expect(
+      service.complete({ code: 'code-1', state: 'state-1' }),
+    ).rejects.toMatchObject({ message: ACCESS_DENIED_MESSAGE, status: 403 });
+    expect(authService.recordLogin).not.toHaveBeenCalled();
   });
 
   it('completeWithIdToken links a verified Google email to an existing user', async () => {
