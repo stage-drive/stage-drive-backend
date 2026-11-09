@@ -1,5 +1,10 @@
 # Practice Slots: план реалізації
 
+> **Застаріло.** Слоти більше не зберігаються: таблицю `practice_slots` і ендпоінти `/practice-slots` видалено.
+> Вільний час рахується з робочого графіка інструктора, бронювання — `POST /lessons/practice/book`. Актуальний опис —
+> [practice-scheduling-overview.md](practice-scheduling-overview.md) (PR #82, #83 і видалення слотів). Документ лишається
+> як історія рішень.
+
 Прочитайте [CLAUDE.md](../CLAUDE.md), [lessons-create-implementation.md](lessons-create-implementation.md) і
 [lessons-edit-reschedule-implementation.md](lessons-edit-reschedule-implementation.md), перш ніж імплементувати або
 рев'ювати цю задачу.

@@ -28,8 +28,7 @@ import { lessonPersonSelect } from './lesson-view';
 
 /**
  * Перевірки студента, інструктора й авто практики. Спільні для практичних
- * занять (LessonsService), бронювання (PracticeLessonsService) і слотів
- * (PracticeSlotsService).
+ * занять (LessonsService) і бронювання (PracticeLessonsService).
  */
 
 export const STUDENT_NOT_IN_PRACTICE_MESSAGE =

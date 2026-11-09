@@ -61,10 +61,6 @@ import {
   SLOT_NOT_OPEN_MESSAGE,
   STUDENT_HAS_ACTIVE_LESSON_MESSAGE,
 } from '../../src/modules/lessons/practice-lessons.service';
-import {
-  PracticeSlotsService,
-  SLOT_ALREADY_STARTED_MESSAGE,
-} from '../../src/modules/lessons/practice-slots.service';
 import type { LessonConflict } from '../../src/modules/lessons/schedule-conflicts';
 import { StudentsService } from '../../src/modules/students/students.service';
 import type { PrismaService } from '../../src/prisma/prisma.service';
@@ -132,7 +128,6 @@ describe('Lesson schedule (integration, real Postgres)', () => {
   let dashboardService: DashboardService;
   let scheduleService: PersonalScheduleService;
   let attendanceService: LessonAttendanceService;
-  let slotsService: PracticeSlotsService;
   let instructorScheduleService: InstructorScheduleService;
   let practiceLessonsService: PracticeLessonsService;
   let sequence = 0;
@@ -160,7 +155,6 @@ describe('Lesson schedule (integration, real Postgres)', () => {
     dashboardService = new DashboardService(service);
     scheduleService = new PersonalScheduleService(service);
     attendanceService = new LessonAttendanceService(service);
-    slotsService = new PracticeSlotsService(service);
     instructorScheduleService = new InstructorScheduleService(service);
     practiceLessonsService = new PracticeLessonsService(service);
     jest.spyOn(Logger.prototype, 'log').mockImplementation(() => undefined);
@@ -262,6 +256,9 @@ describe('Lesson schedule (integration, real Postgres)', () => {
           instructorId: instructor.id,
           carId: car1.id,
           studentId: student1.id,
+          // Явно 60 хв: часові сценарії тестів написані під годинні заняття,
+          // а з міграції drop_practice_slots @default — 120.
+          durationMin: 60,
           ...data,
         },
       });
@@ -994,7 +991,8 @@ describe('Lesson schedule (integration, real Postgres)', () => {
         studentId: school.student1.id,
         carId: school.car1.id,
         scheduledAt: at(10),
-        durationMin: 60,
+        // Без durationMin — 120 хвилин, як і бронювання студентом.
+        durationMin: 120,
         status: LessonStatus.SCHEDULED,
         meetingPlace: 'Автодром',
       });
@@ -1059,17 +1057,18 @@ describe('Lesson schedule (integration, real Postgres)', () => {
       const school = await createSchool();
       await school.practice({ scheduledAt: at(10) });
       await school.practice({
-        scheduledAt: at(12),
+        scheduledAt: at(13),
         status: LessonStatus.CANCELLED,
         cancelledAt: new Date(),
       });
 
+      // 10:00–11:00 вже є; нове заняття 11:00–13:00 (120 хв за замовчуванням).
       await expect(
         practiceAt(school, school.student1.id, at(11)),
       ).resolves.toMatchObject({ scheduledAt: at(11) });
       await expect(
-        practiceAt(school, school.student1.id, at(12)),
-      ).resolves.toMatchObject({ scheduledAt: at(12) });
+        practiceAt(school, school.student1.id, at(13)),
+      ).resolves.toMatchObject({ scheduledAt: at(13) });
     });
 
     it('refuses the same request twice and keeps one lesson', async () => {
@@ -1813,274 +1812,6 @@ describe('Lesson schedule (integration, real Postgres)', () => {
       await expect(
         prisma.lessonAttendance.count({ where: { lessonId: lesson.id } }),
       ).resolves.toBe(marking.status === 'fulfilled' ? 1 : 0);
-    });
-  });
-
-  describe('practice slots', () => {
-    type School = Awaited<ReturnType<typeof createSchool>>;
-
-    const slot = (
-      school: School,
-      data: {
-        scheduledAt: Date;
-        instructorId?: string;
-        carId?: string;
-        durationMin?: number;
-        organizationId?: string;
-      },
-    ) =>
-      prisma.practiceSlot.create({
-        data: {
-          organizationId: school.organization.id,
-          instructorId: school.instructor.id,
-          carId: school.car1.id,
-          ...data,
-        },
-      });
-
-    const createRequest = (school: School, hour: number, minute = 0) => ({
-      instructorId: school.instructor.id,
-      carId: school.car1.id,
-      scheduledAt: at(hour, minute).toISOString(),
-    });
-
-    it('rejects a slot duration outside 15–240 minutes', async () => {
-      const school = await createSchool();
-
-      await expect(
-        slot(school, { scheduledAt: at(10), durationMin: 300 }),
-      ).rejects.toThrow();
-      await expect(
-        slot(school, { scheduledAt: at(10), durationMin: 10 }),
-      ).rejects.toThrow();
-      await expect(
-        slot(school, { scheduledAt: at(10), durationMin: 240 }),
-      ).resolves.toMatchObject({ durationMin: 240 });
-    });
-
-    it('ties a slot to an instructor and a car of the same school', async () => {
-      const school = await createSchool();
-      const other = await createSchool();
-
-      await expect(
-        slot(school, {
-          scheduledAt: at(10),
-          instructorId: other.instructor.id,
-        }),
-      ).rejects.toMatchObject({ code: 'P2003' });
-      await expect(
-        slot(school, { scheduledAt: at(10), carId: other.car1.id }),
-      ).rejects.toMatchObject({ code: 'P2003' });
-    });
-
-    it('refuses to delete an instructor or a car that has slots', async () => {
-      const school = await createSchool();
-      await slot(school, { scheduledAt: at(10) });
-
-      await expect(
-        prisma.user.delete({ where: { id: school.instructor.id } }),
-      ).rejects.toMatchObject({ code: 'P2003' });
-      await expect(
-        prisma.car.delete({ where: { id: school.car1.id } }),
-      ).rejects.toMatchObject({ code: 'P2003' });
-    });
-
-    it('still deletes a whole school with its slots', async () => {
-      const school = await createSchool();
-      const other = await createSchool();
-      await slot(school, { scheduledAt: at(10) });
-      await other.practice({ scheduledAt: at(12) });
-      await slot(other, { scheduledAt: at(10) });
-
-      await prisma.organization.delete({
-        where: { id: school.organization.id },
-      });
-
-      await expect(
-        prisma.practiceSlot.count({
-          where: { organizationId: school.organization.id },
-        }),
-      ).resolves.toBe(0);
-      await expect(
-        prisma.practiceSlot.count({
-          where: { organizationId: other.organization.id },
-        }),
-      ).resolves.toBe(1);
-    });
-
-    it('creates, lists, moves and deletes a slot', async () => {
-      const school = await createSchool();
-
-      const created = await slotsService.create(
-        school.admin,
-        createRequest(school, 10),
-      );
-      expect(created).toMatchObject({
-        scheduledAt: at(10),
-        endsAt: at(11),
-        durationMin: 60,
-        instructor: { id: school.instructor.id },
-        car: { id: school.car1.id },
-      });
-
-      const window = {
-        from: at(0).toISOString(),
-        to: at(24).toISOString(),
-      };
-      const listed = await slotsService.list(school.instructor, window);
-      expect(listed.items.map((item) => item.id)).toEqual([created.id]);
-
-      const moved = await slotsService.update(school.admin, created.id, {
-        scheduledAt: at(12).toISOString(),
-        durationMin: 90,
-      });
-      expect(moved).toMatchObject({ scheduledAt: at(12), endsAt: at(13, 30) });
-
-      await slotsService.remove(school.admin, created.id);
-      await expect(
-        prisma.practiceSlot.findUnique({ where: { id: created.id } }),
-      ).resolves.toBeNull();
-    });
-
-    it('rejects a slot over a SCHEDULED lesson of the instructor and ignores a cancelled one', async () => {
-      const school = await createSchool();
-      await school.practice({ scheduledAt: at(10) });
-      await school.practice({
-        scheduledAt: at(14),
-        status: LessonStatus.CANCELLED,
-        cancelledAt: new Date(),
-      });
-
-      await expect(
-        conflictsOf(
-          slotsService.create(school.admin, {
-            ...createRequest(school, 10, 30),
-            carId: school.car2.id,
-          }),
-        ),
-      ).resolves.toEqual(['INSTRUCTOR/PRACTICE']);
-      await expect(
-        slotsService.create(school.admin, createRequest(school, 14)),
-      ).resolves.toMatchObject({ scheduledAt: at(14) });
-    });
-
-    it('rejects an overlapping slot of the same instructor and car, but not one end to start', async () => {
-      const school = await createSchool();
-      await slotsService.create(school.admin, createRequest(school, 10));
-
-      await expect(
-        conflictsOf(
-          slotsService.create(school.admin, createRequest(school, 10, 30)),
-        ),
-      ).resolves.toEqual(['INSTRUCTOR/SLOT', 'CAR/SLOT']);
-      await expect(
-        slotsService.create(school.admin, createRequest(school, 11)),
-      ).resolves.toMatchObject({ scheduledAt: at(11) });
-    });
-
-    it('does not see slots of another school', async () => {
-      const school = await createSchool();
-      const other = await createSchool();
-      await slot(other, { scheduledAt: at(10) });
-
-      await expect(
-        slotsService.create(school.admin, createRequest(school, 10)),
-      ).resolves.toMatchObject({ scheduledAt: at(10) });
-      await expect(
-        slotsService.findOne(
-          school.admin,
-          (await slot(other, { scheduledAt: at(14) })).id,
-        ),
-      ).rejects.toBeInstanceOf(NotFoundException);
-    });
-
-    it('keeps a slot that already started', async () => {
-      const school = await createSchool();
-      const started = await slot(school, {
-        scheduledAt: new Date(Date.now() - 10 * MINUTE_MS),
-      });
-
-      await expect(
-        slotsService.remove(school.admin, started.id),
-      ).rejects.toThrow(SLOT_ALREADY_STARTED_MESSAGE);
-      await expect(
-        prisma.practiceSlot.findUnique({ where: { id: started.id } }),
-      ).resolves.not.toBeNull();
-    });
-
-    it('lets only one of two parallel overlapping slots of the same instructor win', async () => {
-      const school = await createSchool();
-
-      const results = await Promise.allSettled([
-        slotsService.create(school.admin, createRequest(school, 10)),
-        slotsService.create(school.admin, {
-          ...createRequest(school, 10, 30),
-          carId: school.car2.id,
-        }),
-      ]);
-
-      expect(results.map((r) => r.status).sort()).toEqual([
-        'fulfilled',
-        'rejected',
-      ]);
-      const rejected = results.find((r) => r.status === 'rejected');
-      expect(rejected?.reason).toBeInstanceOf(ConflictException);
-      await expect(
-        prisma.practiceSlot.count({
-          where: { instructorId: school.instructor.id },
-        }),
-      ).resolves.toBe(1);
-    });
-
-    it('makes slot creation wait for a lesson booking of the same instructor and see it', async () => {
-      const school = await createSchool();
-      const booked = deferred();
-      const commit = deferred();
-
-      // In-flight lesson booking: holds the instructor key and has inserted 10:00.
-      const booking = prisma.$transaction(async (tx) => {
-        await lockScheduleResources(tx, [
-          scheduleLockKey('instructor', school.instructor.id),
-        ]);
-        await tx.drivingLesson.create({
-          data: {
-            organizationId: school.organization.id,
-            instructorId: school.instructor.id,
-            carId: school.car2.id,
-            studentId: school.student2.id,
-            scheduledAt: at(10),
-          },
-        });
-        booked.resolve();
-        await commit.promise;
-      });
-
-      try {
-        await booked.promise;
-        const creating = slotsService.create(
-          school.admin,
-          createRequest(school, 10),
-        );
-        const state = track(creating);
-
-        await delay(LOCK_WAIT_MS);
-        expect(state.settled).toBe(false);
-
-        commit.resolve();
-        await booking;
-
-        await expect(conflictsOf(creating)).resolves.toEqual([
-          'INSTRUCTOR/PRACTICE',
-        ]);
-        await expect(
-          prisma.practiceSlot.count({
-            where: { instructorId: school.instructor.id },
-          }),
-        ).resolves.toBe(0);
-      } finally {
-        commit.resolve();
-        await booking.catch(() => undefined);
-      }
     });
   });
 

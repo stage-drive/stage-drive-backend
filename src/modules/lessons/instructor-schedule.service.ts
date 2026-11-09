@@ -245,7 +245,7 @@ function toTimeOffDto(row: TimeOffRow): TimeOffDto {
  * Робочий графік і недоступність інструктора. Обидва змінюються під
  * advisory-ключем instructor:<id> — тим самим, що бере створення й зміна
  * практичних занять, тож заняття не проскочить між перевіркою і записом.
- * Порядок помилок, як у PracticeSlotsService: 403 і 400 — до БД, потім 404, 409.
+ * Порядок помилок, як у PracticeLessonsService: 403 і 400 — до БД, потім 404, 409.
  */
 @Injectable()
 export class InstructorScheduleService {
