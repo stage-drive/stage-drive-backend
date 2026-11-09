@@ -537,22 +537,25 @@ export class CreateStudentResponseDto {
   invitation: CreatedStudentInvitationDto;
 }
 
+export const TRAINING_STATUS_VALUE_MESSAGE =
+  'status має бути INVITED, ACTIVE, THEORY_COMPLETED, PRACTICE, GRADUATED, DROPPED або ARCHIVED.';
+
 export class UpdateStudentTrainingStatusDto {
   @ApiProperty({
     enum: TrainingStatus,
-    example: TrainingStatus.ACTIVE,
+    example: TrainingStatus.THEORY_COMPLETED,
     description:
       'Новий навчальний статус. Дозволені переходи: ' +
       'INVITED → ACTIVE, DROPPED, ARCHIVED; ' +
-      'ACTIVE → GRADUATED, DROPPED, ARCHIVED; ' +
+      'ACTIVE → THEORY_COMPLETED, GRADUATED, DROPPED, ARCHIVED; ' +
+      'THEORY_COMPLETED → GRADUATED, DROPPED, ARCHIVED; ' +
       'PRACTICE → GRADUATED, DROPPED, ARCHIVED; ' +
       'GRADUATED → ARCHIVED; DROPPED → ARCHIVED. ' +
       'ARCHIVED далі не змінюється. ' +
-      'PRACTICE цим запитом не призначається.',
+      'PRACTICE цим запитом не призначається: лише допуском до практики після THEORY_COMPLETED.',
   })
   @IsEnum(TrainingStatus, {
-    message:
-      'status має бути INVITED, ACTIVE, PRACTICE, GRADUATED, DROPPED або ARCHIVED.',
+    message: TRAINING_STATUS_VALUE_MESSAGE,
   })
   status: TrainingStatus;
 }

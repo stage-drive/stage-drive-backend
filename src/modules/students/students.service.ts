@@ -96,7 +96,7 @@ export const CAR_NOT_AVAILABLE_MESSAGE =
   'Автомобіль має бути в статусі AVAILABLE.';
 export const CAR_NOT_ASSIGNED_MESSAGE = 'Автомобіль не призначено інструктору.';
 export const STUDENT_PRACTICE_ACCESS_MESSAGE =
-  'Студент не має права на допуск до практичного навчання.';
+  'Допуск до практики — лише після завершення теорії (THEORY_COMPLETED), для активного студента з категорією й коробкою передач.';
 export const ARCHIVED_STUDENT_BOOKING_MESSAGE =
   'Архівованому студенту не можна створювати нове бронювання практики.';
 
@@ -110,6 +110,13 @@ const TRAINING_STATUS_TRANSITIONS: Record<
     TrainingStatus.ARCHIVED,
   ],
   [TrainingStatus.ACTIVE]: [
+    TrainingStatus.THEORY_COMPLETED,
+    TrainingStatus.GRADUATED,
+    TrainingStatus.DROPPED,
+    TrainingStatus.ARCHIVED,
+  ],
+  // PRACTICE звідси — лише через допуск до практики (grantPracticeAccess).
+  [TrainingStatus.THEORY_COMPLETED]: [
     TrainingStatus.GRADUATED,
     TrainingStatus.DROPPED,
     TrainingStatus.ARCHIVED,
@@ -290,7 +297,8 @@ function isEligibleForPractice(student: {
   const { trainingStatus, category, transmission } = student.studentProfile;
   return (
     student.status === UserStatus.ACTIVE &&
-    (trainingStatus === TrainingStatus.ACTIVE ||
+    // THEORY_COMPLETED — перший допуск; PRACTICE — переприв'язка інструктора чи авто.
+    (trainingStatus === TrainingStatus.THEORY_COMPLETED ||
       trainingStatus === TrainingStatus.PRACTICE) &&
     category != null &&
     transmission != null
@@ -318,7 +326,12 @@ function isTerminalTrainingStatus(status: TrainingStatus): boolean {
 function enrollmentStatusForTraining(
   status: TrainingStatus,
 ): EnrollmentStatus | null {
-  if (status === TrainingStatus.GRADUATED) {
+  // Теорію завершено: майбутні заняття групи зникають з розкладу студента й не
+  // блокують його практику — так само, як після закриття групи.
+  if (
+    status === TrainingStatus.GRADUATED ||
+    status === TrainingStatus.THEORY_COMPLETED
+  ) {
     return EnrollmentStatus.COMPLETED;
   }
   if (status === TrainingStatus.DROPPED || status === TrainingStatus.ARCHIVED) {

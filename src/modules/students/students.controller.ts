@@ -251,11 +251,13 @@ export class StudentsController {
       'користувача (INVITED, ACTIVE, BLOCKED, ARCHIVED) цим запитом не змінюється. ' +
       'Дозволені переходи TrainingStatus: ' +
       'INVITED → ACTIVE | DROPPED | ARCHIVED; ' +
-      'ACTIVE → GRADUATED | DROPPED | ARCHIVED; ' +
+      'ACTIVE → THEORY_COMPLETED | GRADUATED | DROPPED | ARCHIVED; ' +
+      'THEORY_COMPLETED → GRADUATED | DROPPED | ARCHIVED; ' +
       'PRACTICE → GRADUATED | DROPPED | ARCHIVED; ' +
       'GRADUATED → ARCHIVED; DROPPED → ARCHIVED. ' +
-      'PRACTICE цим запитом не призначається. ' +
-      'GRADUATED закриває активні зарахування як COMPLETED, DROPPED — як DROPPED. ' +
+      'THEORY_COMPLETED — теорію завершено: лише з нього можна надати допуск до практики. ' +
+      'PRACTICE цим запитом не призначається, лише допуском (PATCH /students/:id/practice-access). ' +
+      'THEORY_COMPLETED і GRADUATED закривають активні зарахування як COMPLETED, DROPPED і ARCHIVED — як DROPPED. ' +
       'Зміна пишеться в системний лог.',
   })
   @ApiParam({
@@ -296,7 +298,9 @@ export class StudentsController {
       'Лише ADMIN своєї автошколи. organizationId береться з авторизованого ' +
       'користувача. У тілі обов’язкові instructorId і carId. ' +
       'Студент має існувати в цій автошколі, мати обліковий статус ACTIVE, ' +
-      'навчальний статус ACTIVE або PRACTICE, а також заповнені category і transmission. ' +
+      'навчальний статус THEORY_COMPLETED (перший допуск) або PRACTICE (переприв’язка інструктора чи авто), ' +
+      'а також заповнені category і transmission. Студенту в ACTIVE спершу встановіть THEORY_COMPLETED ' +
+      '(PATCH /students/:id/status). ' +
       'Інструктор має роль INSTRUCTOR, статус ACTIVE і ту саму організацію. ' +
       'Автомобіль належить вибраному інструктору, має статус AVAILABLE, а його category і transmission ' +
       'збігаються зі студентом. Авто без інструктора, у статусі MAINTENANCE або INACTIVE відхиляється. ' +
@@ -320,7 +324,8 @@ export class StudentsController {
   })
   @ApiConflictResponse({
     description:
-      'Студент не має права на допуск, інструктор не INSTRUCTOR або не ACTIVE, ' +
+      'Студент не має права на допуск (навчальний статус не THEORY_COMPLETED чи PRACTICE, обліковий не ACTIVE, ' +
+      'немає category чи transmission), інструктор не INSTRUCTOR або не ACTIVE, ' +
       'або комбінація інструктора й автомобіля некоректна ' +
       '(авто нікому не призначено, авто не його, інша category, інша transmission ' +
       'або статус не AVAILABLE).',

@@ -1,7 +1,7 @@
 # Практика: підтвердження бронювання, заглушка оплати, допуск після теорії, результати занять
 
-План трьох наступних PR після обчислених слотів і бронювання (#82–#84). Стан: **PR 1 реалізовано**
-(підтвердження бронювання, заглушка оплати, виправлення); PR 2 і PR 3 — ще план.
+План трьох наступних PR після обчислених слотів і бронювання (#82–#84). Стан: **PR 1 і PR 2 реалізовано**
+(підтвердження бронювання, заглушка оплати, виправлення; `THEORY_COMPLETED`); PR 3 — ще план.
 Загальний опис практики — [practice-scheduling-overview.md](practice-scheduling-overview.md).
 
 ## Навіщо
@@ -148,7 +148,12 @@ model DrivingLesson {
 
 ---
 
-## PR 2: `THEORY_COMPLETED`
+## PR 2: `THEORY_COMPLETED` ✅
+
+Відхилення від плану під час реалізації:
+- Міграція — `ADD VALUE 'THEORY_COMPLETED' BEFORE 'PRACTICE'`, щоб порядок значень у БД збігався зі схемою.
+- Вичерпною мапою виявилася лише `TRAINING_STATUS_TRANSITIONS`; решта модулів (users, invitations, cars) значення не
+  перелічують, тож змін не потребували.
 
 - **Enum:** `THEORY_COMPLETED` у `TrainingStatus` (міграція `ALTER TYPE … ADD VALUE`).
 - **Переходи** (`TRAINING_STATUS_TRANSITIONS` у [students.service.ts](../src/modules/students/students.service.ts)):
