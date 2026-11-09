@@ -1,6 +1,7 @@
 import {
   BadRequestException,
   Injectable,
+  Logger,
   NotFoundException,
 } from '@nestjs/common';
 import { Organization, User } from '@prisma/client';
@@ -19,6 +20,8 @@ function toPublicOrganization(organization: Organization) {
 
 @Injectable()
 export class OrganizationService {
+  private readonly logger = new Logger(OrganizationService.name);
+
   constructor(private readonly prisma: PrismaService) {}
 
   async getCurrent(user: User) {
@@ -40,11 +43,12 @@ export class OrganizationService {
       }
       data.name = name;
     }
+    let previousLogoUrl: string | null = null;
     if (logoUrl) {
       const current = await this.prisma.organization.findUnique({
         where: { id: user.organizationId },
       });
-      this.deleteLocalUpload(current?.logoUrl);
+      previousLogoUrl = current?.logoUrl ?? null;
       data.logoUrl = logoUrl;
     }
     if (Object.keys(data).length === 0) {
@@ -55,6 +59,10 @@ export class OrganizationService {
       where: { id: user.organizationId },
       data,
     });
+    // Старий логотип видаляється лише після збереження нового в базі.
+    if (previousLogoUrl && previousLogoUrl !== logoUrl) {
+      this.deleteLocalUpload(previousLogoUrl);
+    }
     return toPublicOrganization(updated);
   }
 
@@ -71,8 +79,14 @@ export class OrganizationService {
     }
     const relative = url.replace(/^\//, '');
     const fullPath = join(process.cwd(), relative);
-    if (existsSync(fullPath)) {
-      unlinkSync(fullPath);
+    try {
+      if (existsSync(fullPath)) {
+        unlinkSync(fullPath);
+      }
+    } catch (error) {
+      this.logger.warn(
+        `Failed to remove previous upload path=${fullPath}: ${String(error)}`,
+      );
     }
   }
 }

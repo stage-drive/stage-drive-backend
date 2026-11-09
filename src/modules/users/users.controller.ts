@@ -1,5 +1,4 @@
 import {
-  BadRequestException,
   Body,
   Controller,
   Delete,
@@ -27,6 +26,7 @@ import {
   ApiOkResponse,
   ApiOperation,
   ApiParam,
+  ApiPayloadTooLargeResponse,
   ApiQuery,
   ApiTags,
   ApiUnauthorizedResponse,
@@ -36,12 +36,16 @@ import { AuthGuard } from '../auth/auth.guard';
 import { CurrentUser } from '../auth/current-user.decorator';
 import { Roles } from '../auth/roles.decorator';
 import { RolesGuard } from '../auth/roles.guard';
+import { ImageContentPipe } from '../../common/files/image-content.pipe';
 import {
   IMAGE_MAX_SIZE,
+  IMAGE_REQUIRED_MESSAGE,
   imageFileFilter,
   imageStorage,
   publicUploadUrl,
 } from '../../common/files/image-upload';
+import { ImageUploadInterceptor } from '../../common/files/image-upload.interceptor';
+import { fieldBadRequest } from '../../common/validation/field-error';
 import { EmailChangeService } from './email-change.service';
 import { MEMBER_MANAGE_ROLES, UsersService } from './users.service';
 import {
@@ -95,8 +99,22 @@ export class UsersController {
       },
     },
   })
+  @ApiOperation({
+    summary: 'Завантажити або замінити власний аватар',
+    description:
+      'Лише для себе: аватар іншого користувача не змінює ніхто, включно з OWNER і ADMIN. ' +
+      'Дозволені JPEG, PNG, WEBP і GIF до 2 МБ. Вміст файлу перевіряється, ' +
+      'а не лише заявлений MIME-тип. Кожне завантаження отримує новий URL; ' +
+      'попередній файл видаляється після збереження.',
+  })
   @ApiOkResponse({ type: PublicUserDto })
+  @ApiBadRequestResponse({
+    description:
+      'Файл відсутній, формат не дозволений або вміст не відповідає формату.',
+  })
+  @ApiPayloadTooLargeResponse({ description: 'Файл більший за 2 МБ.' })
   @UseInterceptors(
+    new ImageUploadInterceptor('file'),
     FileInterceptor('file', {
       storage: imageStorage('avatars'),
       fileFilter: imageFileFilter,
@@ -105,10 +123,10 @@ export class UsersController {
   )
   uploadAvatar(
     @CurrentUser() user: User,
-    @UploadedFile() file?: Express.Multer.File,
+    @UploadedFile(ImageContentPipe) file?: Express.Multer.File,
   ) {
     if (!file) {
-      throw new BadRequestException('file is required');
+      throw fieldBadRequest('file', IMAGE_REQUIRED_MESSAGE);
     }
     return this.usersService.setAvatar(
       user,
