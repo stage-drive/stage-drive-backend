@@ -95,7 +95,7 @@ export const LESSON_OUTSIDE_GROUP_DATES_MESSAGE =
   'Дата заняття виходить за період навчання групи.';
 export const LESSON_TEACHER_NOT_ACTIVE_MESSAGE =
   'Викладач групи має бути в статусі ACTIVE.';
-/** Живе в practice-rules.ts: його бере й PracticeSlotsService. */
+/** Живе в practice-rules.ts: його бере й PracticeLessonsService. */
 export { STUDENT_NOT_IN_PRACTICE_MESSAGE } from './practice-rules';
 export const PRACTICE_CAR_REQUIRED_MESSAGE =
   'Для практичного заняття потрібен автомобіль. Передайте carId.';

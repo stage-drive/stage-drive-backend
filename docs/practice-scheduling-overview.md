@@ -3,8 +3,8 @@
 Огляд усієї практичної частини після переходу на обчислені слоти: які є ендпоінти й навіщо, як сервер рахує вільний
 час, сценарії ADMIN, INSTRUCTOR і STUDENT, прийняті рішення і що лишилося відкритим.
 
-Стан: PR 1 (графік і недоступність) — у `develop`; PR 2 (обчислені слоти, бронювання, список для ADMIN) — цей PR;
-PR 3 — видалення `practice_slots`.
+Стан: усе в `develop` — графік і недоступність (PR #82), обчислені слоти, бронювання й список для ADMIN (PR #83),
+видалення збережених слотів `practice_slots` і тривалість 120 хв за замовчуванням (PR 3).
 
 ---
 
@@ -40,7 +40,6 @@ flowchart LR
 | `LessonsController` | `/lessons/...` | **конкретне заняття**, теорія і практика: створення, зміна, перенесення, скасування, відвідування, `/lessons/me` | ADMIN, INSTRUCTOR, TEACHER, STUDENT — за ендпоінтом |
 | `PracticeLessonsController` | `/lessons/practice` (GET), `/lessons/practice/available`, `/lessons/practice/book` | **практика: список для ADMIN, вільний час і бронювання для студента** | ADMIN — список; STUDENT — слоти й бронювання |
 | `InstructorScheduleController` | `/instructors/:id/working-hours`, `/instructors/:id/time-off` | **правила інструктора** | ADMIN керує, INSTRUCTOR читає свої |
-| `PracticeSlotsController` | `/practice-slots[/:id]` | слоти, створені вручну | **застаріло**, видаляється в PR 3 |
 
 `PracticeLessonsController` і `LessonsController` мають спільний префікс `/lessons/practice`. Усе про практичні
 заняття живе під однією адресою, а код — у двох класах: зміна заняття спільна з теорією, а бронювання й список — ні.
@@ -135,7 +134,7 @@ flowchart LR
 - **Бачити розклад практики:** `GET /lessons/practice?from&to&instructorId&studentId&includeCancelled`.
 - **Студент дзвонить, а не бронює сам** / **разова додаткова зміна:** `POST /lessons/practice`. Робочий графік і
   правило «одне заняття» не перевіряються, конфлікти й недоступність — так. Тривалість — `durationMin`, за
-  замовчуванням 60 (див. відкрите питання 1).
+  замовчуванням 120, як у бронювання.
 - **Виправити деталі заняття:** `PATCH /lessons/practice/:id` (місце зустрічі, авто, інструктор, тривалість).
 - **Перенести чи скасувати:** `PATCH /lessons/practice/:id/reschedule`, `POST /lessons/practice/:id/cancel`. Скасований
   час знову стає вільним для студентів.
@@ -178,22 +177,23 @@ flowchart LR
 
 ## 7. Ендпоінти практики
 
-| Ендпоінт | Ролі | Стан після PR 2 |
+| Ендпоінт | Ролі | Зміни |
 |---|---|---|
 | `GET/PUT /instructors/:id/working-hours` | ADMIN (INSTRUCTOR читає свій) | є |
 | `GET/POST/DELETE /instructors/:id/time-off` | ADMIN (INSTRUCTOR читає свою) | є |
 | `GET /lessons/practice` | ADMIN | **новий** |
 | `GET /lessons/practice/available` | STUDENT | **новий**, замінює `GET /practice-slots/available` |
 | `POST /lessons/practice/book` | STUDENT | **новий** |
-| `POST /lessons/practice` | ADMIN | INSTRUCTOR більше не може |
+| `POST /lessons/practice` | ADMIN | INSTRUCTOR більше не може; без `durationMin` — 120 хв |
 | `PATCH /lessons/practice/:id` | ADMIN; INSTRUCTOR — лише `meetingPlace` свого заняття | звужено для INSTRUCTOR |
 | `PATCH /lessons/practice/:id/reschedule` | ADMIN | INSTRUCTOR більше не може |
 | `POST /lessons/practice/:id/cancel` | ADMIN, INSTRUCTOR (своє), STUDENT (своє, ≥ 24 год) | + STUDENT |
-| `GET /practice-slots/available` | — | **видалено** (перенесено) |
-| `POST/GET/PATCH/DELETE /practice-slots[/:id]` | ADMIN (INSTRUCTOR читає) | лишаються до PR 3, але студенти їх не бачать |
+| `GET /practice-slots/available` | — | **видалено** (перенесено в `/lessons/practice/available`) |
+| `POST/GET/PATCH/DELETE /practice-slots[/:id]` | — | **видалено** разом із таблицею `practice_slots` |
 
-Таблиця переробки ендпоінтів у [practice-slots-available-implementation.md](practice-slots-available-implementation.md)
-(«PR бронювання») застаріла: вона писалася для збережених слотів зі `slot_id`.
+Документи [practice-slots-implementation.md](practice-slots-implementation.md) і
+[practice-slots-available-implementation.md](practice-slots-available-implementation.md) описують збережені слоти й
+лишаються як історія рішень.
 
 ---
 
@@ -213,9 +213,8 @@ flowchart LR
 | 8 | Доступ OWNER | поки ні |
 | 9 | Заняття поза графіком від ADMIN | дозволено мовчки |
 | 10 | Недоступність від інструктора | пізніше |
+| 11 | Тривалість занять від ADMIN | 120 хв за замовчуванням, як у бронювання (`PRACTICE_DEFAULT_DURATION_MIN`, `@default` колонки) |
+| 12 | Збережені слоти | видалено: таблиця `practice_slots` і ендпоінти `/practice-slots`; старі документи лишаються як історія |
 
-**Відкриті:**
-
-1. **Тривалість занять, які створює ADMIN.** Бронювання — завжди 120 хв, а `POST /lessons/practice` без `durationMin`
-   досі ставить 60 (`PRACTICE_DEFAULT_DURATION_MIN`). Зробити й там 120 за замовчуванням?
-2. **PR 3:** видалити `practice_slots` і ендпоінти `/practice-slots`. Перелік файлів підтверджується перед видаленням.
+**Відкладено на потім:** доступ OWNER, заявки на недоступність від інструктора, ліміти бронювань і мінімальний час
+до заняття.

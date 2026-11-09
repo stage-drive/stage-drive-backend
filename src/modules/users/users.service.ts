@@ -75,7 +75,6 @@ export const INSTRUCTOR_HAS_STUDENTS_MESSAGE =
   'Інструктор закріплений за учнями. Спочатку закріпіть учнів за іншим інструктором.';
 export const INSTRUCTOR_HAS_LESSONS_MESSAGE =
   'В інструктора є практичні заняття.';
-export const INSTRUCTOR_HAS_SLOTS_MESSAGE = 'Інструктор має слоти практики.';
 export const INSTRUCTOR_HAS_WORKING_HOURS_MESSAGE =
   'Інструктор має робочий графік. Спочатку очистіть графік.';
 export const STUDENT_HAS_ASSIGNMENTS_MESSAGE =
@@ -218,18 +217,16 @@ async function roleBindings(
       return groups > 0 ? [TEACHER_HAS_GROUPS_MESSAGE] : [];
     }
     case UserRole.INSTRUCTOR: {
-      const [cars, students, lessons, slots, workingHours] = await Promise.all([
+      const [cars, students, lessons, workingHours] = await Promise.all([
         tx.car.count({ where: { instructorId: userId } }),
         tx.student.count({ where: { instructorId: userId } }),
         tx.drivingLesson.count({ where: { instructorId: userId } }),
-        tx.practiceSlot.count({ where: { instructorId: userId } }),
         tx.instructorWorkingHours.count({ where: { instructorId: userId } }),
       ]);
       return [
         ...(cars > 0 ? [INSTRUCTOR_HAS_CARS_MESSAGE] : []),
         ...(students > 0 ? [INSTRUCTOR_HAS_STUDENTS_MESSAGE] : []),
         ...(lessons > 0 ? [INSTRUCTOR_HAS_LESSONS_MESSAGE] : []),
-        ...(slots > 0 ? [INSTRUCTOR_HAS_SLOTS_MESSAGE] : []),
         ...(workingHours > 0 ? [INSTRUCTOR_HAS_WORKING_HOURS_MESSAGE] : []),
       ];
     }

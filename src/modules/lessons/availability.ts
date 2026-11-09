@@ -5,6 +5,7 @@ import {
   localDate,
   zonedTimeToUtc,
 } from '../../common/time/zoned-time';
+import { PRACTICE_DEFAULT_DURATION_MIN } from './lessons.dto';
 import {
   ScheduleSlot,
   SlotBlocker,
@@ -18,7 +19,7 @@ import {
  */
 
 /** Тривалість заняття, яке бронює студент, і крок сітки слотів. */
-export const PRACTICE_BOOKING_DURATION_MIN = 120;
+export const PRACTICE_BOOKING_DURATION_MIN = PRACTICE_DEFAULT_DURATION_MIN;
 
 /** DayOfWeek в порядку ISO: індекс 0 — понеділок. */
 const ISO_DAYS: readonly DayOfWeek[] = Object.values(DayOfWeek);

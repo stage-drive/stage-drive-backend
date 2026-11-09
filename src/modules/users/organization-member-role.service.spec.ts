@@ -15,7 +15,6 @@ import { RefreshTokenService } from '../auth/refresh-token.service';
 import {
   INSTRUCTOR_HAS_CARS_MESSAGE,
   INSTRUCTOR_HAS_LESSONS_MESSAGE,
-  INSTRUCTOR_HAS_SLOTS_MESSAGE,
   INSTRUCTOR_HAS_WORKING_HOURS_MESSAGE,
   MEMBER_ROLE_CONCURRENT_MESSAGE,
   MEMBER_ROLE_FORBIDDEN_MESSAGE,
@@ -70,7 +69,6 @@ describe('UsersService.changeMemberRole', () => {
       upsert: jest.fn(),
     },
     drivingLesson: { count: jest.fn() },
-    practiceSlot: { count: jest.fn() },
     instructorWorkingHours: { count: jest.fn() },
     enrollment: { count: jest.fn() },
     lessonAttendance: { count: jest.fn() },
@@ -103,7 +101,6 @@ describe('UsersService.changeMemberRole', () => {
       tx.car.count,
       tx.student.count,
       tx.drivingLesson.count,
-      tx.practiceSlot.count,
       tx.instructorWorkingHours.count,
       tx.enrollment.count,
       tx.lessonAttendance.count,
@@ -350,24 +347,6 @@ describe('UsersService.changeMemberRole', () => {
         { field: 'role', message: INSTRUCTOR_HAS_CARS_MESSAGE },
         { field: 'role', message: INSTRUCTOR_HAS_LESSONS_MESSAGE },
       ],
-    });
-    expect(tx.user.updateMany).not.toHaveBeenCalled();
-  });
-
-  it('keeps the role of an instructor with practice slots', async () => {
-    given(memberRow({ role: UserRole.INSTRUCTOR }));
-    tx.practiceSlot.count.mockResolvedValue(2);
-
-    const error = await service
-      .changeMemberRole(actor(UserRole.ADMIN), 'user-2', UserRole.TEACHER)
-      .catch((caught: unknown) => caught);
-
-    expect((error as ConflictException).getResponse()).toEqual({
-      statusCode: 409,
-      errors: [{ field: 'role', message: INSTRUCTOR_HAS_SLOTS_MESSAGE }],
-    });
-    expect(tx.practiceSlot.count).toHaveBeenCalledWith({
-      where: { instructorId: 'user-2' },
     });
     expect(tx.user.updateMany).not.toHaveBeenCalled();
   });

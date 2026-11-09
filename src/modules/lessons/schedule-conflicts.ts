@@ -11,11 +11,10 @@ export type ConflictResource =
   'TEACHER' | 'INSTRUCTOR' | 'GROUP' | 'CAR' | 'STUDENT';
 
 /**
- * SLOT — слот практики; у конфлікті з ним lessonId містить id слоту.
  * TIME_OFF — недоступність інструктора; lessonId містить її id, scheduledAt і
  * endsAt — її межі.
  */
-export type LessonType = 'THEORY' | 'PRACTICE' | 'SLOT' | 'TIME_OFF';
+export type LessonType = 'THEORY' | 'PRACTICE' | 'TIME_OFF';
 
 export type ScheduleSlot = { start: Date; end: Date };
 
@@ -327,73 +326,6 @@ export async function findPracticeConflicts(
   }
   for (const row of theory.filter((r) => overlaps(input.slot, r))) {
     conflicts.push(toConflict('STUDENT', input.studentId, 'THEORY', row));
-  }
-  return sortConflicts(conflicts);
-}
-
-/**
- * Слот практики: інші слоти цього інструктора чи авто і SCHEDULED-заняття з
- * ними. Жодне заняття ще не прив'язане до слоту, тож рахуються всі заняття.
- */
-export async function findSlotConflicts(
-  tx: Prisma.TransactionClient,
-  input: {
-    organizationId: string;
-    /** Слот, що змінюється; null для нового. */
-    slotId: string | null;
-    instructorId: string;
-    carId: string;
-    interval: ScheduleSlot;
-  },
-): Promise<LessonConflict[]> {
-  const window = candidateWindow(input.interval);
-  const resources = [
-    { instructorId: input.instructorId },
-    { carId: input.carId },
-  ];
-  const select = {
-    id: true,
-    instructorId: true,
-    carId: true,
-    scheduledAt: true,
-    durationMin: true,
-  } as const;
-
-  const slots = await tx.practiceSlot.findMany({
-    where: {
-      ...(input.slotId === null ? {} : { id: { not: input.slotId } }),
-      organizationId: input.organizationId,
-      scheduledAt: window,
-      OR: resources,
-    },
-    select,
-  });
-  const lessons = await tx.drivingLesson.findMany({
-    where: {
-      organizationId: input.organizationId,
-      status: LessonStatus.SCHEDULED,
-      scheduledAt: window,
-      OR: resources,
-    },
-    select,
-  });
-
-  const conflicts: LessonConflict[] = [];
-  const sources = [
-    ['SLOT', slots],
-    ['PRACTICE', lessons],
-  ] as const;
-  for (const [lessonType, rows] of sources) {
-    for (const row of rows.filter((r) => overlaps(input.interval, r))) {
-      if (row.instructorId === input.instructorId) {
-        conflicts.push(
-          toConflict('INSTRUCTOR', input.instructorId, lessonType, row),
-        );
-      }
-      if (row.carId === input.carId) {
-        conflicts.push(toConflict('CAR', input.carId, lessonType, row));
-      }
-    }
   }
   return sortConflicts(conflicts);
 }

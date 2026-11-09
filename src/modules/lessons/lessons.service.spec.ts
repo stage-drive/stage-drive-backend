@@ -1909,7 +1909,7 @@ describe('LessonsService', () => {
         meetingPlace: 'Автодром, вул. Промислова, 5',
       };
 
-      it("takes the instructor and car from the student's practice access", async () => {
+      it("takes the instructor and car from the student's practice access, 120 minutes by default", async () => {
         const result = await service.createPractice(admin as never, payload);
 
         expect(createData(prisma.drivingLesson.create)).toEqual({
@@ -1918,7 +1918,7 @@ describe('LessonsService', () => {
           studentId: 'student-1',
           carId: 'car-1',
           scheduledAt: new Date('2026-11-03T08:00:00.000Z'),
-          durationMin: 60,
+          durationMin: 120,
           meetingPlace: 'Автодром, вул. Промислова, 5',
         });
         expect(result).toMatchObject({
@@ -1926,8 +1926,8 @@ describe('LessonsService', () => {
           type: 'PRACTICE',
           status: LessonStatus.SCHEDULED,
           scheduledAt: new Date('2026-11-03T08:00:00.000Z'),
-          endsAt: new Date('2026-11-03T09:00:00.000Z'),
-          durationMin: 60,
+          endsAt: new Date('2026-11-03T10:00:00.000Z'),
+          durationMin: 120,
           student: { id: 'student-1', firstName: 'Марія', lastName: 'Коваль' },
           car: { id: 'car-1', plateNumber: 'AA1234BB' },
           meetingPlace: 'Автодром, вул. Промислова, 5',
@@ -2192,7 +2192,7 @@ describe('LessonsService', () => {
 
         expect(log).toHaveBeenCalledWith(
           'Lesson created type=PRACTICE lessonId=lesson-new instructorId=instructor-1 studentId=student-1 ' +
-            'carId=car-1 scheduledAt=2026-11-03T08:00:00.000Z durationMin=60 actorId=admin-1 organizationId=org-1',
+            'carId=car-1 scheduledAt=2026-11-03T08:00:00.000Z durationMin=120 actorId=admin-1 organizationId=org-1',
         );
         const logged = log.mock.calls.flat().join(' ');
         expect(logged).not.toContain('Марія');

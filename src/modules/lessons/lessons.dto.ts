@@ -34,9 +34,12 @@ export const CANCELLATION_REASON_MAX_LENGTH = 500;
 /** Збігається з VarChar(255) колонки meeting_place. */
 export const MEETING_PLACE_MAX_LENGTH = 255;
 
-/** Збігаються з @default у колонках duration_min. */
+/**
+ * Збігаються з @default у колонках duration_min. Практичне заняття триває 120
+ * хвилин: і те, що бронює студент, і те, що ADMIN створює без durationMin.
+ */
 export const THEORY_DEFAULT_DURATION_MIN = 90;
-export const PRACTICE_DEFAULT_DURATION_MIN = 60;
+export const PRACTICE_DEFAULT_DURATION_MIN = 120;
 
 export const REQUIRED_FIELD_MESSAGE = "Заповніть обов'язкове поле.";
 export const LESSON_TOPIC_LENGTH_MESSAGE = `Тема має містити не більше ${LESSON_TOPIC_MAX_LENGTH} символів.`;
@@ -513,17 +516,16 @@ export class LessonConflictDto {
   resourceId: string;
 
   @ApiProperty({
-    enum: ['THEORY', 'PRACTICE', 'SLOT', 'TIME_OFF'],
+    enum: ['THEORY', 'PRACTICE', 'TIME_OFF'],
     example: 'PRACTICE',
     description:
-      'SLOT — слот практики, з яким перетинається новий час. ' +
       'TIME_OFF — недоступність інструктора (відпустка, лікарняний тощо); scheduledAt і endsAt — її межі.',
   })
   lessonType: string;
 
   @ApiProperty({
     description:
-      'Id заняття, з яким перетинається новий час; для lessonType SLOT — id слоту, для TIME_OFF — id недоступності.',
+      'Id заняття, з яким перетинається новий час; для lessonType TIME_OFF — id недоступності.',
   })
   lessonId: string;
 
