@@ -73,7 +73,10 @@ import {
   PracticeRequestExpiryJob,
 } from '../../src/modules/lessons/practice-request-expiry.job';
 import type { LessonConflict } from '../../src/modules/lessons/schedule-conflicts';
-import { StudentsService } from '../../src/modules/students/students.service';
+import {
+  STUDENT_PRACTICE_ACCESS_MESSAGE,
+  StudentsService,
+} from '../../src/modules/students/students.service';
 import type { PrismaService } from '../../src/prisma/prisma.service';
 
 /** How long a blocked request must stay pending to count as waiting on the lock. */
@@ -141,6 +144,7 @@ describe('Lesson schedule (integration, real Postgres)', () => {
   let attendanceService: LessonAttendanceService;
   let instructorScheduleService: InstructorScheduleService;
   let practiceLessonsService: PracticeLessonsService;
+  let studentsService: StudentsService;
   let workflowService: PracticeLessonWorkflowService;
   let expiryJob: PracticeRequestExpiryJob;
   let sequence = 0;
@@ -162,10 +166,8 @@ describe('Lesson schedule (integration, real Postgres)', () => {
     const service = prisma as unknown as PrismaService;
     const payment = new PracticePaymentService();
     lessonsService = new LessonsService(service, payment);
-    groupsService = new GroupsService(
-      service,
-      new StudentsService(service, {} as InvitationEmailQueue),
-    );
+    studentsService = new StudentsService(service, {} as InvitationEmailQueue);
+    groupsService = new GroupsService(service, studentsService);
     dashboardService = new DashboardService(service);
     scheduleService = new PersonalScheduleService(service);
     attendanceService = new LessonAttendanceService(service);
@@ -2406,6 +2408,60 @@ describe('Lesson schedule (integration, real Postgres)', () => {
       await expect(
         ids({ instructorId: school.otherInstructor.id }),
       ).resolves.toEqual([]);
+    });
+
+    it('grants practice only after THEORY_COMPLETED, which frees the student from group theory', async () => {
+      const school = await openSchool();
+      // Студент 2 ще вчить теорію: ACTIVE, без інструктора й авто.
+      await prisma.student.update({
+        where: { userId: school.student2.id },
+        data: {
+          trainingStatus: TrainingStatus.ACTIVE,
+          instructorId: null,
+          carId: null,
+        },
+      });
+      // Теорія групи 09:30–11:00 заходить у слот 09:00.
+      await school.theory(at(9, 30), 90);
+      const access = {
+        instructorId: school.instructor.id,
+        carId: school.car2.id,
+      };
+
+      await expect(
+        studentsService.grantPracticeAccess(
+          school.admin,
+          school.student2.id,
+          access,
+        ),
+      ).rejects.toThrow(STUDENT_PRACTICE_ACCESS_MESSAGE);
+
+      await studentsService.changeTrainingStatus(
+        school.admin,
+        school.student2.id,
+        { status: TrainingStatus.THEORY_COMPLETED },
+      );
+      await expect(
+        prisma.enrollment.findFirstOrThrow({
+          where: { studentId: school.student2.id, groupId: school.group.id },
+        }),
+      ).resolves.toMatchObject({ status: EnrollmentStatus.COMPLETED });
+
+      await expect(
+        studentsService.grantPracticeAccess(
+          school.admin,
+          school.student2.id,
+          access,
+        ),
+      ).resolves.toMatchObject({
+        student: { trainingStatus: TrainingStatus.PRACTICE },
+      });
+
+      // Група студента 1 ще активна: теорія блокує йому 09:00, а студенту 2 — ні.
+      await expect(freeHours(school.student1)).resolves.toEqual([11, 14, 16]);
+      await expect(freeHours(school.student2)).resolves.toEqual([
+        9, 11, 14, 16,
+      ]);
     });
   });
 

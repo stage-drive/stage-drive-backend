@@ -58,10 +58,12 @@ enum EnrollmentStatus {
 }
 
 /// Навчальний статус учня. Не плутати з UserStatus (обліковий доступ).
-/// PRACTICE призначається лише допуском до практики.
+/// THEORY_COMPLETED ставить ADMIN, коли учень завершив теорію; лише з нього (чи з PRACTICE —
+/// для переприв'язки) можна надати допуск. PRACTICE призначається лише допуском до практики.
 enum TrainingStatus {
   INVITED
   ACTIVE
+  THEORY_COMPLETED
   PRACTICE
   GRADUATED
   DROPPED

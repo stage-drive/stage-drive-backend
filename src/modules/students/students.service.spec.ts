@@ -2291,6 +2291,67 @@ describe('StudentsService', () => {
       });
     });
 
+    it('marks theory as completed and closes active enrollments as COMPLETED', async () => {
+      const result = await service.changeTrainingStatus(
+        actor(UserRole.ADMIN),
+        'student-1',
+        { status: TrainingStatus.THEORY_COMPLETED },
+      );
+
+      expect(prisma.student.update).toHaveBeenCalledWith({
+        where: { id: 'profile-1' },
+        data: { trainingStatus: TrainingStatus.THEORY_COMPLETED },
+      });
+      expect(prisma.enrollment.updateMany).toHaveBeenCalledWith({
+        where: {
+          studentId: 'student-1',
+          status: EnrollmentStatus.ACTIVE,
+          group: { organizationId: 'org-1' },
+        },
+        data: { status: EnrollmentStatus.COMPLETED },
+      });
+      expect(result).toMatchObject({
+        student: { trainingStatus: TrainingStatus.THEORY_COMPLETED },
+      });
+    });
+
+    it.each([
+      TrainingStatus.GRADUATED,
+      TrainingStatus.DROPPED,
+      TrainingStatus.ARCHIVED,
+    ])('lets a student leave THEORY_COMPLETED toward %s', async (next) => {
+      prisma.user.findFirst.mockResolvedValue(
+        statusRow(TrainingStatus.THEORY_COMPLETED),
+      );
+
+      await service.changeTrainingStatus(actor(UserRole.ADMIN), 'student-1', {
+        status: next,
+      });
+
+      expect(prisma.student.update).toHaveBeenCalledWith({
+        where: { id: 'profile-1' },
+        data: { trainingStatus: next },
+      });
+    });
+
+    it.each([
+      [TrainingStatus.THEORY_COMPLETED, TrainingStatus.PRACTICE],
+      [TrainingStatus.THEORY_COMPLETED, TrainingStatus.ACTIVE],
+      [TrainingStatus.INVITED, TrainingStatus.THEORY_COMPLETED],
+      [TrainingStatus.PRACTICE, TrainingStatus.THEORY_COMPLETED],
+    ])('refuses %s → %s through the status endpoint', async (from, to) => {
+      prisma.user.findFirst.mockResolvedValue(statusRow(from));
+
+      await expect(
+        service.changeTrainingStatus(actor(UserRole.ADMIN), 'student-1', {
+          status: to,
+        }),
+      ).rejects.toMatchObject({
+        message: `${TRAINING_STATUS_TRANSITION_MESSAGE} ${from} → ${to}.`,
+      });
+      expect(prisma.student.update).not.toHaveBeenCalled();
+    });
+
     it('does not assign PRACTICE through the status endpoint', async () => {
       await expect(
         service.changeTrainingStatus(actor(UserRole.ADMIN), 'student-1', {
@@ -2389,7 +2450,7 @@ describe('StudentsService', () => {
       carId: null as string | null,
       category: LicenseCategory.B as LicenseCategory | null,
       transmission: Transmission.MANUAL as Transmission | null,
-      trainingStatus: TrainingStatus.ACTIVE as TrainingStatus,
+      trainingStatus: TrainingStatus.THEORY_COMPLETED as TrainingStatus,
     };
 
     function practiceRow(
@@ -2535,6 +2596,8 @@ describe('StudentsService', () => {
     });
 
     it.each([
+      // Теорію ще не завершено: спершу ADMIN ставить THEORY_COMPLETED.
+      TrainingStatus.ACTIVE,
       TrainingStatus.INVITED,
       TrainingStatus.GRADUATED,
       TrainingStatus.DROPPED,
