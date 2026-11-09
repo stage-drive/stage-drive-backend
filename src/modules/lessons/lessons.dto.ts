@@ -39,6 +39,8 @@ export const LESSON_TOPIC_MAX_LENGTH = 200;
 export const CANCELLATION_REASON_MAX_LENGTH = 500;
 /** Збігається з VarChar(255) колонки meeting_place. */
 export const MEETING_PLACE_MAX_LENGTH = 255;
+/** Збігається з VarChar(1000) колонки instructor_comment. */
+export const INSTRUCTOR_COMMENT_MAX_LENGTH = 1000;
 
 /**
  * Збігаються з @default у колонках duration_min. Практичне заняття триває 120
@@ -61,6 +63,7 @@ export const PRACTICE_BOOKING_STATUSES = [
   'REJECTED',
   'CANCELLED',
   'COMPLETED',
+  'NO_SHOW',
 ] as const;
 export type PracticeBookingStatus = (typeof PRACTICE_BOOKING_STATUSES)[number];
 export const LESSON_TOPIC_LENGTH_MESSAGE = `Тема має містити не більше ${LESSON_TOPIC_MAX_LENGTH} символів.`;
@@ -462,7 +465,7 @@ export class PracticeLessonDto {
     description:
       'Статус бронювання: PENDING — чекає підтвердження інструктора, CONFIRMED — підтверджене, ' +
       'REJECTED — відхилене (інструктором, ADMIN чи автоматично, коли ніхто не підтвердив вчасно), ' +
-      'CANCELLED — скасоване, COMPLETED — проведене.',
+      'CANCELLED — скасоване, COMPLETED — проведене, NO_SHOW — студент не прийшов.',
   })
   bookingStatus: PracticeBookingStatus;
 
@@ -486,6 +489,25 @@ export class PracticeLessonDto {
     description: 'Оплата заняття. Поки оплат немає, завжди PAID.',
   })
   paymentStatus: PaymentStatus;
+
+  @ApiProperty({
+    type: Date,
+    nullable: true,
+    example: null,
+    description:
+      'Коли інструктор чи ADMIN зафіксував результат (COMPLETED чи NO_SHOW); null, поки результату немає.',
+  })
+  outcomeAt: Date | null;
+
+  @ApiProperty({
+    type: String,
+    nullable: true,
+    example: 'Добре тримає дистанцію; потренувати паркування.',
+    maxLength: INSTRUCTOR_COMMENT_MAX_LENGTH,
+    description:
+      'Коментар інструктора; бачить і студент. null, якщо коментаря немає.',
+  })
+  instructorComment: string | null;
 
   @ApiProperty()
   updatedAt: Date;

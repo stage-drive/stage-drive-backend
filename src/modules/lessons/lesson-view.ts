@@ -54,6 +54,8 @@ export const practiceLessonViewSelect = {
   confirmationStatus: true,
   confirmedAt: true,
   paymentStatus: true,
+  outcomeAt: true,
+  instructorComment: true,
 } satisfies Prisma.DrivingLessonSelect;
 
 export type PracticeLessonView = Prisma.DrivingLessonGetPayload<{
@@ -76,6 +78,9 @@ export function practiceBookingStatus(row: {
   }
   if (row.status === LessonStatus.COMPLETED) {
     return 'COMPLETED';
+  }
+  if (row.status === LessonStatus.NO_SHOW) {
+    return 'NO_SHOW';
   }
   return row.confirmationStatus === BookingConfirmation.PENDING
     ? 'PENDING'
@@ -131,6 +136,8 @@ export function toPracticeLessonDto(
     confirmationStatus: row.confirmationStatus,
     confirmedAt: row.confirmedAt,
     paymentStatus: row.paymentStatus,
+    outcomeAt: row.outcomeAt,
+    instructorComment: row.instructorComment,
     updatedAt: row.updatedAt,
   };
 }

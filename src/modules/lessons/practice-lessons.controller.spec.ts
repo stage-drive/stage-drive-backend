@@ -6,7 +6,7 @@ import {
   PATH_METADATA,
 } from '@nestjs/common/constants';
 import { Reflector } from '@nestjs/core';
-import { User, UserRole } from '@prisma/client';
+import { LessonStatus, User, UserRole } from '@prisma/client';
 import { AuthGuard } from '../auth/auth.guard';
 import { ROLES_KEY } from '../auth/roles.decorator';
 import { RolesGuard } from '../auth/roles.guard';
@@ -50,6 +50,24 @@ describe('PracticeLessonsController', () => {
       ':id/reject',
       [UserRole.ADMIN, UserRole.INSTRUCTOR],
     ],
+    [
+      'recordOutcome',
+      RequestMethod.POST,
+      ':id/outcome',
+      [UserRole.ADMIN, UserRole.INSTRUCTOR],
+    ],
+    [
+      'updateComment',
+      RequestMethod.PATCH,
+      ':id/comment',
+      [UserRole.ADMIN, UserRole.INSTRUCTOR],
+    ],
+    [
+      'progress',
+      RequestMethod.GET,
+      'progress',
+      [UserRole.ADMIN, UserRole.STUDENT],
+    ],
   ])('routes %s and restricts it', (method, verb, path, roles) => {
     expect(metadata(METHOD_METADATA, method)).toBe(verb);
     expect(metadata(PATH_METADATA, method)).toBe(path);
@@ -66,6 +84,7 @@ describe('PracticeLessonsController', () => {
     expect(metadata(HTTP_CODE_METADATA, 'book')).toBe(HttpStatus.CREATED);
     expect(metadata(HTTP_CODE_METADATA, 'confirm')).toBe(HttpStatus.OK);
     expect(metadata(HTTP_CODE_METADATA, 'reject')).toBe(HttpStatus.OK);
+    expect(metadata(HTTP_CODE_METADATA, 'recordOutcome')).toBe(HttpStatus.OK);
   });
 
   it('passes the actor and the request to the service', async () => {
@@ -75,10 +94,13 @@ describe('PracticeLessonsController', () => {
       list: jest.fn().mockResolvedValue(response),
       listAvailable: jest.fn().mockResolvedValue(response),
       book: jest.fn().mockResolvedValue(response),
+      progress: jest.fn().mockResolvedValue(response),
     };
     const workflowService = {
       confirm: jest.fn().mockResolvedValue(response),
       reject: jest.fn().mockResolvedValue(response),
+      recordOutcome: jest.fn().mockResolvedValue(response),
+      updateComment: jest.fn().mockResolvedValue(response),
     };
     const controller = new PracticeLessonsController(
       practiceLessonsService as unknown as PracticeLessonsService,
@@ -105,6 +127,26 @@ describe('PracticeLessonsController', () => {
     expect(workflowService.confirm).toHaveBeenCalledWith(user, 'lesson-1');
     expect(workflowService.reject).toHaveBeenCalledWith(user, 'lesson-1', {
       reason: 'Зайнятий',
+    });
+
+    const outcome = { result: LessonStatus.NO_SHOW, comment: 'Не прийшов' };
+    await controller.recordOutcome(user, 'lesson-1', outcome);
+    await controller.updateComment(user, 'lesson-1', { comment: 'Місто' });
+    await controller.progress(user, { studentId: 'student-1' });
+    expect(workflowService.recordOutcome).toHaveBeenCalledWith(
+      user,
+      'lesson-1',
+      outcome,
+    );
+    expect(workflowService.updateComment).toHaveBeenCalledWith(
+      user,
+      'lesson-1',
+      {
+        comment: 'Місто',
+      },
+    );
+    expect(practiceLessonsService.progress).toHaveBeenCalledWith(user, {
+      studentId: 'student-1',
     });
   });
 });

@@ -1,7 +1,7 @@
 # Практика: підтвердження бронювання, заглушка оплати, допуск після теорії, результати занять
 
-План трьох наступних PR після обчислених слотів і бронювання (#82–#84). Стан: **PR 1 і PR 2 реалізовано**
-(підтвердження бронювання, заглушка оплати, виправлення; `THEORY_COMPLETED`); PR 3 — ще план.
+План трьох наступних PR після обчислених слотів і бронювання (#82–#84). Стан: **усі три PR реалізовано**
+(підтвердження бронювання, заглушка оплати, виправлення; `THEORY_COMPLETED`; результати занять і прогрес).
 Загальний опис практики — [practice-scheduling-overview.md](practice-scheduling-overview.md).
 
 ## Навіщо
@@ -171,14 +171,24 @@ model DrivingLesson {
 
 ---
 
-## PR 3: результати занять + практичний прогрес
+## PR 3: результати занять + практичний прогрес ✅
+
+Відхилення від плану під час реалізації:
+- Поля результату — `outcomeAt` / `outcomeById` замість `completedAt` / `completedById`: їх ставить і «проведено»,
+  і «неявка». CHECK: результат є тоді й лише тоді, коли є `outcome_at`, і лише в підтвердженого заняття.
+- Дві міграції: `add_no_show_status` (лише `ADD VALUE`) і `add_practice_outcomes` — нове значення enum не можна
+  використати в CHECK у тій самій транзакції.
+- «Проведено» й «неявка» — один ендпоінт `POST /:id/outcome { result: COMPLETED | NO_SHOW }` замість `/:id/complete` і
+  `/:id/no-show`: у них однакові ролі, умови й тіло, відрізняється лише значення. Підтвердження, відхилення й
+  скасування лишаються окремими діями, бо мають різні правила.
+- Прогрес — один ендпоінт `GET /lessons/practice/progress?studentId=` (STUDENT — свій, ADMIN — обов'язковий
+  `studentId`) замість двох. Додано лічильник `awaitingOutcome` — підтверджені заняття, що закінчилися без результату.
 
 - **Схема:**
   - `NO_SHOW` у `LessonStatus` з `CHECK` на `lessons`, щоб теорія його не використовувала;
   - `completedAt`, `completedById` і `instructorComment VarChar(1000)` у `driving_lessons`.
-- **`POST /lessons/practice/:id/complete { comment? }`** (інструктор заняття, ADMIN): лише `SCHEDULED + CONFIRMED`, і
-  заняття вже почалося. Статус стає `COMPLETED`.
-- **`POST /lessons/practice/:id/no-show { comment? }`:** ті самі правила, статус `NO_SHOW`.
+- **`POST /lessons/practice/:id/outcome { result, comment? }`** (інструктор заняття, ADMIN): `result` —
+  `COMPLETED` (проведено) або `NO_SHOW` (неявка). Лише `SCHEDULED + CONFIRMED`, і заняття вже почалося.
 - **`PATCH /lessons/practice/:id/comment { comment }`** (інструктор заняття, ADMIN). Коментар є в
   `PracticeLessonDto`, тож його бачить і студент.
 - **Прогрес, лише лічильники:**

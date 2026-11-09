@@ -1,9 +1,11 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
-import { BookingConfirmation } from '@prisma/client';
+import { BookingConfirmation, LessonStatus } from '@prisma/client';
 import { Transform } from 'class-transformer';
 import {
   IsBoolean,
+  IsDefined,
   IsEnum,
+  IsIn,
   IsNotEmpty,
   IsOptional,
   IsString,
@@ -15,6 +17,7 @@ import { IsPlainText } from '../../common/validators/plain-text.decorator';
 import { PRACTICE_BOOKING_DURATION_MIN } from './availability';
 import {
   INCLUDE_CANCELLED_MESSAGE,
+  INSTRUCTOR_COMMENT_MAX_LENGTH,
   IsScheduleBoundary,
   IsScheduledAt,
   LessonCarDto,
@@ -37,6 +40,10 @@ const FROM_DESCRIPTION =
 const TO_DESCRIPTION =
   `Кінець вікна, не включно. За замовчуванням — from + ${SCHEDULE_DEFAULT_RANGE_DAYS} днів. ` +
   `Має бути пізніше за from, але не більше ніж на ${SCHEDULE_MAX_RANGE_DAYS} днів.`;
+
+export const INSTRUCTOR_COMMENT_LENGTH_MESSAGE = `Коментар має містити не більше ${INSTRUCTOR_COMMENT_MAX_LENGTH} символів.`;
+export const INSTRUCTOR_COMMENT_TYPE_MESSAGE = 'comment має бути рядком.';
+export const STUDENT_ID_MESSAGE = 'studentId має бути UUID.';
 
 export const CONFIRMATION_STATUS_MESSAGE =
   'confirmationStatus має бути PENDING, CONFIRMED або REJECTED.';
@@ -238,4 +245,122 @@ export class BookPracticeLessonDto {
   @IsNotEmpty({ message: REQUIRED_FIELD_MESSAGE })
   @IsString({ message: MEETING_PLACE_TYPE_MESSAGE })
   meetingPlace?: string;
+}
+
+const COMMENT_DESCRIPTION =
+  `Коментар інструктора, до ${INSTRUCTOR_COMMENT_MAX_LENGTH} символів; бачить і студент. ` +
+  'Пробіли по краях обрізаються.';
+
+/** Результат заняття, який фіксує інструктор чи ADMIN. */
+export const PRACTICE_OUTCOME_RESULTS = [
+  LessonStatus.COMPLETED,
+  LessonStatus.NO_SHOW,
+] as const;
+export type PracticeOutcomeResult = (typeof PRACTICE_OUTCOME_RESULTS)[number];
+export const OUTCOME_RESULT_MESSAGE = 'result має бути COMPLETED або NO_SHOW.';
+
+/**
+ * Тіло результату заняття: «проведено» чи «неявка». Коментар необов'язковий;
+ * без нього попередній коментар лишається.
+ */
+export class PracticeLessonOutcomeDto {
+  @ApiProperty({
+    enum: PRACTICE_OUTCOME_RESULTS,
+    example: LessonStatus.COMPLETED,
+    description: 'COMPLETED — заняття відбулося, NO_SHOW — студент не прийшов.',
+  })
+  @IsIn(PRACTICE_OUTCOME_RESULTS, { message: OUTCOME_RESULT_MESSAGE })
+  @IsDefined({ message: REQUIRED_FIELD_MESSAGE })
+  result: PracticeOutcomeResult;
+
+  @ApiPropertyOptional({
+    example: 'Добре тримає дистанцію; потренувати паркування.',
+    maxLength: INSTRUCTOR_COMMENT_MAX_LENGTH,
+    description: COMMENT_DESCRIPTION,
+  })
+  @Transform(trimString)
+  @ValidateIf((_, value) => value !== undefined)
+  @IsPlainText()
+  @MaxLength(INSTRUCTOR_COMMENT_MAX_LENGTH, {
+    message: INSTRUCTOR_COMMENT_LENGTH_MESSAGE,
+  })
+  @IsNotEmpty({ message: REQUIRED_FIELD_MESSAGE })
+  @IsString({ message: INSTRUCTOR_COMMENT_TYPE_MESSAGE })
+  comment?: string;
+}
+
+export class UpdatePracticeCommentDto {
+  @ApiProperty({
+    example: 'Наступного разу — міський маршрут.',
+    maxLength: INSTRUCTOR_COMMENT_MAX_LENGTH,
+    description: `${COMMENT_DESCRIPTION} Замінює попередній коментар.`,
+  })
+  @Transform(trimString)
+  @IsPlainText()
+  @MaxLength(INSTRUCTOR_COMMENT_MAX_LENGTH, {
+    message: INSTRUCTOR_COMMENT_LENGTH_MESSAGE,
+  })
+  @IsNotEmpty({ message: REQUIRED_FIELD_MESSAGE })
+  @IsString({ message: INSTRUCTOR_COMMENT_TYPE_MESSAGE })
+  @IsDefined({ message: REQUIRED_FIELD_MESSAGE })
+  comment: string;
+}
+
+/** STUDENT — без studentId (свій прогрес); ADMIN — studentId обов'язковий. */
+export class PracticeProgressQueryDto {
+  @ApiPropertyOptional({
+    format: 'uuid',
+    description:
+      'Студент (id користувача). Обов’язковий для ADMIN; STUDENT може не передавати або передати лише свій id.',
+  })
+  @IsUUID('4', { message: STUDENT_ID_MESSAGE })
+  @IsOptional()
+  studentId?: string;
+}
+
+export class PracticeProgressDto {
+  @ApiProperty({ format: 'uuid' })
+  studentId: string;
+
+  @ApiProperty({ example: 6, description: 'Проведені заняття (COMPLETED).' })
+  completedLessons: number;
+
+  @ApiProperty({
+    example: 720,
+    description: 'Сумарна тривалість проведених занять, хвилин.',
+  })
+  completedMinutes: number;
+
+  @ApiProperty({ example: 1, description: 'Неявки (NO_SHOW).' })
+  noShows: number;
+
+  @ApiProperty({
+    example: 2,
+    description:
+      'Скасовані заняття (студентом, інструктором чи ADMIN), без відхилених запитів на бронювання.',
+  })
+  cancelled: number;
+
+  @ApiProperty({
+    example: 1,
+    description:
+      'Заплановані заняття, що ще не закінчилися: і ті, що чекають підтвердження, і підтверджені.',
+  })
+  upcoming: number;
+
+  @ApiProperty({
+    example: 0,
+    description:
+      'Підтверджені заняття, що вже закінчилися, але результат (проведено чи неявка) ще не зафіксовано.',
+  })
+  awaitingOutcome: number;
+
+  @ApiProperty({
+    type: Date,
+    nullable: true,
+    example: '2026-11-12T08:00:00.000Z',
+    description:
+      'Початок останнього проведеного заняття; null, якщо таких немає.',
+  })
+  lastCompletedAt: Date | null;
 }
