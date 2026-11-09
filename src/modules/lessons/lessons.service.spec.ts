@@ -9,6 +9,7 @@ import {
 import {
   BookingConfirmation,
   CarStatus,
+  DayOfWeek,
   GroupStatus,
   LessonStatus,
   LicenseCategory,
@@ -21,6 +22,10 @@ import {
   UserStatus,
 } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
+import {
+  BOOKING_TOO_SOON_MESSAGE,
+  SLOT_NOT_OPEN_MESSAGE,
+} from './practice-lessons.service';
 import {
   CAR_NOT_FOUND_MESSAGE,
   INSTRUCTOR_NOT_ACTIVE_MESSAGE,
@@ -42,6 +47,9 @@ import {
   LESSON_HAS_ATTENDANCE_MESSAGE,
   LESSON_IN_PAST_MESSAGE,
   INSTRUCTOR_CANCEL_DEFAULT_REASON,
+  STUDENT_DURATION_MESSAGE,
+  STUDENT_RESCHEDULE_NOT_ACTIVE_MESSAGE,
+  STUDENT_RESCHEDULE_TOO_LATE_MESSAGE,
   LESSON_INSTRUCTOR_FIELDS_MESSAGE,
   LESSON_NOT_CANCELLABLE_MESSAGE,
   LESSON_NOT_EDITABLE_MESSAGE,
@@ -237,6 +245,7 @@ describe('LessonsService', () => {
     },
     enrollment: { findMany: jest.fn() },
     instructorTimeOff: { findMany: jest.fn() },
+    instructorWorkingHours: { findMany: jest.fn() },
     lessonAttendance: { count: jest.fn() },
     user: { findUnique: jest.fn(), findFirst: jest.fn() },
     car: { findUnique: jest.fn() },
@@ -293,6 +302,11 @@ describe('LessonsService', () => {
     prisma.lesson.findMany.mockResolvedValue([]);
     prisma.drivingLesson.findMany.mockResolvedValue([]);
     prisma.instructorTimeOff.findMany.mockResolvedValue([]);
+    // Пн 09:00–13:00 і 14:00–18:00 за Києвом: слоти 07:00Z, 09:00Z, 12:00Z, 14:00Z.
+    prisma.instructorWorkingHours.findMany.mockResolvedValue([
+      { dayOfWeek: DayOfWeek.MONDAY, startMinute: 540, endMinute: 780 },
+      { dayOfWeek: DayOfWeek.MONDAY, startMinute: 840, endMinute: 1080 },
+    ]);
     prisma.enrollment.findMany.mockResolvedValue([{ groupId: 'group-1' }]);
     prisma.lessonAttendance.count.mockResolvedValue(0);
     prisma.user.findUnique.mockResolvedValue(activeInstructor);
@@ -360,7 +374,6 @@ describe('LessonsService', () => {
     it.each([
       ['INSTRUCTOR', instructorActor],
       ['TEACHER', teacherActor],
-      ['STUDENT', studentActor],
       ['OWNER', ownerActor],
     ])('forbids %s without touching the database', async (_, actor) => {
       const error = await caught(
@@ -2253,6 +2266,194 @@ describe('LessonsService', () => {
         expect(logged).not.toContain('Марія');
         expect(logged).not.toContain('Олег');
       });
+    });
+  });
+
+  describe('reschedule by the student', () => {
+    // Заняття студента — пн 02.11 о 10:00 за Києвом (08:00Z); NOW — 21.10.
+    const move = (scheduledAt: string, payload: object = {}) =>
+      service.reschedulePractice(studentActor as never, 'lesson-1', {
+        scheduledAt,
+        ...payload,
+      });
+
+    it('moves the own booking to a free slot in one step and back to PENDING', async () => {
+      const result = await move('2026-11-02T14:00:00+02:00');
+
+      expect(updateData(prisma.drivingLesson.update)).toEqual({
+        scheduledAt: new Date('2026-11-02T12:00:00.000Z'),
+        confirmationStatus: BookingConfirmation.PENDING,
+        confirmedAt: null,
+        confirmedById: null,
+      });
+      expect(advisoryKeys()).toEqual([
+        'car:car-1',
+        'group:group-1',
+        'instructor:instructor-1',
+        'student:student-1',
+      ]);
+      const [practiceArgs] = prisma.drivingLesson.findMany.mock.calls[0] as [
+        { where: { id: unknown } },
+      ];
+      expect(practiceArgs.where.id).toEqual({ not: 'lesson-1' });
+      expect(result).toMatchObject({
+        bookingStatus: 'PENDING',
+        scheduledAt: new Date('2026-11-02T12:00:00.000Z'),
+      });
+      expect(log).toHaveBeenCalledWith(
+        'Practice booking rescheduled by student lessonId=lesson-1 from=2026-11-02T08:00:00.000Z ' +
+          'to=2026-11-02T12:00:00.000Z actorId=student-1 organizationId=org-1',
+      );
+    });
+
+    it('moves a request that is still pending', async () => {
+      givenPractice(
+        practiceRow({
+          lesson: {
+            confirmationStatus: BookingConfirmation.PENDING,
+            confirmedAt: null,
+          },
+        }),
+      );
+
+      await expect(move('2026-11-02T14:00:00+02:00')).resolves.toMatchObject({
+        bookingStatus: 'PENDING',
+      });
+    });
+
+    it('refuses durationMin before the database', async () => {
+      const error = await caught(
+        move('2026-11-02T14:00:00+02:00', { durationMin: 60 }),
+      );
+
+      expect(error).toBeInstanceOf(ForbiddenException);
+      expect(error.message).toBe(STUDENT_DURATION_MESSAGE);
+      expect(prisma.$transaction).not.toHaveBeenCalled();
+    });
+
+    it('rejects a new time in the past with 400', async () => {
+      const error = await caught(move('2026-10-21T09:00:00Z'));
+
+      expect(error).toBeInstanceOf(BadRequestException);
+      expect(prisma.$transaction).not.toHaveBeenCalled();
+    });
+
+    it('refuses a new time less than 3 hours ahead before the database', async () => {
+      const error = await caught(move('2026-10-21T12:59:00Z'));
+
+      expect(error).toBeInstanceOf(ConflictException);
+      expect(error.message).toBe(BOOKING_TOO_SOON_MESSAGE);
+      expect(prisma.$transaction).not.toHaveBeenCalled();
+    });
+
+    it('refuses when the current lesson starts in less than 3 hours', async () => {
+      givenPractice(
+        practiceRow({
+          lesson: { scheduledAt: new Date('2026-10-21T12:59:00.000Z') },
+        }),
+      );
+
+      const error = await caught(move('2026-11-02T14:00:00+02:00'));
+
+      expect(error).toBeInstanceOf(ConflictException);
+      expect(error.message).toBe(STUDENT_RESCHEDULE_TOO_LATE_MESSAGE);
+      expect(prisma.drivingLesson.update).not.toHaveBeenCalled();
+    });
+
+    it('still moves exactly 3 hours before the current start', async () => {
+      givenPractice(
+        practiceRow({
+          lesson: { scheduledAt: new Date('2026-10-21T13:00:00.000Z') },
+        }),
+      );
+
+      await move('2026-11-02T14:00:00+02:00');
+
+      expect(prisma.drivingLesson.update).toHaveBeenCalledTimes(1);
+    });
+
+    it.each([
+      [
+        'rejected',
+        {
+          status: LessonStatus.CANCELLED,
+          confirmationStatus: BookingConfirmation.REJECTED,
+          cancelledAt: NOW,
+        },
+        'REJECTED',
+      ],
+      [
+        'cancelled',
+        { status: LessonStatus.CANCELLED, cancelledAt: NOW },
+        'CANCELLED',
+      ],
+    ])(
+      'refuses a %s booking with its current status',
+      async (_, lesson, currentStatus) => {
+        givenPractice(practiceRow({ lesson }));
+
+        const error = await caught(move('2026-11-02T14:00:00+02:00'));
+
+        expect(error.getResponse()).toEqual({
+          statusCode: 409,
+          error: 'Conflict',
+          message: STUDENT_RESCHEDULE_NOT_ACTIVE_MESSAGE,
+          currentStatus,
+        });
+        expect(prisma.drivingLesson.update).not.toHaveBeenCalled();
+      },
+    );
+
+    it('forbids moving a lesson of another student', async () => {
+      givenPractice(practiceRow({ lesson: { studentId: 'student-2' } }));
+
+      const error = await caught(move('2026-11-02T14:00:00+02:00'));
+
+      expect(error).toBeInstanceOf(ForbiddenException);
+      expect(prisma.drivingLesson.update).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      ['off the grid', '2026-11-02T15:00:00+02:00'],
+      ['in the break', '2026-11-02T13:00:00+02:00'],
+      ['on a day off', '2026-11-03T09:00:00+02:00'],
+    ])('refuses a new time %s', async (_, scheduledAt) => {
+      const error = await caught(move(scheduledAt));
+
+      expect(error).toBeInstanceOf(ConflictException);
+      expect(error.message).toBe(SLOT_NOT_OPEN_MESSAGE);
+      expect(prisma.drivingLesson.update).not.toHaveBeenCalled();
+    });
+
+    it('answers 409 with conflicts and keeps the old time when the new slot is taken', async () => {
+      prisma.drivingLesson.findMany.mockResolvedValue([
+        {
+          id: 'lesson-2',
+          instructorId: 'instructor-1',
+          carId: 'car-2',
+          studentId: 'student-2',
+          scheduledAt: new Date('2026-11-02T12:00:00.000Z'),
+          durationMin: 120,
+        },
+      ]);
+
+      const error = await caught(move('2026-11-02T14:00:00+02:00'));
+
+      expect(error).toBeInstanceOf(ConflictException);
+      expect(prisma.drivingLesson.update).not.toHaveBeenCalled();
+    });
+
+    it('does nothing when the new time equals the current one', async () => {
+      givenPractice(
+        practiceRow({
+          lesson: { scheduledAt: new Date('2026-11-02T12:00:00.000Z') },
+        }),
+      );
+
+      const result = await move('2026-11-02T14:00:00+02:00');
+
+      expect(prisma.drivingLesson.update).not.toHaveBeenCalled();
+      expect(result.bookingStatus).toBe('CONFIRMED');
     });
   });
 });

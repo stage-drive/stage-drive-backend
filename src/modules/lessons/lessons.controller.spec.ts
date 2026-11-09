@@ -24,7 +24,7 @@ describe('LessonsController', () => {
     ['updateTheory', [UserRole.ADMIN, UserRole.TEACHER]],
     ['rescheduleTheory', [UserRole.ADMIN, UserRole.TEACHER]],
     ['updatePractice', [UserRole.ADMIN, UserRole.INSTRUCTOR]],
-    ['reschedulePractice', [UserRole.ADMIN]],
+    ['reschedulePractice', [UserRole.ADMIN, UserRole.STUDENT]],
     ['cancelTheory', [UserRole.ADMIN, UserRole.TEACHER]],
     ['cancelPractice', [UserRole.ADMIN, UserRole.INSTRUCTOR, UserRole.STUDENT]],
     ['getAttendance', [UserRole.ADMIN, UserRole.TEACHER]],

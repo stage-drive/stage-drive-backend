@@ -26,7 +26,13 @@ import { PrismaService } from '../../prisma/prisma.service';
 import { GROUP_NOT_FOUND_MESSAGE } from '../groups/groups.service';
 import { STUDENT_NOT_FOUND_MESSAGE } from '../students/students.service';
 import {
+  BOOKING_MIN_LEAD_HOURS,
+  PRACTICE_BOOKING_DURATION_MIN,
+  isSlotStart,
+} from './availability';
+import {
   lessonPersonSelect,
+  practiceBookingStatus,
   toPracticeLessonDto,
   toTheoryLessonDto,
 } from './lesson-view';
@@ -47,6 +53,11 @@ import {
   lockPracticeLessonForChange,
   practiceLessonSelect,
 } from './practice-lesson-row';
+import {
+  BOOKING_IN_PAST_MESSAGE,
+  BOOKING_TOO_SOON_MESSAGE,
+  SLOT_NOT_OPEN_MESSAGE,
+} from './practice-lessons.service';
 import { PracticePaymentService } from './practice-payment.service';
 import {
   assertInstructorActive,
@@ -71,6 +82,18 @@ export const THEORY_LESSON_EDIT_ROLES = [
 
 /** Створення й перенесення практики: розкладом керує лише ADMIN. */
 export const PRACTICE_LESSON_SCHEDULE_ROLES = [UserRole.ADMIN] as const;
+
+/**
+ * Перенесення: ADMIN — будь-яке заняття (робочий графік не перевіряється);
+ * STUDENT — своє бронювання на інший вільний слот за правилами бронювання.
+ */
+export const PRACTICE_LESSON_RESCHEDULE_ROLES = [
+  UserRole.ADMIN,
+  UserRole.STUDENT,
+] as const;
+
+/** Студент переносить своє заняття не пізніше ніж за стільки годин до його початку. */
+export const STUDENT_RESCHEDULE_MIN_HOURS = 3;
 
 /** Редагування: INSTRUCTOR змінює лише місце зустрічі свого заняття. */
 export const PRACTICE_LESSON_EDIT_ROLES = [
@@ -111,6 +134,10 @@ export const LESSON_INSTRUCTOR_FIELDS_MESSAGE =
 export const STUDENT_CANCEL_TOO_LATE_MESSAGE = `Скасувати підтверджене заняття можна не пізніше ніж за ${STUDENT_CANCEL_MIN_HOURS} години до початку. Зверніться до адміністратора автошколи.`;
 /** Причина, коли інструктор скасовує заняття без пояснення (вимога «Не можу провести заняття»). */
 export const INSTRUCTOR_CANCEL_DEFAULT_REASON = 'Не можу провести заняття';
+export const STUDENT_RESCHEDULE_TOO_LATE_MESSAGE = `Перенести заняття можна не пізніше ніж за ${STUDENT_RESCHEDULE_MIN_HOURS} години до його початку.`;
+export const STUDENT_RESCHEDULE_NOT_ACTIVE_MESSAGE =
+  'Перенести можна лише заплановане заняття. Щоб записатися знову, забронюйте новий слот.';
+export const STUDENT_DURATION_MESSAGE = 'Студент не змінює тривалість заняття.';
 export const NO_THEORY_LESSON_FIELDS_MESSAGE =
   'Немає дозволених полів для оновлення (topic, durationMin).';
 export const NO_PRACTICE_LESSON_FIELDS_MESSAGE =
@@ -512,11 +539,136 @@ export class LessonsService {
     lessonId: string,
     payload: RescheduleLessonDto,
   ): Promise<PracticeLessonDto> {
-    assertRole(actor, PRACTICE_LESSON_SCHEDULE_ROLES);
+    assertRole(actor, PRACTICE_LESSON_RESCHEDULE_ROLES);
+    if (actor.role === UserRole.STUDENT) {
+      return this.rescheduleOwnBooking(actor, lessonId, payload);
+    }
     return this.changePractice(actor, lessonId, {
       scheduledAt: new Date(payload.scheduledAt),
       durationMin: payload.durationMin,
     });
+  }
+
+  /**
+   * Студент переносить своє бронювання (PENDING чи CONFIRMED) на інший вільний
+   * слот однією транзакцією: старий час звільняється, лише якщо новий вдалося
+   * зайняти. Правила: не пізніше ніж за STUDENT_RESCHEDULE_MIN_HOURS до
+   * поточного початку; новий час — старт сітки робочого графіка інструктора,
+   * щонайменше за BOOKING_MIN_LEAD_HOURS, без конфліктів. Перенесене
+   * бронювання знову чекає підтвердження (PENDING). Порядок блокувань той
+   * самий, що в changePractice: заняття (FOR UPDATE) → advisory-ключі.
+   */
+  private async rescheduleOwnBooking(
+    actor: User,
+    lessonId: string,
+    payload: RescheduleLessonDto,
+  ): Promise<PracticeLessonDto> {
+    if (payload.durationMin !== undefined) {
+      throw new ForbiddenException(STUDENT_DURATION_MESSAGE);
+    }
+    const now = new Date();
+    const scheduledAt = new Date(payload.scheduledAt);
+    if (scheduledAt.getTime() <= now.getTime()) {
+      throw fieldError('scheduledAt', BOOKING_IN_PAST_MESSAGE);
+    }
+    if (
+      scheduledAt.getTime() - now.getTime() <
+      BOOKING_MIN_LEAD_HOURS * HOUR_MS
+    ) {
+      throw new ConflictException(BOOKING_TOO_SOON_MESSAGE);
+    }
+    const organization = await this.requireOrganization(actor.organizationId);
+
+    const result = await this.prisma.$transaction(async (tx) => {
+      const lesson = await lockPracticeLessonForChange(tx, actor, lessonId);
+      // REJECTED і CANCELLED уже звільнили час: замість перенесення — нове бронювання.
+      if (lesson.status !== LessonStatus.SCHEDULED) {
+        throw new ConflictException({
+          statusCode: 409,
+          error: 'Conflict',
+          message: STUDENT_RESCHEDULE_NOT_ACTIVE_MESSAGE,
+          currentStatus: practiceBookingStatus(lesson),
+        });
+      }
+      if (
+        lesson.scheduledAt.getTime() - now.getTime() <
+        STUDENT_RESCHEDULE_MIN_HOURS * HOUR_MS
+      ) {
+        throw new ConflictException(STUDENT_RESCHEDULE_TOO_LATE_MESSAGE);
+      }
+      if (lesson.scheduledAt.getTime() === scheduledAt.getTime()) {
+        return { lesson, from: lesson.scheduledAt, changed: false };
+      }
+      if (!lesson.carId) {
+        throw new ConflictException(PRACTICE_CAR_REQUIRED_MESSAGE);
+      }
+      const carId = lesson.carId;
+
+      await lockPracticeResources(tx, {
+        instructorId: lesson.instructorId,
+        carId,
+        studentId: lesson.studentId,
+      });
+      const profile = requirePracticeProfile(lesson.student);
+      await requireInstructor(tx, actor.organizationId, lesson.instructorId);
+      await requirePracticeCar(tx, actor.organizationId, carId, {
+        instructorId: lesson.instructorId,
+        category: profile.category,
+        transmission: profile.transmission,
+      });
+
+      const workingHours = await tx.instructorWorkingHours.findMany({
+        where: {
+          organizationId: actor.organizationId,
+          instructorId: lesson.instructorId,
+        },
+        select: { dayOfWeek: true, startMinute: true, endMinute: true },
+      });
+      if (
+        !isSlotStart({
+          scheduledAt,
+          timeZone: organization.timezone,
+          durationMin: PRACTICE_BOOKING_DURATION_MIN,
+          workingHours,
+        })
+      ) {
+        throw new ConflictException(SLOT_NOT_OPEN_MESSAGE);
+      }
+
+      const conflicts = await findPracticeConflicts(tx, {
+        organizationId: actor.organizationId,
+        lessonId: lesson.id,
+        instructorId: lesson.instructorId,
+        carId,
+        studentId: lesson.studentId,
+        slot: lessonSlot(scheduledAt, lesson.durationMin),
+      });
+      if (conflicts.length > 0) {
+        this.logger.log(
+          `Lesson schedule conflict type=PRACTICE lessonId=${lesson.id} conflicts=${conflicts.length} actorId=${actor.id} organizationId=${actor.organizationId}`,
+        );
+        throw scheduleConflict(conflicts);
+      }
+
+      const saved = await tx.drivingLesson.update({
+        where: { id: lesson.id },
+        data: {
+          scheduledAt,
+          confirmationStatus: BookingConfirmation.PENDING,
+          confirmedAt: null,
+          confirmedById: null,
+        },
+        select: practiceLessonSelect,
+      });
+      return { lesson: saved, from: lesson.scheduledAt, changed: true };
+    });
+
+    if (result.changed) {
+      this.logger.log(
+        `Practice booking rescheduled by student lessonId=${result.lesson.id} from=${result.from.toISOString()} to=${result.lesson.scheduledAt.toISOString()} actorId=${actor.id} organizationId=${actor.organizationId}`,
+      );
+    }
+    return toPracticeLessonDto(result.lesson);
   }
 
   /**

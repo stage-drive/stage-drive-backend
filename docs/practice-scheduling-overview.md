@@ -131,6 +131,8 @@ stateDiagram-v2
   PENDING --> REJECTED: ніхто не відповів до старту − 2 год (фонове завдання)
   PENDING --> CANCELLED: студент відкликає (будь-коли до старту)
   CONFIRMED --> CANCELLED: скасування (студент — щонайменше за 2 год)
+  CONFIRMED --> PENDING: студент переносить на інший слот (щонайменше за 3 год)
+  PENDING --> PENDING: студент переносить на інший слот (щонайменше за 3 год)
   [*] --> CONFIRMED: ADMIN створює заняття напряму
   CONFIRMED --> COMPLETED: інструктор / ADMIN — «проведено» (після початку)
   CONFIRMED --> NO_SHOW: інструктор / ADMIN — «неявка» (після початку)
@@ -223,7 +225,13 @@ stateDiagram-v2
 4. Відкликати запит, що чекає підтвердження, — будь-коли до початку; скасувати підтверджене заняття — не пізніше ніж
    за 2 години: `POST /lessons/practice/:id/cancel`. Пізніше — `409`, звернутися до адміна. Час звільняється, і можна
    бронювати знову.
-5. Перенести = скасувати й забронювати інший слот.
+5. Перенести своє бронювання (`PENDING` чи `CONFIRMED`) на інший вільний слот — однією дією:
+   `PATCH /lessons/practice/:id/reschedule { scheduledAt }`.
+   - не пізніше ніж за **3 години** до поточного початку (скасувати можна до 2 годин);
+   - новий час — один зі слотів графіка інструктора, щонайменше за 3 години, вільний;
+   - старий час звільняється, лише якщо новий вдалося зайняти; інакше `409`, і бронювання лишається як було;
+   - перенесене бронювання знову чекає підтвердження інструктора (`PENDING`);
+   - відхилене чи скасоване бронювання не переноситься (`409`) — забронювати новий слот через `/book`.
 6. Історія й результат: `GET /lessons/me` (past-вікно) показує `bookingStatus` (`COMPLETED`, `NO_SHOW`) і
    `instructorComment`. Прогрес — `GET /lessons/practice/progress`.
 
@@ -245,7 +253,7 @@ stateDiagram-v2
 | `GET /lessons/practice/progress` | STUDENT (свій), ADMIN (`studentId`) | **новий**: лічильники практики |
 | `POST /lessons/practice` | ADMIN | INSTRUCTOR більше не може; без `durationMin` — 120 хв |
 | `PATCH /lessons/practice/:id` | ADMIN; INSTRUCTOR — лише `meetingPlace` свого заняття | звужено для INSTRUCTOR |
-| `PATCH /lessons/practice/:id/reschedule` | ADMIN | INSTRUCTOR більше не може |
+| `PATCH /lessons/practice/:id/reschedule` | ADMIN; STUDENT — своє бронювання | ADMIN — без перевірки графіка; STUDENT — на вільний слот, щонайменше за 3 год, → `PENDING` |
 | `POST /lessons/practice/:id/cancel` | ADMIN, INSTRUCTOR (своє), STUDENT (своє: PENDING — будь-коли, CONFIRMED — ≥ 2 год) | правило 2 годин |
 | `GET /practice-slots/available` | — | **видалено** (перенесено в `/lessons/practice/available`) |
 | `POST/GET/PATCH/DELETE /practice-slots[/:id]` | — | **видалено** разом із таблицею `practice_slots` |
@@ -281,6 +289,7 @@ stateDiagram-v2
 | 17 | Результат заняття | `COMPLETED` / `NO_SHOW` фіксує інструктор заняття чи ADMIN після початку, лише для підтвердженого |
 | 18 | Коментар інструктора | `instructorComment`, бачить і студент |
 | 19 | Прогрес | лише лічильники: `GET /lessons/practice/progress` (STUDENT — свій, ADMIN — `studentId`) |
+| 20 | Перенесення студентом | своє `PENDING` / `CONFIRMED` бронювання, щонайменше за 3 год до поточного початку, на вільний слот графіка; стає `PENDING`; відхилене / скасоване — лише нове бронювання; скасування лишається за 2 год |
 
 **Відкладено на потім:** доступ OWNER, заявки на недоступність від інструктора, ліміти бронювань і мінімальний час
 до заняття.
