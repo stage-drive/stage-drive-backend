@@ -87,6 +87,8 @@ enum LessonStatus {
   SCHEDULED
   COMPLETED
   CANCELLED
+  /// Лише практика: студент не прийшов. CHECK у міграції не дає поставити його теорії.
+  NO_SHOW
 }
 
 /// Експлуатаційний статус автомобіля автошколи.
@@ -225,6 +227,7 @@ model User {
   cancelledLessons         Lesson[]                 @relation("CancelledLessons")
   cancelledDrivingLessons  DrivingLesson[]          @relation("CancelledDrivingLessons")
   confirmedDrivingLessons  DrivingLesson[]          @relation("ConfirmedDrivingLessons")
+  outcomeDrivingLessons    DrivingLesson[]          @relation("OutcomeDrivingLessons")
   lessonAttendances        LessonAttendance[]       @relation("StudentAttendances")
   markedAttendances        LessonAttendance[]       @relation("MarkedAttendances")
   courseLessonCompletions  CourseLessonCompletion[] @relation("StudentCourseLessonCompletions")
@@ -641,6 +644,14 @@ model DrivingLesson {
   confirmedBy        User?               @relation("ConfirmedDrivingLessons", fields: [confirmedById], references: [id], onDelete: SetNull)
   /// Заглушка оплати: поки завжди PAID (PracticePaymentService).
   paymentStatus      PaymentStatus       @default(PAID) @map("payment_status")
+  /// Результат заняття: коли й хто зафіксував «проведено» (COMPLETED) чи «неявка» (NO_SHOW).
+  /// CHECK у міграції: outcomeAt є тоді й лише тоді, коли status — COMPLETED або NO_SHOW,
+  /// і результат буває лише в підтвердженого заняття.
+  outcomeAt          DateTime?           @map("outcome_at")
+  outcomeById        String?             @map("outcome_by_id") @db.Uuid
+  outcomeBy          User?               @relation("OutcomeDrivingLessons", fields: [outcomeById], references: [id], onDelete: SetNull)
+  /// Коментар інструктора до заняття; бачить і студент.
+  instructorComment  String?             @map("instructor_comment") @db.VarChar(1000)
   createdAt          DateTime            @default(now()) @map("created_at")
   updatedAt          DateTime            @default(now()) @updatedAt @map("updated_at")
 
@@ -651,6 +662,7 @@ model DrivingLesson {
   @@index([carId, scheduledAt])
   @@index([cancelledById])
   @@index([confirmedById])
+  @@index([outcomeById])
   /// «Вхідні» запити інструктора і фонове відхилення прострочених запитів.
   @@index([confirmationStatus, scheduledAt])
   @@map("driving_lessons")

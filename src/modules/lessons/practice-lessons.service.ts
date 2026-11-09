@@ -30,7 +30,11 @@ import {
   toPerson,
   toPracticeLessonDto,
 } from './lesson-view';
-import { LESSON_MAX_DURATION_MIN, PracticeLessonDto } from './lessons.dto';
+import {
+  LESSON_MAX_DURATION_MIN,
+  PracticeLessonDto,
+  REQUIRED_FIELD_MESSAGE,
+} from './lessons.dto';
 import {
   lockPracticeResources,
   practiceStudentSelect,
@@ -46,6 +50,8 @@ import {
   BookPracticeLessonDto,
   PracticeLessonListDto,
   PracticeLessonListQueryDto,
+  PracticeProgressDto,
+  PracticeProgressQueryDto,
 } from './practice-lessons.dto';
 import {
   ScheduleSlot,
@@ -65,6 +71,11 @@ export const PRACTICE_LESSON_LIST_ROLES = [
   UserRole.INSTRUCTOR,
 ] as const;
 export const PRACTICE_BOOKING_ROLES = [UserRole.STUDENT] as const;
+/** Прогрес: STUDENT — свій, ADMIN — будь-якого студента автошколи. */
+export const PRACTICE_PROGRESS_ROLES = [
+  UserRole.ADMIN,
+  UserRole.STUDENT,
+] as const;
 
 export const PRACTICE_PROFILE_INCOMPLETE_MESSAGE =
   'Профіль практики не завершено: немає інструктора, авто, категорії чи коробки передач. Зверніться до адміністратора автошколи.';
@@ -393,6 +404,99 @@ export class PracticeLessonsService {
       `Practice lesson booked lessonId=${saved.id} studentId=${actor.id} instructorId=${profile.instructorId} carId=${profile.carId} scheduledAt=${saved.scheduledAt.toISOString()} durationMin=${saved.durationMin} organizationId=${actor.organizationId}`,
     );
     return toPracticeLessonDto(saved);
+  }
+
+  /**
+   * Практичний прогрес студента — лише лічильники. STUDENT бачить свій
+   * (чужий studentId — 403), ADMIN — будь-якого студента автошколи (studentId
+   * обов'язковий, студент іншої автошколи — 404). Без транзакції: це читання.
+   */
+  async progress(
+    actor: User,
+    query: PracticeProgressQueryDto,
+  ): Promise<PracticeProgressDto> {
+    assertRole(actor, PRACTICE_PROGRESS_ROLES);
+    const studentId = this.progressStudentId(actor, query.studentId);
+    await this.requireOrganization(actor.organizationId);
+    if (actor.role === UserRole.ADMIN) {
+      const student = await this.prisma.user.findFirst({
+        where: {
+          id: studentId,
+          organizationId: actor.organizationId,
+          role: UserRole.STUDENT,
+          deletedAt: null,
+        },
+        select: { id: true },
+      });
+      if (!student) {
+        throw new NotFoundException(STUDENT_NOT_FOUND_MESSAGE);
+      }
+    }
+
+    const now = Date.now();
+    const rows = await this.prisma.drivingLesson.findMany({
+      where: { organizationId: actor.organizationId, studentId },
+      select: {
+        status: true,
+        confirmationStatus: true,
+        scheduledAt: true,
+        durationMin: true,
+      },
+    });
+
+    const progress: PracticeProgressDto = {
+      studentId,
+      completedLessons: 0,
+      completedMinutes: 0,
+      noShows: 0,
+      cancelled: 0,
+      upcoming: 0,
+      awaitingOutcome: 0,
+      lastCompletedAt: null,
+    };
+    for (const row of rows) {
+      const ended =
+        lessonEnd(row.scheduledAt, row.durationMin).getTime() <= now;
+      if (row.status === LessonStatus.COMPLETED) {
+        progress.completedLessons += 1;
+        progress.completedMinutes += row.durationMin;
+        if (
+          !progress.lastCompletedAt ||
+          row.scheduledAt > progress.lastCompletedAt
+        ) {
+          progress.lastCompletedAt = row.scheduledAt;
+        }
+      } else if (row.status === LessonStatus.NO_SHOW) {
+        progress.noShows += 1;
+      } else if (row.status === LessonStatus.CANCELLED) {
+        // Відхилений запит — не скасоване заняття: воно так і не відбулося б.
+        if (row.confirmationStatus !== BookingConfirmation.REJECTED) {
+          progress.cancelled += 1;
+        }
+      } else if (!ended) {
+        progress.upcoming += 1;
+      } else if (row.confirmationStatus === BookingConfirmation.CONFIRMED) {
+        progress.awaitingOutcome += 1;
+      }
+    }
+    return progress;
+  }
+
+  /** STUDENT — завжди свій id; ADMIN мусить назвати студента. */
+  private progressStudentId(
+    actor: User,
+    requested: string | undefined,
+  ): string {
+    if (actor.role === UserRole.STUDENT) {
+      if (requested !== undefined && requested !== actor.id) {
+        throw new ForbiddenException('Insufficient permissions');
+      }
+      return actor.id;
+    }
+    if (requested === undefined) {
+      throw fieldError('studentId', REQUIRED_FIELD_MESSAGE);
+    }
+    return requested;
   }
 
   /** INSTRUCTOR бачить лише свої заняття; чужий instructorId — 403. */

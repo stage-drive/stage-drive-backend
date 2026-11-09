@@ -28,7 +28,10 @@ import {
   CAR_NOT_AVAILABLE_MESSAGE,
   STUDENT_NOT_FOUND_MESSAGE,
 } from '../students/students.service';
-import { SCHEDULE_RANGE_ORDER_MESSAGE } from './lessons.dto';
+import {
+  REQUIRED_FIELD_MESSAGE,
+  SCHEDULE_RANGE_ORDER_MESSAGE,
+} from './lessons.dto';
 import { STUDENT_NOT_IN_PRACTICE_MESSAGE } from './practice-rules';
 import {
   BOOKING_IN_PAST_MESSAGE,
@@ -792,5 +795,142 @@ describe('PracticeLessonsService', () => {
       expect(error).toBeInstanceOf(ForbiddenException);
       expectNoDatabaseCalls();
     });
+  });
+
+  describe('progress', () => {
+    const row = (overrides: object) => ({
+      status: LessonStatus.SCHEDULED,
+      confirmationStatus: BookingConfirmation.CONFIRMED,
+      scheduledAt: at('2026-11-05T08:00:00.000Z'),
+      durationMin: 120,
+      ...overrides,
+    });
+
+    it('counts the lessons of the student by outcome', async () => {
+      prisma.drivingLesson.findMany.mockResolvedValue([
+        row({
+          status: LessonStatus.COMPLETED,
+          scheduledAt: at('2026-11-03T08:00:00.000Z'),
+        }),
+        row({
+          status: LessonStatus.COMPLETED,
+          scheduledAt: at('2026-11-07T08:00:00.000Z'),
+          durationMin: 90,
+        }),
+        row({ status: LessonStatus.NO_SHOW }),
+        row({ status: LessonStatus.CANCELLED }),
+        // Відхилений запит не рахується скасованим заняттям.
+        row({
+          status: LessonStatus.CANCELLED,
+          confirmationStatus: BookingConfirmation.REJECTED,
+        }),
+        // Майбутні: підтверджене й таке, що чекає підтвердження.
+        row({ scheduledAt: at('2026-11-16T07:00:00.000Z') }),
+        row({
+          scheduledAt: at('2026-11-17T07:00:00.000Z'),
+          confirmationStatus: BookingConfirmation.PENDING,
+        }),
+        // Триває зараз — теж майбутнє.
+        row({ scheduledAt: at('2026-11-10T09:00:00.000Z') }),
+        // Минуле підтверджене без результату.
+        row({ scheduledAt: at('2026-11-09T08:00:00.000Z') }),
+      ]);
+
+      await expect(service.progress(student, {})).resolves.toEqual({
+        studentId: 'student-1',
+        completedLessons: 2,
+        completedMinutes: 210,
+        noShows: 1,
+        cancelled: 1,
+        upcoming: 3,
+        awaitingOutcome: 1,
+        lastCompletedAt: at('2026-11-07T08:00:00.000Z'),
+      });
+      expect(prisma.drivingLesson.findMany).toHaveBeenCalledWith({
+        where: { organizationId: 'org-1', studentId: 'student-1' },
+        select: {
+          status: true,
+          confirmationStatus: true,
+          scheduledAt: true,
+          durationMin: true,
+        },
+      });
+    });
+
+    it('returns zeros and no date for a student without lessons', async () => {
+      await expect(
+        service.progress(student, { studentId: 'student-1' }),
+      ).resolves.toEqual({
+        studentId: 'student-1',
+        completedLessons: 0,
+        completedMinutes: 0,
+        noShows: 0,
+        cancelled: 0,
+        upcoming: 0,
+        awaitingOutcome: 0,
+        lastCompletedAt: null,
+      });
+    });
+
+    it('lets an admin read any student of the school', async () => {
+      await service.progress(admin, { studentId: 'student-2' });
+
+      expect(prisma.user.findFirst).toHaveBeenCalledWith({
+        where: {
+          id: 'student-2',
+          organizationId: 'org-1',
+          role: UserRole.STUDENT,
+          deletedAt: null,
+        },
+        select: { id: true },
+      });
+      expect(prisma.drivingLesson.findMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: { organizationId: 'org-1', studentId: 'student-2' },
+        }),
+      );
+    });
+
+    it('answers 404 to an admin asking for a student of another school', async () => {
+      prisma.user.findFirst.mockResolvedValue(null);
+
+      const error = await caught(
+        service.progress(admin, { studentId: 'student-2' }),
+      );
+
+      expect(error).toBeInstanceOf(NotFoundException);
+      expect(error.message).toBe(STUDENT_NOT_FOUND_MESSAGE);
+      expect(prisma.drivingLesson.findMany).not.toHaveBeenCalled();
+    });
+
+    it('requires studentId from an admin before the database', async () => {
+      const error = await caught(service.progress(admin, {}));
+
+      expect(error.getResponse()).toEqual(
+        fieldErrors('studentId', REQUIRED_FIELD_MESSAGE),
+      );
+      expectNoDatabaseCalls();
+    });
+
+    it('forbids a student reading someone else before the database', async () => {
+      const error = await caught(
+        service.progress(student, { studentId: 'student-2' }),
+      );
+
+      expect(error).toBeInstanceOf(ForbiddenException);
+      expectNoDatabaseCalls();
+    });
+
+    it.each([UserRole.INSTRUCTOR, UserRole.TEACHER, UserRole.OWNER])(
+      'forbids %s before the database',
+      async (role) => {
+        const error = await caught(
+          service.progress(actor(role), { studentId: 'student-1' }),
+        );
+
+        expect(error).toBeInstanceOf(ForbiddenException);
+        expectNoDatabaseCalls();
+      },
+    );
   });
 });

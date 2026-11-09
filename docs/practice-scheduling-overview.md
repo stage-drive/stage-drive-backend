@@ -132,6 +132,8 @@ stateDiagram-v2
   PENDING --> CANCELLED: студент відкликає (будь-коли до старту)
   CONFIRMED --> CANCELLED: скасування (студент — щонайменше за 2 год)
   [*] --> CONFIRMED: ADMIN створює заняття напряму
+  CONFIRMED --> COMPLETED: інструктор / ADMIN — «проведено» (після початку)
+  CONFIRMED --> NO_SHOW: інструктор / ADMIN — «неявка» (після початку)
 ```
 
 - **Зберігання:** `driving_lessons.confirmation_status` (`PENDING | CONFIRMED | REJECTED`), `confirmed_at`,
@@ -142,6 +144,9 @@ stateDiagram-v2
 - **Фонове завдання** `PracticeRequestExpiryJob` раз на хвилину одним `UPDATE` відхиляє запити, що чекають довше ніж до
   «старт − 2 год», з причиною «Інструктор не підтвердив запит вчасно». Гонку з підтвердженням вирішує блокування рядка:
   виграє той, хто перший.
+- **Результат:** `status` стає `COMPLETED` чи `NO_SHOW` (останнє — лише для практики, CHECK на `lessons`), з
+  `outcome_at` і `outcome_by_id`. CHECK: результат є тоді й лише тоді, коли є момент результату, і лише в
+  підтвердженого заняття. Коментар інструктора — `instructor_comment` (до 1000 символів), його бачить і студент.
 - **Оплата:** `payment_status` (`UNPAID | PAID`). Поки оплат немає, `PracticePaymentService` завжди ставить `PAID` —
   це єдине місце, яке зміниться, коли з'являться оплати.
 
@@ -163,6 +168,8 @@ stateDiagram-v2
 
 **Щодня:**
 - **Бачити розклад практики:** `GET /lessons/practice?from&to&instructorId&studentId&confirmationStatus&includeCancelled`.
+- **Практичний прогрес студента:** `GET /lessons/practice/progress?studentId=…` — проведені заняття й хвилини,
+  неявки, скасовані, заплановані, підтверджені без результату.
 - **Підтвердити чи відхилити запит** замість інструктора (захворів, не відповідає):
   `POST /lessons/practice/:id/confirm`, `POST /lessons/practice/:id/reject { reason? }`.
 - **Студент дзвонить, а не бронює сам** / **разова додаткова зміна:** `POST /lessons/practice`. Робочий графік і
@@ -195,6 +202,9 @@ stateDiagram-v2
   `403`: змінює їх ADMIN.
 - Може скасувати своє заняття: `POST /lessons/practice/:id/cancel`. Без `reason` зберігається
   «Не можу провести заняття».
+- **Після початку заняття** фіксує результат: `POST /lessons/practice/:id/outcome { result, comment? }`, де
+  `result` — `COMPLETED` (проведено) або `NO_SHOW` (неявка). Лише для підтвердженого заняття.
+- **Коментар** до заняття (не скасованого): `PATCH /lessons/practice/:id/comment { comment }`. Його бачить і студент.
 - **Не може** створювати чи переносити заняття і змінювати свій графік або недоступність — це робить ADMIN.
 
 ### STUDENT
@@ -214,6 +224,8 @@ stateDiagram-v2
    за 2 години: `POST /lessons/practice/:id/cancel`. Пізніше — `409`, звернутися до адміна. Час звільняється, і можна
    бронювати знову.
 5. Перенести = скасувати й забронювати інший слот.
+6. Історія й результат: `GET /lessons/me` (past-вікно) показує `bookingStatus` (`COMPLETED`, `NO_SHOW`) і
+   `instructorComment`. Прогрес — `GET /lessons/practice/progress`.
 
 ---
 
@@ -228,6 +240,9 @@ stateDiagram-v2
 | `POST /lessons/practice/book` | STUDENT | створює `PENDING`; щонайменше за 3 години; без допуску — `403` |
 | `POST /lessons/practice/:id/confirm` | ADMIN, INSTRUCTOR (своє) | **новий**: `PENDING → CONFIRMED` |
 | `POST /lessons/practice/:id/reject` | ADMIN, INSTRUCTOR (своє) | **новий**: `PENDING → REJECTED` |
+| `POST /lessons/practice/:id/outcome` | ADMIN, INSTRUCTOR (своє) | **новий**: `CONFIRMED → COMPLETED` чи `NO_SHOW` після початку |
+| `PATCH /lessons/practice/:id/comment` | ADMIN, INSTRUCTOR (своє) | **новий**: коментар, бачить і студент |
+| `GET /lessons/practice/progress` | STUDENT (свій), ADMIN (`studentId`) | **новий**: лічильники практики |
 | `POST /lessons/practice` | ADMIN | INSTRUCTOR більше не може; без `durationMin` — 120 хв |
 | `PATCH /lessons/practice/:id` | ADMIN; INSTRUCTOR — лише `meetingPlace` свого заняття | звужено для INSTRUCTOR |
 | `PATCH /lessons/practice/:id/reschedule` | ADMIN | INSTRUCTOR більше не може |
@@ -263,9 +278,12 @@ stateDiagram-v2
 | 14 | Оплата | `paymentStatus` на занятті, поки завжди `PAID` (`PracticePaymentService`) |
 | 15 | Без допуску до практики | `403` «Немає доступу. Пройдіть курс теорії та отримайте допуск до практики.» |
 | 16 | Завершення теорії | `TrainingStatus.THEORY_COMPLETED`, ставить ADMIN вручну (`ACTIVE → THEORY_COMPLETED`); допуск до практики — лише з нього; зарахування в групу стає `COMPLETED` |
+| 17 | Результат заняття | `COMPLETED` / `NO_SHOW` фіксує інструктор заняття чи ADMIN після початку, лише для підтвердженого |
+| 18 | Коментар інструктора | `instructorComment`, бачить і студент |
+| 19 | Прогрес | лише лічильники: `GET /lessons/practice/progress` (STUDENT — свій, ADMIN — `studentId`) |
 
 **Відкладено на потім:** доступ OWNER, заявки на недоступність від інструктора, ліміти бронювань і мінімальний час
 до заняття.
 
-**Наступний PR:** проведення, неявка, коментар і практичний прогрес. План —
+План трьох PR (підтвердження бронювання, `THEORY_COMPLETED`, результати занять) виконано —
 [practice-approval-and-outcomes-plan.md](practice-approval-and-outcomes-plan.md).

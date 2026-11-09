@@ -10,6 +10,7 @@ describe('practiceBookingStatus', () => {
     [LessonStatus.CANCELLED, BookingConfirmation.PENDING, 'CANCELLED'],
     [LessonStatus.CANCELLED, BookingConfirmation.CONFIRMED, 'CANCELLED'],
     [LessonStatus.COMPLETED, BookingConfirmation.CONFIRMED, 'COMPLETED'],
+    [LessonStatus.NO_SHOW, BookingConfirmation.CONFIRMED, 'NO_SHOW'],
   ])('%s + %s → %s', (status, confirmationStatus, expected) => {
     expect(practiceBookingStatus({ status, confirmationStatus })).toBe(
       expected,

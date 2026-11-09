@@ -25,6 +25,9 @@ import {
   BOOKING_CONFIRMATION_EXPIRED_MESSAGE,
   BOOKING_NOT_PENDING_MESSAGE,
   BOOKING_REJECTED_DEFAULT_REASON,
+  LESSON_COMMENT_CANCELLED_MESSAGE,
+  LESSON_OUTCOME_NOT_ALLOWED_MESSAGE,
+  LESSON_OUTCOME_TOO_EARLY_MESSAGE,
   PRACTICE_CAR_MISSING_MESSAGE,
   PracticeLessonWorkflowService,
 } from './practice-lesson-workflow.service';
@@ -63,6 +66,8 @@ function lessonRow(overrides: object = {}) {
     confirmationStatus: BookingConfirmation.PENDING as BookingConfirmation,
     confirmedAt: null as Date | null,
     paymentStatus: PaymentStatus.PAID,
+    outcomeAt: null as Date | null,
+    instructorComment: null as string | null,
     instructor: {
       id: 'instructor-1',
       firstName: 'Олег',
@@ -370,6 +375,217 @@ describe('PracticeLessonWorkflowService', () => {
     it('forbids a student before the database', async () => {
       const error = await caught(
         service.reject(actor(UserRole.STUDENT), 'lesson-1', {}),
+      );
+
+      expect(error).toBeInstanceOf(ForbiddenException);
+      expectNoDatabaseCalls();
+    });
+  });
+
+  describe('outcome', () => {
+    /** Підтверджене заняття, що почалося годину тому. */
+    const started = () =>
+      lessonRow({
+        scheduledAt: new Date(NOW.getTime() - HOUR_MS),
+        confirmationStatus: BookingConfirmation.CONFIRMED,
+        confirmedAt: at('2026-11-09T10:00:00.000Z'),
+        instructorComment: 'Перше заняття',
+      });
+
+    it.each([
+      [LessonStatus.COMPLETED, 'COMPLETED'],
+      [LessonStatus.NO_SHOW, 'NO_SHOW'],
+    ] as const)(
+      '%s records the result, who and when, and keeps the old comment without a new one',
+      async (status, bookingStatus) => {
+        given(started());
+
+        const result = await service.recordOutcome(instructor, 'lesson-1', {
+          result: status,
+        });
+
+        expect(updateData()).toEqual({
+          status,
+          outcomeAt: NOW,
+          outcomeById: 'instructor-1',
+        });
+        expect(result).toMatchObject({
+          bookingStatus,
+          outcomeAt: NOW,
+          instructorComment: 'Перше заняття',
+        });
+        expect(log).toHaveBeenCalledWith(
+          `Practice lesson outcome recorded lessonId=lesson-1 status=${status} actorId=instructor-1 organizationId=org-1`,
+        );
+      },
+    );
+
+    it('replaces the comment when one is given', async () => {
+      given(started());
+
+      await service.recordOutcome(admin, 'lesson-1', {
+        result: LessonStatus.COMPLETED,
+        comment: 'Впевнено паркується',
+      });
+
+      expect(updateData()).toMatchObject({
+        instructorComment: 'Впевнено паркується',
+        outcomeById: 'admin-1',
+      });
+    });
+
+    it('allows the result right at the start time', async () => {
+      given(
+        lessonRow({
+          scheduledAt: NOW,
+          confirmationStatus: BookingConfirmation.CONFIRMED,
+        }),
+      );
+
+      await service.recordOutcome(instructor, 'lesson-1', {
+        result: LessonStatus.NO_SHOW,
+      });
+
+      expect(prisma.drivingLesson.update).toHaveBeenCalledTimes(1);
+    });
+
+    it('refuses a lesson that has not started yet', async () => {
+      given(
+        lessonRow({
+          scheduledAt: new Date(NOW.getTime() + 1),
+          confirmationStatus: BookingConfirmation.CONFIRMED,
+        }),
+      );
+
+      const error = await caught(
+        service.recordOutcome(instructor, 'lesson-1', {
+          result: LessonStatus.COMPLETED,
+        }),
+      );
+
+      expect(error).toBeInstanceOf(ConflictException);
+      expect(error.message).toBe(LESSON_OUTCOME_TOO_EARLY_MESSAGE);
+      expect(prisma.drivingLesson.update).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      [
+        'still pending',
+        { scheduledAt: new Date(NOW.getTime() - HOUR_MS) },
+        'PENDING',
+      ],
+      [
+        'already completed',
+        {
+          status: LessonStatus.COMPLETED,
+          confirmationStatus: BookingConfirmation.CONFIRMED,
+          outcomeAt: NOW,
+        },
+        'COMPLETED',
+      ],
+      [
+        'cancelled',
+        {
+          status: LessonStatus.CANCELLED,
+          confirmationStatus: BookingConfirmation.CONFIRMED,
+          cancelledAt: NOW,
+        },
+        'CANCELLED',
+      ],
+    ])(
+      'answers 409 with the current status when the lesson is %s',
+      async (_, overrides, currentStatus) => {
+        given(lessonRow(overrides));
+
+        const error = await caught(
+          service.recordOutcome(admin, 'lesson-1', {
+            result: LessonStatus.NO_SHOW,
+          }),
+        );
+
+        expect(error.getResponse()).toEqual({
+          statusCode: 409,
+          error: 'Conflict',
+          message: LESSON_OUTCOME_NOT_ALLOWED_MESSAGE,
+          currentStatus,
+        });
+        expect(prisma.drivingLesson.update).not.toHaveBeenCalled();
+      },
+    );
+
+    it('forbids another instructor', async () => {
+      given(started());
+
+      const error = await caught(
+        service.recordOutcome(
+          actor(UserRole.INSTRUCTOR, 'instructor-2'),
+          'lesson-1',
+          { result: LessonStatus.COMPLETED },
+        ),
+      );
+
+      expect(error).toBeInstanceOf(ForbiddenException);
+    });
+
+    it.each([UserRole.STUDENT, UserRole.TEACHER, UserRole.OWNER])(
+      'forbids %s before the database',
+      async (role) => {
+        const error = await caught(
+          service.recordOutcome(actor(role), 'lesson-1', {
+            result: LessonStatus.COMPLETED,
+          }),
+        );
+
+        expect(error).toBeInstanceOf(ForbiddenException);
+        expectNoDatabaseCalls();
+      },
+    );
+  });
+
+  describe('updateComment', () => {
+    it.each([
+      ['a planned lesson', {}],
+      [
+        'a completed lesson',
+        {
+          status: LessonStatus.COMPLETED,
+          confirmationStatus: BookingConfirmation.CONFIRMED,
+          outcomeAt: NOW,
+        },
+      ],
+    ])('replaces the comment of %s', async (_, overrides) => {
+      given(lessonRow(overrides));
+
+      const result = await service.updateComment(instructor, 'lesson-1', {
+        comment: 'Наступного разу — місто',
+      });
+
+      expect(updateData()).toEqual({
+        instructorComment: 'Наступного разу — місто',
+      });
+      expect(result.instructorComment).toBe('Наступного разу — місто');
+      expect(log).toHaveBeenCalledWith(
+        'Practice lesson comment updated lessonId=lesson-1 actorId=instructor-1 organizationId=org-1',
+      );
+    });
+
+    it('refuses a cancelled lesson', async () => {
+      given(lessonRow({ status: LessonStatus.CANCELLED, cancelledAt: NOW }));
+
+      const error = await caught(
+        service.updateComment(admin, 'lesson-1', { comment: 'x' }),
+      );
+
+      expect(error).toBeInstanceOf(ConflictException);
+      expect(error.message).toBe(LESSON_COMMENT_CANCELLED_MESSAGE);
+      expect(prisma.drivingLesson.update).not.toHaveBeenCalled();
+    });
+
+    it('forbids a student before the database', async () => {
+      const error = await caught(
+        service.updateComment(actor(UserRole.STUDENT), 'lesson-1', {
+          comment: 'x',
+        }),
       );
 
       expect(error).toBeInstanceOf(ForbiddenException);

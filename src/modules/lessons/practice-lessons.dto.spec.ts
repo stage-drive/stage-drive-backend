@@ -13,6 +13,12 @@ import {
   AvailablePracticeSlotQueryDto,
   BookPracticeLessonDto,
   CONFIRMATION_STATUS_MESSAGE,
+  INSTRUCTOR_COMMENT_LENGTH_MESSAGE,
+  OUTCOME_RESULT_MESSAGE,
+  PracticeLessonOutcomeDto,
+  PracticeProgressQueryDto,
+  STUDENT_ID_MESSAGE,
+  UpdatePracticeCommentDto,
   PracticeLessonListQueryDto,
 } from './practice-lessons.dto';
 
@@ -202,4 +208,68 @@ describe('BookPracticeLessonDto', () => {
       expect(response.errors[0].field).toBe(field);
     },
   );
+});
+
+describe('PracticeLessonOutcomeDto', () => {
+  it('accepts a result alone and trims a comment', async () => {
+    await expect(
+      validate(PracticeLessonOutcomeDto, { result: 'NO_SHOW' }),
+    ).resolves.toEqual({ result: 'NO_SHOW' });
+    await expect(
+      validate(PracticeLessonOutcomeDto, {
+        result: 'COMPLETED',
+        comment: '  Добре  ',
+      }),
+    ).resolves.toEqual({ result: 'COMPLETED', comment: 'Добре' });
+  });
+
+  it.each([
+    ['missing', {}, REQUIRED_FIELD_MESSAGE],
+    ['scheduled', { result: 'SCHEDULED' }, OUTCOME_RESULT_MESSAGE],
+    ['cancelled', { result: 'CANCELLED' }, OUTCOME_RESULT_MESSAGE],
+    ['lower-case', { result: 'completed' }, OUTCOME_RESULT_MESSAGE],
+  ])('rejects a %s result', async (_, body, message) => {
+    await expect(errorsFor(PracticeLessonOutcomeDto, body)).resolves.toEqual(
+      fieldErrors('result', message),
+    );
+  });
+
+  it.each([
+    ['blank', { comment: '   ' }, REQUIRED_FIELD_MESSAGE],
+    [
+      'too long',
+      { comment: 'а'.repeat(1001) },
+      INSTRUCTOR_COMMENT_LENGTH_MESSAGE,
+    ],
+    ['with markup', { comment: '<b>x</b>' }, UNSAFE_TEXT_MESSAGE],
+  ])('rejects a %s comment', async (_, body, message) => {
+    await expect(
+      errorsFor(PracticeLessonOutcomeDto, { result: 'COMPLETED', ...body }),
+    ).resolves.toEqual(fieldErrors('comment', message));
+  });
+});
+
+describe('UpdatePracticeCommentDto', () => {
+  it('requires a comment', async () => {
+    await expect(errorsFor(UpdatePracticeCommentDto, {})).resolves.toEqual(
+      fieldErrors('comment', REQUIRED_FIELD_MESSAGE),
+    );
+    await expect(
+      validate(UpdatePracticeCommentDto, { comment: 'Місто' }),
+    ).resolves.toEqual({ comment: 'Місто' });
+  });
+});
+
+describe('PracticeProgressQueryDto', () => {
+  it('accepts no studentId and a UUID, rejects anything else', async () => {
+    await expect(
+      validate(PracticeProgressQueryDto, {}, 'query'),
+    ).resolves.toEqual({});
+    await expect(
+      validate(PracticeProgressQueryDto, { studentId: ID }, 'query'),
+    ).resolves.toEqual({ studentId: ID });
+    await expect(
+      errorsFor(PracticeProgressQueryDto, { studentId: 'me' }, 'query'),
+    ).resolves.toEqual(fieldErrors('studentId', STUDENT_ID_MESSAGE));
+  });
 });

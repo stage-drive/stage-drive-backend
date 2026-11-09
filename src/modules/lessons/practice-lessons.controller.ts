@@ -6,6 +6,7 @@ import {
   HttpStatus,
   Param,
   ParseUUIDPipe,
+  Patch,
   Post,
   Query,
   UseGuards,
@@ -46,14 +47,20 @@ import {
   BookPracticeLessonDto,
   PracticeLessonListDto,
   PracticeLessonListQueryDto,
+  PracticeLessonOutcomeDto,
+  PracticeProgressDto,
+  PracticeProgressQueryDto,
+  UpdatePracticeCommentDto,
 } from './practice-lessons.dto';
 import {
   PRACTICE_CONFIRM_ROLES,
+  PRACTICE_OUTCOME_ROLES,
   PracticeLessonWorkflowService,
 } from './practice-lesson-workflow.service';
 import {
   PRACTICE_BOOKING_ROLES,
   PRACTICE_LESSON_LIST_ROLES,
+  PRACTICE_PROGRESS_ROLES,
   PracticeLessonsService,
 } from './practice-lessons.service';
 
@@ -81,6 +88,21 @@ const PROFILE_CONFLICT =
 const APPROVAL_RULES =
   `Бронювання студента чекає підтвердження (bookingStatus PENDING) і вже займає час. ` +
   `Без відповіді його автоматично відхиляє система за ${CONFIRMATION_DEADLINE_HOURS} години до початку.`;
+
+const OUTCOME_RULES =
+  'Лише для підтвердженого (CONFIRMED) запланованого заняття, що вже почалося. ' +
+  'Коментар необов’язковий: якщо переданий, замінює попередній; його бачить і студент.';
+
+const OUTCOME_FORBIDDEN =
+  'Роль не ADMIN чи INSTRUCTOR, або інструктор фіксує результат чужого заняття.';
+
+const OUTCOME_CONFLICT =
+  'Заняття не підтверджене чи вже не заплановане (тіло з currentStatus — актуальний bookingStatus), ' +
+  'або ще не почалося.';
+
+const COMMENT_BAD_REQUEST =
+  'id не UUID, зайве поле, або comment порожній, довший за 1000 символів чи містить < або >. ' +
+  'Тіло містить errors: [{ field, message }].';
 
 const LESSON_ID_PARAM = {
   name: 'id',
@@ -130,6 +152,35 @@ export class PracticeLessonsController {
     @Query() query: PracticeLessonListQueryDto,
   ): Promise<PracticeLessonListDto> {
     return this.practiceLessonsService.list(user, query);
+  }
+
+  @Get('progress')
+  @Roles(...PRACTICE_PROGRESS_ROLES)
+  @ApiOperation({
+    summary: 'Практичний прогрес студента',
+    description:
+      'Лічильники практики: проведені заняття й хвилини, неявки, скасовані, заплановані та ' +
+      'підтверджені, що вже закінчилися без результату. STUDENT бачить свій прогрес (studentId можна не передавати), ' +
+      'ADMIN — будь-якого студента своєї автошколи (studentId обов’язковий).',
+  })
+  @ApiOkResponse({ type: PracticeProgressDto })
+  @ApiBadRequestResponse({
+    description:
+      'studentId не UUID, ADMIN не передав studentId, або невідомий параметр.',
+  })
+  @ApiForbiddenResponse({
+    description:
+      'Роль не ADMIN чи STUDENT, або STUDENT передав чужий studentId.',
+  })
+  @ApiNotFoundResponse({
+    description:
+      'Автошколу не знайдено, або студента немає в цій автошколі (для ADMIN).',
+  })
+  progress(
+    @CurrentUser() user: User,
+    @Query() query: PracticeProgressQueryDto,
+  ): Promise<PracticeProgressDto> {
+    return this.practiceLessonsService.progress(user, query);
   }
 
   @Get('available')
@@ -263,5 +314,62 @@ export class PracticeLessonsController {
     @Body() body: CancelLessonDto,
   ): Promise<PracticeLessonDto> {
     return this.workflowService.reject(user, id, body);
+  }
+
+  @Post(':id/outcome')
+  @HttpCode(HttpStatus.OK)
+  @Roles(...PRACTICE_OUTCOME_ROLES)
+  @ApiOperation({
+    summary: 'Зафіксувати результат практичного заняття',
+    description:
+      'Інструктор заняття або ADMIN фіксує результат: result COMPLETED — заняття відбулося, ' +
+      `NO_SHOW — студент не прийшов (bookingStatus стає таким самим). ${OUTCOME_RULES}`,
+  })
+  @ApiParam(LESSON_ID_PARAM)
+  @ApiOkResponse({ type: PracticeLessonDto })
+  @ApiBadRequestResponse({
+    description: `result не COMPLETED чи NO_SHOW або відсутній; ${COMMENT_BAD_REQUEST}`,
+  })
+  @ApiForbiddenResponse({ description: OUTCOME_FORBIDDEN })
+  @ApiNotFoundResponse({
+    description: 'Заняття не знайдено або воно належить іншій автошколі.',
+  })
+  @ApiConflictResponse({ description: OUTCOME_CONFLICT })
+  recordOutcome(
+    @CurrentUser() user: User,
+    @Param('id', new ParseUUIDPipe({ version: '4' })) id: string,
+    @Body() body: PracticeLessonOutcomeDto,
+  ): Promise<PracticeLessonDto> {
+    return this.workflowService.recordOutcome(user, id, body);
+  }
+
+  @Patch(':id/comment')
+  @Roles(...PRACTICE_OUTCOME_ROLES)
+  @ApiOperation({
+    summary: 'Коментар інструктора до практичного заняття',
+    description:
+      'Інструктор заняття або ADMIN додає чи замінює коментар до заняття, що не скасоване ' +
+      '(заплановане, проведене чи з неявкою). Коментар бачить і студент.',
+  })
+  @ApiParam(LESSON_ID_PARAM)
+  @ApiOkResponse({ type: PracticeLessonDto })
+  @ApiBadRequestResponse({ description: COMMENT_BAD_REQUEST })
+  @ApiForbiddenResponse({
+    description:
+      'Роль не ADMIN чи INSTRUCTOR, або інструктор коментує чуже заняття.',
+  })
+  @ApiNotFoundResponse({
+    description: 'Заняття не знайдено або воно належить іншій автошколі.',
+  })
+  @ApiConflictResponse({
+    description:
+      'Заняття скасоване (тіло з currentStatus — актуальний bookingStatus).',
+  })
+  updateComment(
+    @CurrentUser() user: User,
+    @Param('id', new ParseUUIDPipe({ version: '4' })) id: string,
+    @Body() body: UpdatePracticeCommentDto,
+  ): Promise<PracticeLessonDto> {
+    return this.workflowService.updateComment(user, id, body);
   }
 }

@@ -2705,4 +2705,183 @@ describe('Lesson schedule (integration, real Postgres)', () => {
       });
     });
   });
+
+  describe('lesson outcomes', () => {
+    type School = Awaited<ReturnType<typeof createSchool>>;
+
+    /** Підтверджене заняття студента 1, що почалося годину тому. */
+    const startedLesson = (school: School, studentId = school.student1.id) =>
+      prisma.drivingLesson.create({
+        data: {
+          organizationId: school.organization.id,
+          instructorId: school.instructor.id,
+          studentId,
+          carId: school.car1.id,
+          scheduledAt: new Date(Date.now() - 60 * MINUTE_MS),
+          durationMin: 120,
+          confirmationStatus: BookingConfirmation.CONFIRMED,
+          confirmedAt: new Date(),
+        },
+      });
+
+    const row = (id: string) =>
+      prisma.drivingLesson.findUniqueOrThrow({ where: { id } });
+
+    describe('migration', () => {
+      it('keeps NO_SHOW out of theory and ties the outcome to its status', async () => {
+        const school = await createSchool();
+        const practice = (data: object) =>
+          prisma.drivingLesson.create({
+            data: {
+              organizationId: school.organization.id,
+              instructorId: school.instructor.id,
+              studentId: school.student1.id,
+              carId: school.car1.id,
+              scheduledAt: at(10),
+              ...data,
+            },
+          });
+
+        await expect(
+          prisma.lesson.create({
+            data: {
+              organizationId: school.organization.id,
+              groupId: school.group.id,
+              topic: 'Знаки',
+              scheduledAt: at(10),
+              status: LessonStatus.NO_SHOW,
+            },
+          }),
+        ).rejects.toThrow();
+        // Результат без моменту, момент без результату, результат без підтвердження.
+        await expect(
+          practice({ status: LessonStatus.COMPLETED }),
+        ).rejects.toThrow();
+        await expect(practice({ outcomeAt: new Date() })).rejects.toThrow();
+        await expect(
+          practice({
+            status: LessonStatus.NO_SHOW,
+            outcomeAt: new Date(),
+            confirmationStatus: BookingConfirmation.PENDING,
+          }),
+        ).rejects.toThrow();
+        await expect(
+          practice({ status: LessonStatus.NO_SHOW, outcomeAt: new Date() }),
+        ).resolves.toMatchObject({ status: LessonStatus.NO_SHOW });
+      });
+    });
+
+    it('lets the instructor confirm the lesson took place, with a comment the student sees', async () => {
+      const school = await createSchool();
+      const lesson = await startedLesson(school);
+
+      const result = await workflowService.recordOutcome(
+        school.instructor,
+        lesson.id,
+        { result: LessonStatus.COMPLETED, comment: 'Впевнено паркується' },
+      );
+
+      expect(result).toMatchObject({
+        bookingStatus: 'COMPLETED',
+        instructorComment: 'Впевнено паркується',
+      });
+      await expect(row(lesson.id)).resolves.toMatchObject({
+        status: LessonStatus.COMPLETED,
+        outcomeById: school.instructor.id,
+      });
+      const schedule = await scheduleService.getMySchedule(school.student1, {
+        from: new Date(Date.now() - 3 * 60 * MINUTE_MS).toISOString(),
+        type: 'PRACTICE',
+      });
+      expect(schedule.items).toEqual([
+        expect.objectContaining({
+          id: lesson.id,
+          bookingStatus: 'COMPLETED',
+          instructorComment: 'Впевнено паркується',
+        }),
+      ]);
+    });
+
+    it('records a no-show once and refuses a second result', async () => {
+      const school = await createSchool();
+      const lesson = await startedLesson(school);
+
+      await workflowService.recordOutcome(school.admin, lesson.id, {
+        result: LessonStatus.NO_SHOW,
+      });
+
+      await expect(
+        workflowService.recordOutcome(school.instructor, lesson.id, {
+          result: LessonStatus.COMPLETED,
+        }),
+      ).rejects.toThrow(ConflictException);
+      await expect(row(lesson.id)).resolves.toMatchObject({
+        status: LessonStatus.NO_SHOW,
+        outcomeById: school.admin.id,
+      });
+    });
+
+    it('refuses a result for a lesson that has not started and for a cancelled one', async () => {
+      const school = await createSchool();
+      const future = await school.practice({ scheduledAt: at(10) });
+      const cancelled = await startedLesson(school, school.student2.id);
+      await prisma.drivingLesson.update({
+        where: { id: cancelled.id },
+        data: { status: LessonStatus.CANCELLED, cancelledAt: new Date() },
+      });
+
+      await expect(
+        workflowService.recordOutcome(school.admin, future.id, {
+          result: LessonStatus.COMPLETED,
+        }),
+      ).rejects.toThrow(ConflictException);
+      await expect(
+        workflowService.recordOutcome(school.admin, cancelled.id, {
+          result: LessonStatus.COMPLETED,
+        }),
+      ).rejects.toThrow(ConflictException);
+      await expect(
+        workflowService.updateComment(school.admin, cancelled.id, {
+          comment: 'x',
+        }),
+      ).rejects.toThrow(ConflictException);
+    });
+
+    it('counts the practice progress of a student', async () => {
+      const school = await createSchool();
+      const done = await startedLesson(school);
+      await workflowService.recordOutcome(school.instructor, done.id, {
+        result: LessonStatus.COMPLETED,
+      });
+      const missed = await startedLesson(school);
+      await workflowService.recordOutcome(school.instructor, missed.id, {
+        result: LessonStatus.NO_SHOW,
+      });
+      await school.practice({ scheduledAt: at(10) });
+      await school.practice({
+        scheduledAt: at(14),
+        status: LessonStatus.CANCELLED,
+        cancelledAt: new Date(),
+      });
+
+      const expected = {
+        studentId: school.student1.id,
+        completedLessons: 1,
+        completedMinutes: 120,
+        noShows: 1,
+        cancelled: 1,
+        upcoming: 1,
+        awaitingOutcome: 0,
+        lastCompletedAt: done.scheduledAt,
+      };
+      await expect(
+        practiceLessonsService.progress(school.student1, {}),
+      ).resolves.toEqual(expected);
+      await expect(
+        practiceLessonsService.progress(school.admin, {
+          studentId: school.student1.id,
+        }),
+      ).resolves.toEqual(expected);
+    });
+  });
 });

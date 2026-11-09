@@ -95,6 +95,8 @@ function practiceRow(
     confirmationStatus: BookingConfirmation.CONFIRMED,
     confirmedAt: NOW,
     paymentStatus: PaymentStatus.PAID,
+    outcomeAt: null,
+    instructorComment: null,
     ...overrides,
   };
 }
@@ -393,6 +395,8 @@ describe('PersonalScheduleService', () => {
         confirmationStatus: BookingConfirmation.CONFIRMED,
         confirmedAt: NOW,
         paymentStatus: PaymentStatus.PAID,
+        outcomeAt: null,
+        instructorComment: null,
         updatedAt: NOW,
       });
     });
