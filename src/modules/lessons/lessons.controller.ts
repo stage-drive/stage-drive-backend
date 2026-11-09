@@ -55,8 +55,10 @@ import {
   LessonsService,
   PRACTICE_LESSON_CANCEL_ROLES,
   PRACTICE_LESSON_EDIT_ROLES,
+  PRACTICE_LESSON_RESCHEDULE_ROLES,
   PRACTICE_LESSON_SCHEDULE_ROLES,
   STUDENT_CANCEL_MIN_HOURS,
+  STUDENT_RESCHEDULE_MIN_HOURS,
   THEORY_LESSON_EDIT_ROLES,
 } from './lessons.service';
 import {
@@ -353,12 +355,17 @@ export class LessonsController {
   }
 
   @Patch('practice/:id/reschedule')
-  @Roles(...PRACTICE_LESSON_SCHEDULE_ROLES)
+  @Roles(...PRACTICE_LESSON_RESCHEDULE_ROLES)
   @ApiOperation({
     summary: 'Перенести практичне заняття',
     description:
-      'ADMIN переносить заняття на нову дату й час. Студент переносить так: скасовує заняття й бронює інший слот. ' +
-      'scheduledAt — ISO 8601 з часовим зсувом. ' +
+      'ADMIN переносить будь-яке заняття на нову дату й час (робочий графік не перевіряється). ' +
+      'STUDENT переносить своє бронювання (PENDING чи CONFIRMED) на інший вільний слот однією дією: ' +
+      `не пізніше ніж за ${STUDENT_RESCHEDULE_MIN_HOURS} години до поточного початку; новий час — один зі слотів ` +
+      'робочого графіка інструктора, щонайменше за 3 години, без конфліктів; durationMin студент не передає. ' +
+      'Старий час звільняється, лише якщо новий вдалося зайняти; перенесене бронювання знову чекає ' +
+      'підтвердження інструктора (bookingStatus PENDING). Скасоване чи відхилене бронювання не переноситься — ' +
+      'забронюйте новий слот. scheduledAt — ISO 8601 з часовим зсувом. ' +
       `${SCHEDULE_RULES} ${PRACTICE_CHECKS}`,
   })
   @ApiParam({
@@ -372,13 +379,18 @@ export class LessonsController {
       'Некоректне тіло, scheduledAt без зсуву чи в минулому, або id не UUID. ' +
       'Тіло містить errors: [{ field, message }].',
   })
-  @ApiForbiddenResponse({ description: 'Роль не ADMIN.' })
+  @ApiForbiddenResponse({
+    description:
+      'Роль не ADMIN чи STUDENT, студент переносить чуже заняття або передав durationMin.',
+  })
   @ApiNotFoundResponse({
     description: 'Заняття не знайдено або воно належить іншій автошколі.',
   })
   @ApiConflictResponse({
     type: LessonScheduleConflictResponseDto,
-    description: LESSON_CONFLICT_DESCRIPTION,
+    description:
+      `${LESSON_CONFLICT_DESCRIPTION} Для студента також: заняття не заплановане (тіло з currentStatus), ` +
+      `до його початку менше ${STUDENT_RESCHEDULE_MIN_HOURS} годин, новий час менш ніж за 3 години чи поза слотами графіка.`,
   })
   reschedulePractice(
     @CurrentUser() user: User,

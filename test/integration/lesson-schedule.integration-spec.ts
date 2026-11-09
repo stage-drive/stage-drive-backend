@@ -2463,6 +2463,75 @@ describe('Lesson schedule (integration, real Postgres)', () => {
         9, 11, 14, 16,
       ]);
     });
+
+    const moveTo = (student: User, lessonId: string, hour: number) =>
+      lessonsService.reschedulePractice(student, lessonId, {
+        scheduledAt: at(hour).toISOString(),
+      });
+
+    it('lets a student move a confirmed booking: the old time frees up, the new one waits for approval', async () => {
+      const school = await openSchool();
+      const booked = await bookAt(school.student1, 9);
+      await workflowService.confirm(school.instructor, booked.id);
+
+      const moved = await moveTo(school.student1, booked.id, 14);
+
+      expect(moved).toMatchObject({
+        id: booked.id,
+        scheduledAt: at(14),
+        bookingStatus: 'PENDING',
+        confirmedAt: null,
+      });
+      await expect(freeHours(school.student2)).resolves.toEqual([9, 11, 16]);
+      await expect(bookAt(school.student2, 9)).resolves.toMatchObject({
+        bookingStatus: 'PENDING',
+      });
+    });
+
+    it('lets only one of two students moving into the same slot win, and the other keeps their time', async () => {
+      const school = await openSchool();
+      const first = await bookAt(school.student1, 9);
+      const second = await bookAt(school.student2, 11);
+
+      const results = await Promise.allSettled([
+        moveTo(school.student1, first.id, 14),
+        moveTo(school.student2, second.id, 14),
+      ]);
+
+      expect(results.filter((r) => r.status === 'fulfilled')).toHaveLength(1);
+      const [rejected] = results.filter((r) => r.status === 'rejected');
+      expect(rejected.reason).toBeInstanceOf(ConflictException);
+      const rows = await prisma.drivingLesson.findMany({
+        where: { id: { in: [first.id, second.id] } },
+        select: { scheduledAt: true },
+        orderBy: { scheduledAt: 'asc' },
+      });
+      const hours = rows.map((row) => row.scheduledAt.getUTCHours());
+      // Один перейшов на 14:00, інший лишився на своєму часі.
+      expect(hours.filter((hour) => hour === 14)).toHaveLength(1);
+      expect([
+        [9, 14],
+        [11, 14],
+      ]).toContainEqual(hours);
+    });
+
+    it('refuses to move a rejected booking: the student books a new slot instead', async () => {
+      const school = await openSchool();
+      const booked = await bookAt(school.student1, 9);
+      await workflowService.reject(school.instructor, booked.id, {});
+
+      const error: unknown = await moveTo(school.student1, booked.id, 14).catch(
+        (caught: unknown) => caught,
+      );
+
+      expect(error).toBeInstanceOf(ConflictException);
+      expect((error as ConflictException).getResponse()).toMatchObject({
+        currentStatus: 'REJECTED',
+      });
+      await expect(bookAt(school.student1, 14)).resolves.toMatchObject({
+        bookingStatus: 'PENDING',
+      });
+    });
   });
 
   describe('booking approval', () => {
