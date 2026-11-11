@@ -506,7 +506,7 @@ export class InvitationsService {
         organizationId: user.organizationId,
         instructorId: null,
         carId: null,
-        trainingStatus: TrainingStatus.INVITED,
+        trainingStatus: TrainingStatus.NEW,
       },
     });
     return profile.id;

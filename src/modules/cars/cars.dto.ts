@@ -1,5 +1,6 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import { CarStatus, LicenseCategory, Transmission } from '@prisma/client';
+import { LICENSE_CATEGORY_MESSAGE } from '../../common/license-category';
 import { Transform } from 'class-transformer';
 import {
   IsDefined,
@@ -90,7 +91,7 @@ export class ListCarsQueryDto {
   })
   @IsOptional()
   @IsEnum(LicenseCategory, {
-    message: 'category має бути A, B, C або D.',
+    message: LICENSE_CATEGORY_MESSAGE,
   })
   category?: LicenseCategory;
 
@@ -277,7 +278,7 @@ export class CreateCarDto {
     description: 'Категорія, для якої використовується автомобіль.',
   })
   @IsEnum(LicenseCategory, {
-    message: 'category має бути A, B, C або D.',
+    message: LICENSE_CATEGORY_MESSAGE,
   })
   @IsDefined({ message: REQUIRED_FIELD_MESSAGE })
   category: LicenseCategory;
@@ -327,7 +328,7 @@ export class UpdateCarDto {
   })
   @ValidateIf((_, value) => value !== undefined)
   @IsEnum(LicenseCategory, {
-    message: 'category має бути A, B, C або D.',
+    message: LICENSE_CATEGORY_MESSAGE,
   })
   category?: LicenseCategory;
 

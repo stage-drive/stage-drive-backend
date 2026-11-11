@@ -26,7 +26,7 @@ import {
   ApiTags,
   ApiUnauthorizedResponse,
 } from '@nestjs/swagger';
-import { User, UserStatus } from '@prisma/client';
+import { LicenseCategory, PaymentStatus, TrainingStatus, User, UserStatus } from '@prisma/client';
 import { AuthGuard } from '../auth/auth.guard';
 import { CurrentUser } from '../auth/current-user.decorator';
 import { Roles } from '../auth/roles.decorator';
@@ -69,13 +69,20 @@ export class StudentsController {
   @ApiOperation({
     summary: 'Список студентів своєї автошколи',
     description:
-      'ADMIN, TEACHER і INSTRUCTOR отримують студентів лише своєї організації. ' +
-      'Студент іншої автошколи, інші ролі та soft-delete у відповідь не потрапляють. ' +
-      'У кожному рядку є category і transmission з профілю учня (null, якщо ще не вказані). ' +
-      'Підтримуються search, фільтр status, sortBy/sortOrder і пагінація page/limit.',
+      'ADMIN бачить студентів лише своєї організації. ' +
+      'TEACHER — лише студентів своїх груп. INSTRUCTOR — лише студентів, закріплених за ним. ' +
+      'STUDENT цей список не відкриває: власна картка читається через GET /api/students/me. ' +
+      'У рядку є навчальний статус, група, інструктор, category, transmission і статус оплати. ' +
+      'Пошук, sortBy/sortOrder і пагінація page/limit лишаються. ' +
+      'status фільтрує обліковий статус. trainingStatus, groupId, instructorId, category і paymentStatus — окремі фільтри.',
   })
   @ApiQuery({ name: 'search', required: false, example: 'Петренко' })
   @ApiQuery({ name: 'status', required: false, enum: UserStatus })
+  @ApiQuery({ name: 'trainingStatus', required: false, enum: TrainingStatus })
+  @ApiQuery({ name: 'groupId', required: false, format: 'uuid' })
+  @ApiQuery({ name: 'instructorId', required: false, format: 'uuid' })
+  @ApiQuery({ name: 'category', required: false, enum: LicenseCategory })
+  @ApiQuery({ name: 'paymentStatus', required: false, enum: PaymentStatus })
   @ApiQuery({
     name: 'sortBy',
     required: false,
@@ -147,11 +154,11 @@ export class StudentsController {
   @ApiOperation({
     summary: 'Власний профіль студента',
     description:
-      'Автентифікований STUDENT отримує лише власний Student profile. ' +
-      'userId і organizationId беруться з access token і звіряються із записом Student. ' +
-      'Шлях не містить id: query не змінює, чий профіль читається. ' +
-      'OWNER, ADMIN, TEACHER і INSTRUCTOR цей ендпоінт не відкриває: ' +
-      'їхні дозволи лишаються на окремих staff-ендпоінтах.',
+      'Автентифікований STUDENT отримує лише власну картку. ' +
+      'userId і organizationId беруться з access token. ' +
+      'У відповіді є назва групи, ПІБ інструктора, автомобіль, теорія, тести, ' +
+      'відвідуваність, години практики й оплати. ' +
+      'Чужі картки студент через staff-ендпоінти не читає.',
   })
   @ApiOkResponse({ type: StudentCardDto })
   @ApiForbiddenResponse({
@@ -170,11 +177,10 @@ export class StudentsController {
   @ApiOperation({
     summary: 'Картка студента своєї автошколи',
     description:
-      'id — це id користувача зі списку студентів. OWNER, ADMIN, TEACHER і ' +
-      'INSTRUCTOR бачать лише студента своєї організації. Студент іншої ' +
-      'автошколи, інша роль і soft-delete повертають 404. Пароль і службові ' +
-      'поля у відповідь не потрапляють. У student є birthDate (YYYY-MM-DD), ' +
-      'address і contractNumber; кожне null, якщо ще не заповнене.',
+      'id — це id користувача зі списку студентів. ADMIN і OWNER бачать студента ' +
+      'своєї організації. TEACHER — лише студента своєї групи. INSTRUCTOR — лише ' +
+      'студента, закріпленого за ним. Чужий студент і soft-delete повертають 404. ' +
+      'Картка містить профіль, теорію, тести, відвідуваність, практику й оплати.',
   })
   @ApiParam({
     name: 'id',
@@ -250,14 +256,17 @@ export class StudentsController {
       'користувача: студент іншої організації повертає 404. Обліковий status ' +
       'користувача (INVITED, ACTIVE, BLOCKED, ARCHIVED) цим запитом не змінюється. ' +
       'Дозволені переходи TrainingStatus: ' +
-      'INVITED → ACTIVE | DROPPED | ARCHIVED; ' +
-      'ACTIVE → THEORY_COMPLETED | GRADUATED | DROPPED | ARCHIVED; ' +
-      'THEORY_COMPLETED → GRADUATED | DROPPED | ARCHIVED; ' +
-      'PRACTICE → GRADUATED | DROPPED | ARCHIVED; ' +
+      'NEW → ACTIVE | DROPPED | ARCHIVED; ' +
+      'ACTIVE → DROPPED | ARCHIVED; ' +
+      'THEORY_COMPLETED → DROPPED | ARCHIVED; ' +
+      'PRACTICE → EXAM | DROPPED | ARCHIVED; ' +
+      'EXAM → GRADUATED | DROPPED | ARCHIVED; ' +
       'GRADUATED → ARCHIVED; DROPPED → ARCHIVED. ' +
-      'THEORY_COMPLETED — теорію завершено: лише з нього можна надати допуск до практики. ' +
+      'THEORY_COMPLETED адмін вручну не ставить: його ставить система, коли всі уроки ' +
+      'опублікованого курсу пройдені і тест PASSED. ' +
       'PRACTICE цим запитом не призначається, лише допуском (PATCH /students/:id/practice-access). ' +
-      'THEORY_COMPLETED і GRADUATED закривають активні зарахування як COMPLETED, DROPPED і ARCHIVED — як DROPPED. ' +
+      'EXAM доступний лише після рівно 40 годин практики: менше або більше — 409. ' +
+      'GRADUATED закриває активні зарахування як COMPLETED, DROPPED і ARCHIVED — як DROPPED. ' +
       'Зміна пишеться в системний лог.',
   })
   @ApiParam({
@@ -298,9 +307,8 @@ export class StudentsController {
       'Лише ADMIN своєї автошколи. organizationId береться з авторизованого ' +
       'користувача. У тілі обов’язкові instructorId і carId. ' +
       'Студент має існувати в цій автошколі, мати обліковий статус ACTIVE, ' +
-      'навчальний статус THEORY_COMPLETED (перший допуск) або PRACTICE (переприв’язка інструктора чи авто), ' +
-      'а також заповнені category і transmission. Студенту в ACTIVE спершу встановіть THEORY_COMPLETED ' +
-      '(PATCH /students/:id/status). ' +
+      'навчальний статус THEORY_COMPLETED і заповнені category та transmission. ' +
+      'З ACTIVE, PRACTICE чи іншого статусу допуск не дається. ' +
       'Інструктор має роль INSTRUCTOR, статус ACTIVE і ту саму організацію. ' +
       'Автомобіль належить вибраному інструктору, має статус AVAILABLE, а його category і transmission ' +
       'збігаються зі студентом. Авто без інструктора, у статусі MAINTENANCE або INACTIVE відхиляється. ' +
@@ -324,7 +332,7 @@ export class StudentsController {
   })
   @ApiConflictResponse({
     description:
-      'Студент не має права на допуск (навчальний статус не THEORY_COMPLETED чи PRACTICE, обліковий не ACTIVE, ' +
+      'Студент не має права на допуск (навчальний статус не THEORY_COMPLETED, обліковий не ACTIVE, ' +
       'немає category чи transmission), інструктор не INSTRUCTOR або не ACTIVE, ' +
       'або комбінація інструктора й автомобіля некоректна ' +
       '(авто нікому не призначено, авто не його, інша category, інша transmission ' +
@@ -349,9 +357,10 @@ export class StudentsController {
     summary: 'Редагувати дозволені дані картки студента',
     description:
       'OWNER або ADMIN змінюють firstName, lastName, phone, category, ' +
-      'transmission, birthDate, address і contractNumber студента своєї ' +
-      'автошколи. role, organizationId, навчальний status, instructorId і ' +
-      'carId цим запитом не змінюються і відхиляються, якщо їх передати в тілі. ' +
+      'transmission, birthDate, address, contractNumber і avatar студента своєї ' +
+      'автошколи. null очищує birthDate, address, contractNumber і avatar. ' +
+      'role, organizationId, обліковий статус, instructorId і carId цим запитом ' +
+      'не змінюються і відхиляються, якщо їх передати в тілі. ' +
       'category і transmission потрібні для допуску до практики і мають ' +
       'збігатися з уже призначеним автомобілем. birthDate, address і ' +
       'contractNumber можна очистити значенням null.',

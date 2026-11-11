@@ -108,6 +108,7 @@ describe('CourseProgressService', () => {
       create: jest.fn(),
     },
     courseProgress: { findUnique: jest.fn(), upsert: jest.fn() },
+    student: { findUnique: jest.fn() },
     $queryRaw: jest.fn(),
     $transaction: jest.fn(),
   };
@@ -154,6 +155,7 @@ describe('CourseProgressService', () => {
     prisma.courseLessonCompletion.findMany.mockResolvedValue([]);
     prisma.courseLessonCompletion.create.mockResolvedValue({ id: 'done-1' });
     prisma.courseProgress.findUnique.mockResolvedValue(null);
+    prisma.student.findUnique.mockResolvedValue(null);
     prisma.courseProgress.upsert.mockResolvedValue({ updatedAt });
     prisma.$queryRaw.mockResolvedValue([{ id: courseId }]);
     prisma.$transaction.mockImplementation(

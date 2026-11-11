@@ -57,24 +57,59 @@ enum EnrollmentStatus {
   DROPPED
 }
 
-/// Навчальний статус учня. Не плутати з UserStatus (обліковий доступ).
-/// THEORY_COMPLETED ставить ADMIN, коли учень завершив теорію; лише з нього (чи з PRACTICE —
-/// для переприв'язки) можна надати допуск. PRACTICE призначається лише допуском до практики.
+/// Навчальний статус учня. Не плутати з UserStatus: INVITED лишається лише обліковим статусом.
+/// NEW — учня створено, навчання ще не почалось.
+/// THEORY_COMPLETED ставить система, коли всі уроки опублікованого курсу пройдені і тест PASSED.
+/// Журнал очної відвідуваності на цей статус не впливає.
+/// PRACTICE призначається лише допуском до практики: на ньому відкатують рівно 40 годин.
+/// EXAM доступний лише після рівно 40 годин практики.
 enum TrainingStatus {
-  INVITED
+  NEW
   ACTIVE
   THEORY_COMPLETED
   PRACTICE
+  EXAM
   GRADUATED
   DROPPED
   ARCHIVED
 }
 
+/// Категорія ТЗ. Один enum для студента і для автомобіля.
 enum LicenseCategory {
+  /// Мопеди, моторолери та інші двоколісні ТЗ до 50 см³ або електродвигун до 4 кВт.
+  A1
+  /// Мотоцикли та інші двоколісні ТЗ понад 50 см³ або електродвигун від 4 кВт.
   A
+  /// Квадроцикли, трицикли та інші три- або чотириколісні ТЗ масою до 400 кг.
+  B1
+  /// Легкові до 3,5 т і не більше ніж 9 місць разом з водієм.
   B
+  /// Склад ТЗ з тягачем категорії B і причепом понад 750 кг.
+  BE
+  /// Вантажні від 3,5 до 7,5 т.
+  C1
+  /// Склад ТЗ з тягачем C1 і причепом понад 750 кг.
+  C1E
+  /// Вантажні понад 7,5 т.
   C
+  /// Склад ТЗ з тягачем C і причепом понад 750 кг.
+  CE
+  /// Автобуси, місць для сидіння крім водія не більше ніж 16.
+  D1
+  /// Склад ТЗ з тягачем D1 і причепом понад 750 кг.
+  D1E
+  /// Автобуси, місць для сидіння більше ніж 16.
   D
+  /// Склад ТЗ з автобусом D і причепом понад 750 кг.
+  DE
+  /// Трамваї і тролейбуси.
+  T
+}
+
+/// Результат теоретичного тесту курсу. Один актуальний результат на пару студент + курс.
+enum TheoryTestStatus {
+  PASSED
+  FAILED
 }
 
 enum Transmission {
@@ -186,6 +221,7 @@ model Organization {
   courses                 Course[]
   courseLessonCompletions CourseLessonCompletion[]
   courseProgressRecords   CourseProgress[]
+  theoryTestResults       TheoryTestResult[]
   instructorWorkingHours  InstructorWorkingHours[]
   instructorTimeOffs      InstructorTimeOff[]
 
@@ -232,6 +268,7 @@ model User {
   markedAttendances        LessonAttendance[]       @relation("MarkedAttendances")
   courseLessonCompletions  CourseLessonCompletion[] @relation("StudentCourseLessonCompletions")
   courseProgressRecords    CourseProgress[]         @relation("StudentCourseProgress")
+  theoryTestResults        TheoryTestResult[]       @relation("StudentTheoryTestResults")
   workingHours             InstructorWorkingHours[] @relation("InstructorWorkingHours")
   timeOffs                 InstructorTimeOff[]      @relation("InstructorTimeOffs")
   createdTimeOffs          InstructorTimeOff[]      @relation("CreatedInstructorTimeOffs")
@@ -412,6 +449,7 @@ model Course {
   materials         CourseMaterial[]
   lessonCompletions CourseLessonCompletion[]
   progressRecords   CourseProgress[]
+  theoryTestResults TheoryTestResult[]
 
   @@index([organizationId])
   @@map("courses")
@@ -518,6 +556,26 @@ model CourseProgress {
   @@map("course_progress")
 }
 
+/// Актуальний результат теоретичного тесту курсу.
+/// Повторна спроба перезаписує цей рядок, а не додає історію спроб.
+model TheoryTestResult {
+  id             String           @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  organizationId String           @map("organization_id") @db.Uuid
+  organization   Organization     @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  courseId       String           @map("course_id") @db.Uuid
+  course         Course           @relation(fields: [courseId], references: [id], onDelete: Cascade)
+  studentId      String           @map("student_id") @db.Uuid
+  student        User             @relation("StudentTheoryTestResults", fields: [studentId], references: [id], onDelete: Cascade)
+  status         TheoryTestStatus
+  score          Int?
+  takenAt        DateTime         @default(now()) @map("taken_at")
+
+  @@unique([studentId, courseId])
+  @@index([organizationId])
+  @@index([courseId])
+  @@map("theory_test_results")
+}
+
 model Student {
   id             String           @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   userId         String           @unique @map("user_id") @db.Uuid
@@ -535,7 +593,7 @@ model Student {
   birthDate      DateTime?        @map("birth_date") @db.Date
   address        String?          @db.VarChar(255)
   contractNumber String?          @map("contract_number") @db.VarChar(64)
-  trainingStatus TrainingStatus   @default(INVITED) @map("training_status")
+  trainingStatus TrainingStatus   @default(NEW) @map("training_status")
   createdAt      DateTime         @default(now()) @map("created_at")
   updatedAt      DateTime         @updatedAt @map("updated_at")
 

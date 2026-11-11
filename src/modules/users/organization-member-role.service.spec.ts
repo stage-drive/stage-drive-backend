@@ -186,7 +186,7 @@ describe('UsersService.changeMemberRole', () => {
       create: {
         userId: 'user-2',
         organizationId: 'org-1',
-        trainingStatus: TrainingStatus.INVITED,
+        trainingStatus: TrainingStatus.NEW,
       },
     });
   });
