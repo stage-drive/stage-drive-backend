@@ -9,6 +9,7 @@ import { LessonAttendanceService } from './lesson-attendance.service';
 import { LessonsController } from './lessons.controller';
 import { LessonsService } from './lessons.service';
 import { PersonalScheduleService } from './personal-schedule.service';
+import { TheoryContentService } from './theory-content.service';
 
 describe('LessonsController', () => {
   it('applies AuthGuard and RolesGuard to the whole controller', () => {
@@ -27,6 +28,7 @@ describe('LessonsController', () => {
     ['reschedulePractice', [UserRole.ADMIN, UserRole.STUDENT]],
     ['cancelTheory', [UserRole.ADMIN, UserRole.TEACHER]],
     ['cancelPractice', [UserRole.ADMIN, UserRole.INSTRUCTOR, UserRole.STUDENT]],
+    ['getTheoryContent', [UserRole.ADMIN, UserRole.TEACHER, UserRole.STUDENT]],
     ['getAttendance', [UserRole.ADMIN, UserRole.TEACHER]],
     ['updateAttendance', [UserRole.ADMIN, UserRole.TEACHER]],
     [
@@ -90,10 +92,14 @@ describe('LessonsController', () => {
       getAttendance: jest.fn().mockResolvedValue(response),
       updateAttendance: jest.fn().mockResolvedValue(response),
     };
+    const theoryContentService = {
+      getForLesson: jest.fn().mockResolvedValue(response),
+    };
     const controller = new LessonsController(
       lessonsService as unknown as LessonsService,
       personalScheduleService as unknown as PersonalScheduleService,
       lessonAttendanceService as unknown as LessonAttendanceService,
+      theoryContentService as unknown as TheoryContentService,
     );
 
     it.each([
@@ -135,6 +141,13 @@ describe('LessonsController', () => {
         expect(lessonsService[method]).toHaveBeenCalledWith(user, body);
       },
     );
+
+    it('getTheoryContent passes the current user and id to the content service', async () => {
+      await expect(
+        controller.getTheoryContent(user as never, id),
+      ).resolves.toBe(response);
+      expect(theoryContentService.getForLesson).toHaveBeenCalledWith(user, id);
+    });
 
     it('getAttendance passes the current user and id to the attendance service', async () => {
       await expect(controller.getAttendance(user as never, id)).resolves.toBe(

@@ -162,6 +162,20 @@ describe('UpdateTheoryLessonDto', () => {
     });
   });
 
+  it('accepts null courseLessonId to clear the link', async () => {
+    await expect(
+      validate(UpdateTheoryLessonDto, { courseLessonId: null }),
+    ).resolves.toEqual({ courseLessonId: null });
+  });
+
+  it('rejects a courseLessonId that is not a UUID', async () => {
+    await expect(
+      errorsFor(UpdateTheoryLessonDto, { courseLessonId: 'abc' }),
+    ).resolves.toEqual(
+      fieldErrors('courseLessonId', 'courseLessonId має бути UUID або null.'),
+    );
+  });
+
   it('rejects a null durationMin', async () => {
     await expect(
       errorsFor(UpdateTheoryLessonDto, { durationMin: null }),
@@ -297,6 +311,26 @@ describe('CreateTheoryLessonDto', () => {
 
   it('accepts a body without durationMin and leaves it undefined', async () => {
     await expect(validate(CreateTheoryLessonDto, body)).resolves.toEqual(body);
+  });
+
+  it('accepts a course lesson id', async () => {
+    await expect(
+      validate(CreateTheoryLessonDto, {
+        ...body,
+        courseLessonId: '61616161-6161-4616-8616-616161616161',
+      }),
+    ).resolves.toEqual({
+      ...body,
+      courseLessonId: '61616161-6161-4616-8616-616161616161',
+    });
+  });
+
+  it('rejects a null courseLessonId on create', async () => {
+    await expect(
+      errorsFor(CreateTheoryLessonDto, { ...body, courseLessonId: null }),
+    ).resolves.toEqual(
+      fieldErrors('courseLessonId', 'courseLessonId має бути UUID.'),
+    );
   });
 
   it('trims the topic and keeps durationMin', async () => {

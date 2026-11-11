@@ -180,6 +180,19 @@ export class UpdateTheoryLessonDto {
   })
   @IsLessonDuration()
   durationMin?: number;
+
+  @ApiPropertyOptional({
+    type: String,
+    format: 'uuid',
+    nullable: true,
+    example: '61616161-6161-4616-8616-616161616161',
+    description:
+      'Урок курсу, призначеного групі заняття. null знімає прив’язку. ' +
+      'Урок чужого курсу або урок, уже зайнятий іншим нескасованим заняттям групи, відхиляється.',
+  })
+  @ValidateIf((_, value) => value !== undefined && value !== null)
+  @IsUUID('4', { message: 'courseLessonId має бути UUID або null.' })
+  courseLessonId?: string | null;
 }
 
 export class UpdatePracticeLessonDto {
@@ -342,6 +355,21 @@ export class LessonCarDto {
   transmission: Transmission;
 }
 
+/** Урок теоретичного курсу, який читають на занятті групи. */
+export class TheoryCourseLessonDto {
+  @ApiProperty({ example: '61616161-6161-4616-8616-616161616161' })
+  id: string;
+
+  @ApiProperty({ example: '41414141-4141-4414-8414-414141414141' })
+  courseId: string;
+
+  @ApiProperty({ example: '51515151-5151-4515-8515-515151515151' })
+  chapterId: string;
+
+  @ApiProperty({ example: 'Дорожні знаки' })
+  title: string;
+}
+
 export class TheoryLessonDto {
   @ApiProperty()
   id: string;
@@ -372,6 +400,14 @@ export class TheoryLessonDto {
 
   @ApiProperty({ type: LessonPersonDto, description: 'Викладач групи.' })
   teacher: LessonPersonDto;
+
+  @ApiProperty({
+    type: TheoryCourseLessonDto,
+    nullable: true,
+    description:
+      'Урок курсу, прив’язаний до цього заняття. null — заняття без контенту курсу.',
+  })
+  courseLesson: TheoryCourseLessonDto | null;
 
   @ApiProperty({
     type: Date,
@@ -666,6 +702,16 @@ export class CreateTheoryLessonDto {
   })
   @IsLessonDuration()
   durationMin?: number;
+
+  @ApiPropertyOptional({
+    format: 'uuid',
+    example: '61616161-6161-4616-8616-616161616161',
+    description:
+      'Урок теоретичного курсу, призначеного групі. Без поля заняття створюється без прив’язки до контенту.',
+  })
+  @ValidateIf((_, value) => value !== undefined)
+  @IsUUID('4', { message: 'courseLessonId має бути UUID.' })
+  courseLessonId?: string;
 }
 
 export class CreatePracticeLessonDto {

@@ -39,6 +39,9 @@ import {
   STUDENT_NOT_FOUND_MESSAGE,
 } from '../students/students.service';
 import {
+  COURSE_LESSON_ALREADY_LINKED_MESSAGE,
+  COURSE_LESSON_NOT_IN_GROUP_MESSAGE,
+  GROUP_COURSE_REQUIRED_MESSAGE,
   LESSON_ALREADY_STARTED_MESSAGE,
   LESSON_CANCEL_STARTED_MESSAGE,
   LESSON_CREATE_IN_PAST_MESSAGE,
@@ -191,6 +194,8 @@ describe('LessonsService', () => {
       status: LessonStatus.SCHEDULED as LessonStatus,
       cancelledAt: null as Date | null,
       cancellationReason: null as string | null,
+      courseLessonId: null as string | null,
+      courseLesson: null,
       updatedAt: new Date('2026-10-20T09:00:00.000Z'),
       group: {
         id: 'group-1',
@@ -199,6 +204,7 @@ describe('LessonsService', () => {
         teacherId: 'teacher-1',
         startDate: null as Date | null,
         endDate: null as Date | null,
+        courseId: null as string | null,
         teacher: {
           id: 'teacher-1',
           firstName: 'Ірина',
@@ -237,6 +243,7 @@ describe('LessonsService', () => {
       update: jest.fn(),
       create: jest.fn(),
     },
+    courseLesson: { findFirst: jest.fn() },
     drivingLesson: {
       findFirst: jest.fn(),
       findMany: jest.fn(),
@@ -300,6 +307,7 @@ describe('LessonsService', () => {
     jest.useFakeTimers({ now: NOW });
     prisma.organization.findUnique.mockResolvedValue(organization);
     prisma.lesson.findMany.mockResolvedValue([]);
+    prisma.courseLesson.findFirst.mockResolvedValue(null);
     prisma.drivingLesson.findMany.mockResolvedValue([]);
     prisma.instructorTimeOff.findMany.mockResolvedValue([]);
     // Пн 09:00–13:00 і 14:00–18:00 за Києвом: слоти 07:00Z, 09:00Z, 12:00Z, 14:00Z.
@@ -946,10 +954,25 @@ describe('LessonsService', () => {
         durationMin: 90,
         group: { id: 'group-1', name: 'ПДР — Група А' },
         teacher: { id: 'teacher-1', firstName: 'Ірина', lastName: 'Мельник' },
+        courseLesson: null,
         cancelledAt: null,
         cancellationReason: null,
         updatedAt: new Date('2026-10-20T09:00:00.000Z'),
       });
+    });
+
+    it('clears the course lesson link without schedule checks', async () => {
+      givenTheory(theoryRow({ lesson: { courseLessonId: 'course-lesson-1' } }));
+
+      await service.updateTheory(teacherActor as never, 'lesson-t1', {
+        courseLessonId: null,
+      });
+
+      expect(updateData(prisma.lesson.update)).toEqual({
+        courseLessonId: null,
+      });
+      expect(prisma.lesson.findMany).not.toHaveBeenCalled();
+      expect(prisma.courseLesson.findFirst).not.toHaveBeenCalled();
     });
 
     it('forbids a teacher of another group', async () => {
@@ -1737,10 +1760,99 @@ describe('LessonsService', () => {
           durationMin: 90,
           group: { id: 'group-1', name: 'ПДР — Група А' },
           teacher: { id: 'teacher-1', firstName: 'Ірина', lastName: 'Мельник' },
+          courseLesson: null,
           cancelledAt: null,
           cancellationReason: null,
           updatedAt: new Date('2026-10-20T09:00:00.000Z'),
         });
+      });
+
+      it('links the lesson to a course lesson of the group course', async () => {
+        givenGroup({ ...theoryRow().group, courseId: 'course-1' });
+        prisma.courseLesson.findFirst.mockResolvedValue({
+          id: 'course-lesson-1',
+        });
+        prisma.lesson.findFirst.mockResolvedValue(null);
+        const linked = {
+          id: 'course-lesson-1',
+          courseId: 'course-1',
+          chapterId: 'chapter-1',
+          title: 'Знаки',
+        };
+        prisma.lesson.create.mockImplementation(({ data }: { data: object }) =>
+          Promise.resolve({
+            ...theoryRow({
+              lesson: { id: 'lesson-new', courseLesson: linked },
+            }),
+            ...data,
+            courseLesson: linked,
+          }),
+        );
+
+        const result = await service.createTheory(admin as never, {
+          ...payload,
+          courseLessonId: 'course-lesson-1',
+        });
+
+        expect(createData(prisma.lesson.create)).toMatchObject({
+          courseLessonId: 'course-lesson-1',
+        });
+        expect(result.courseLesson).toEqual(linked);
+      });
+
+      it('refuses a course lesson outside the group course', async () => {
+        givenGroup({ ...theoryRow().group, courseId: 'course-1' });
+
+        const error = await caught(
+          service.createTheory(admin as never, {
+            ...payload,
+            courseLessonId: 'course-lesson-1',
+          }),
+        );
+
+        expect(error).toBeInstanceOf(BadRequestException);
+        expect(error.getResponse()).toEqual({
+          statusCode: 400,
+          errors: [
+            {
+              field: 'courseLessonId',
+              message: COURSE_LESSON_NOT_IN_GROUP_MESSAGE,
+            },
+          ],
+        });
+        expect(prisma.lesson.create).not.toHaveBeenCalled();
+      });
+
+      it('refuses to link a lesson when the group has no course', async () => {
+        const error = await caught(
+          service.createTheory(admin as never, {
+            ...payload,
+            courseLessonId: 'course-lesson-1',
+          }),
+        );
+
+        expect(error).toBeInstanceOf(ConflictException);
+        expect(error.message).toBe(GROUP_COURSE_REQUIRED_MESSAGE);
+        expect(prisma.courseLesson.findFirst).not.toHaveBeenCalled();
+      });
+
+      it('refuses a course lesson already linked to another lesson of the group', async () => {
+        givenGroup({ ...theoryRow().group, courseId: 'course-1' });
+        prisma.courseLesson.findFirst.mockResolvedValue({
+          id: 'course-lesson-1',
+        });
+        prisma.lesson.findFirst.mockResolvedValue({ id: 'lesson-other' });
+
+        const error = await caught(
+          service.createTheory(admin as never, {
+            ...payload,
+            courseLessonId: 'course-lesson-1',
+          }),
+        );
+
+        expect(error).toBeInstanceOf(ConflictException);
+        expect(error.message).toBe(COURSE_LESSON_ALREADY_LINKED_MESSAGE);
+        expect(prisma.lesson.create).not.toHaveBeenCalled();
       });
 
       it('checks conflicts for the default 90 minutes, or for the given duration', async () => {

@@ -384,6 +384,19 @@ export class GroupsService {
       if (payload.courseId !== null) {
         await this.requireCourse(tx, actor.organizationId, payload.courseId);
       }
+      await tx.lesson.updateMany({
+        where: {
+          groupId: existing.id,
+          organizationId: actor.organizationId,
+          courseLessonId: { not: null },
+          ...(payload.courseId === null
+            ? {}
+            : {
+                courseLesson: { courseId: { not: payload.courseId } },
+              }),
+        },
+        data: { courseLessonId: null },
+      });
       return tx.group.update({
         where: { id: existing.id },
         data: { courseId: payload.courseId },

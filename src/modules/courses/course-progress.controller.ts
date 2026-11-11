@@ -72,6 +72,8 @@ export class CourseProgressController {
       'STUDENT отримує прогрес курсу групи, у якій у нього Enrollment.status = ACTIVE і групі призначено курс. ' +
       'Курс має бути ACTIVE і PUBLISHED, інакше 403. Студент без такої групи отримує 404. ' +
       'Відповідь рахується з пройдених уроків і поточного складу курсу. ' +
+      'Кожен урок містить очні заняття групи студента, прив’язані до нього, разом із відміткою цього студента. ' +
+      'Поле test — актуальний результат тесту цього курсу або null. ' +
       'Інша роль отримує 403.',
   })
   @ApiOkResponse({ type: CourseProgressDto })
@@ -163,14 +165,16 @@ export class CourseProgressController {
   @ApiParam(courseIdParam)
   @ApiOkResponse({ type: TheoryTestResultDto })
   @ApiBadRequestResponse({
-    description: 'status має бути PASSED або FAILED. score — ціле від 0 до 100.',
+    description:
+      'status має бути PASSED або FAILED. score — ціле від 0 до 100.',
   })
   @ApiForbiddenResponse({
     description:
       'Тест здає лише STUDENT, якому цей опублікований курс призначено групою.',
   })
   @ApiNotFoundResponse({
-    description: 'Курс не знайдено в автошколі студента, або автошколу видалено.',
+    description:
+      'Курс не знайдено в автошколі студента, або автошколу видалено.',
   })
   submitTest(
     @CurrentUser() user: User,

@@ -483,10 +483,11 @@ model CourseLesson {
   title       String                   @db.VarChar(200)
   description String?
   position    Int
-  createdAt   DateTime                 @default(now()) @map("created_at")
-  updatedAt   DateTime                 @updatedAt @map("updated_at")
-  materials   CourseMaterial[]
-  completions CourseLessonCompletion[]
+  createdAt        DateTime                 @default(now()) @map("created_at")
+  updatedAt        DateTime                 @updatedAt @map("updated_at")
+  materials        CourseMaterial[]
+  completions      CourseLessonCompletion[]
+  scheduledLessons Lesson[]
 
   @@unique([id, courseId])
   @@unique([chapterId, position])
@@ -660,6 +661,11 @@ model Lesson {
   cancelledById      String?            @map("cancelled_by_id") @db.Uuid
   cancelledBy        User?              @relation("CancelledLessons", fields: [cancelledById], references: [id], onDelete: SetNull)
   cancellationReason String?            @map("cancellation_reason") @db.VarChar(500)
+  /// Урок курсу, який читають на цьому занятті. null — без прив’язки.
+  /// SET NULL: видалення уроку курсу не стирає розклад. Один нескасований
+  /// урок курсу на групу гарантує частковий унікальний індекс у міграції.
+  courseLessonId     String?            @map("course_lesson_id") @db.Uuid
+  courseLesson       CourseLesson?      @relation(fields: [courseLessonId], references: [id], onDelete: SetNull)
   createdAt          DateTime           @default(now()) @map("created_at")
   updatedAt          DateTime           @default(now()) @updatedAt @map("updated_at")
   attendances        LessonAttendance[]
@@ -668,6 +674,7 @@ model Lesson {
   @@index([organizationId, scheduledAt])
   @@index([groupId, scheduledAt])
   @@index([cancelledById])
+  @@index([courseLessonId])
   @@map("lessons")
 }
 

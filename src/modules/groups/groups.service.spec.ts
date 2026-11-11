@@ -987,6 +987,15 @@ describe('GroupsService', () => {
       expect(prisma.group.update).toHaveBeenCalledWith(
         expect.objectContaining({ data: { courseId: 'course-1' } }),
       );
+      expect(prisma.lesson.updateMany).toHaveBeenCalledWith({
+        where: {
+          groupId: 'group-1',
+          organizationId: 'org-1',
+          courseLessonId: { not: null },
+          courseLesson: { courseId: { not: 'course-1' } },
+        },
+        data: { courseLessonId: null },
+      });
     });
 
     it('also assigns a course to a PLANNED group', async () => {
@@ -1011,6 +1020,14 @@ describe('GroupsService', () => {
       expect(prisma.group.update).toHaveBeenCalledWith(
         expect.objectContaining({ data: { courseId: null } }),
       );
+      expect(prisma.lesson.updateMany).toHaveBeenCalledWith({
+        where: {
+          groupId: 'group-1',
+          organizationId: 'org-1',
+          courseLessonId: { not: null },
+        },
+        data: { courseLessonId: null },
+      });
       expect(log).toHaveBeenCalledWith(
         'Group course assigned groupId=group-1 courseId=none actorId=admin-1 organizationId=org-1',
       );
@@ -1026,6 +1043,7 @@ describe('GroupsService', () => {
       ).resolves.toMatchObject({ course });
       expect(prisma.course.findFirst).not.toHaveBeenCalled();
       expect(prisma.group.update).not.toHaveBeenCalled();
+      expect(prisma.lesson.updateMany).not.toHaveBeenCalled();
     });
 
     it('skips the write when null is sent for a group without a course', async () => {

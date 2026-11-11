@@ -641,7 +641,8 @@ export class StudentProfileDto {
   @ApiProperty({
     nullable: true,
     type: StudentInstructorSummaryDto,
-    description: 'ПІБ призначеного інструктора. null, доки допуску до практики немає.',
+    description:
+      'ПІБ призначеного інструктора. null, доки допуску до практики немає.',
   })
   instructor: StudentInstructorSummaryDto | null;
 
@@ -879,6 +880,30 @@ export class StudentTheoryCourseDto {
   publicationStatus: CoursePublicationStatus;
 }
 
+export class StudentTheorySessionDto {
+  @ApiProperty({ example: '51515151-5151-4515-8515-515151515151' })
+  lessonId: string;
+
+  @ApiProperty({ example: 'Дорожні знаки' })
+  topic: string;
+
+  @ApiProperty({ type: String, format: 'date-time' })
+  scheduledAt: Date;
+
+  @ApiProperty({ example: 90 })
+  durationMin: number;
+
+  @ApiProperty({ enum: LessonStatus, example: LessonStatus.SCHEDULED })
+  status: LessonStatus;
+
+  @ApiProperty({
+    enum: AttendanceStatus,
+    nullable: true,
+    description: 'Відмітка цього студента на занятті. null — ще не відмічено.',
+  })
+  attendance: AttendanceStatus | null;
+}
+
 export class StudentTheoryLessonDto {
   @ApiProperty({ example: '61616161-6161-4616-8616-616161616161' })
   lessonId: string;
@@ -891,6 +916,13 @@ export class StudentTheoryLessonDto {
 
   @ApiProperty({ type: String, format: 'date-time', nullable: true })
   completedAt: Date | null;
+
+  @ApiProperty({
+    type: [StudentTheorySessionDto],
+    description:
+      'Очні заняття поточної групи, прив’язані до цього уроку курсу.',
+  })
+  sessions: StudentTheorySessionDto[];
 }
 
 export class StudentTheoryProgressDto {
@@ -948,6 +980,23 @@ export class StudentAttendanceItemDto {
   @ApiProperty({ enum: LessonStatus, example: LessonStatus.COMPLETED })
   lessonStatus: LessonStatus;
 
+  @ApiProperty({
+    type: String,
+    format: 'uuid',
+    nullable: true,
+    description:
+      'Урок курсу, прив’язаний до цього заняття. null — заняття без контенту курсу.',
+  })
+  courseLessonId: string | null;
+
+  @ApiProperty({
+    type: String,
+    format: 'uuid',
+    nullable: true,
+    description: 'Курс прив’язаного уроку. null, якщо заняття не прив’язане.',
+  })
+  courseId: string | null;
+
   @ApiProperty({ enum: AttendanceStatus, example: AttendanceStatus.PRESENT })
   status: AttendanceStatus;
 
@@ -990,7 +1039,8 @@ export class StudentPracticeDto {
 
   @ApiProperty({
     example: 40,
-    description: 'Сума годин практичних занять зі статусом оплати PAID, крім скасованих.',
+    description:
+      'Сума годин практичних занять зі статусом оплати PAID, крім скасованих.',
   })
   paidHours: number;
 
@@ -1002,13 +1052,15 @@ export class StudentPracticeDto {
 
   @ApiProperty({
     example: 0,
-    description: 'paidHours − completedHours. Може бути від’ємним, якщо пройдено більше, ніж оплачено.',
+    description:
+      'paidHours − completedHours. Може бути від’ємним, якщо пройдено більше, ніж оплачено.',
   })
   remainingHours: number;
 
   @ApiProperty({
     example: true,
-    description: 'true лише коли пройдено рівно requiredHours. Менше або більше — іспит недоступний.',
+    description:
+      'true лише коли пройдено рівно requiredHours. Менше або більше — іспит недоступний.',
   })
   examAvailable: boolean;
 

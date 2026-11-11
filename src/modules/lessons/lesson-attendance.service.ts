@@ -44,6 +44,8 @@ export const ATTENDANCE_NOT_STARTED_MESSAGE =
   'Відвідування можна відмітити лише після початку заняття.';
 export const ATTENDANCE_STUDENT_NOT_IN_GROUP_MESSAGE =
   'Студент не входить до складу групи заняття.';
+export const ATTENDANCE_STATUS_MISMATCH_MESSAGE =
+  'Відвідування не відповідає статусу заняття.';
 
 const OPEN_GROUP_STATUSES: GroupStatus[] = [
   GroupStatus.PLANNED,
@@ -104,6 +106,19 @@ function attendanceBlocker(
     return new ConflictException({
       statusCode: 409,
       message: ATTENDANCE_LESSON_CANCELLED_MESSAGE,
+      error: 'Conflict',
+      currentStatus: lesson.status,
+    });
+  }
+  // Відмітка буває лише в заняття, яке відбувається або вже відбулося.
+  // NO_SHOW теорії не ставиться, але рядок із чужим статусом не відмічаємо.
+  if (
+    lesson.status !== LessonStatus.SCHEDULED &&
+    lesson.status !== LessonStatus.COMPLETED
+  ) {
+    return new ConflictException({
+      statusCode: 409,
+      message: ATTENDANCE_STATUS_MISMATCH_MESSAGE,
       error: 'Conflict',
       currentStatus: lesson.status,
     });

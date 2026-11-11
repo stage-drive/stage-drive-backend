@@ -1,6 +1,37 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
-import { TheoryTestStatus } from '@prisma/client';
+import {
+  AttendanceStatus,
+  LessonStatus,
+  TheoryTestStatus,
+} from '@prisma/client';
 import { IsEnum, IsInt, IsOptional, Max, Min } from 'class-validator';
+
+/** Очне заняття групи, прив’язане до уроку курсу, і відмітка цього студента. */
+export class LinkedTheorySessionDto {
+  @ApiProperty({ example: '51515151-5151-4515-8515-515151515151' })
+  lessonId: string;
+
+  @ApiProperty({ example: 'Дорожні знаки' })
+  topic: string;
+
+  @ApiProperty({ type: String, format: 'date-time' })
+  scheduledAt: Date;
+
+  @ApiProperty({ example: 90 })
+  durationMin: number;
+
+  @ApiProperty({ enum: LessonStatus, example: LessonStatus.SCHEDULED })
+  status: LessonStatus;
+
+  @ApiProperty({
+    enum: AttendanceStatus,
+    nullable: true,
+    example: AttendanceStatus.PRESENT,
+    description:
+      'Відмітка цього студента. null — ще не відмічено. Скасоване заняття теж повертається, щоб статус відмітки не розходився зі статусом заняття.',
+  })
+  attendance: AttendanceStatus | null;
+}
 
 export class CourseLessonProgressDto {
   @ApiProperty({ example: '61616161-6161-4616-8616-616161616161' })
@@ -39,6 +70,33 @@ export class CourseLessonProgressDto {
     description: 'Коли урок пройдено вперше. null, якщо ще не пройдено.',
   })
   completedAt: Date | null;
+
+  @ApiProperty({
+    type: [LinkedTheorySessionDto],
+    description:
+      'Очні заняття груп цього студента, прив’язані до уроку. Для власного прогресу — лише активне зарахування.',
+  })
+  sessions: LinkedTheorySessionDto[];
+}
+
+export class TheoryTestResultDto {
+  @ApiProperty({ example: '91919191-9191-4919-8919-919191919191' })
+  id: string;
+
+  @ApiProperty({ example: '41414141-4141-4414-8414-414141414141' })
+  courseId: string;
+
+  @ApiProperty({ example: '13131313-1313-4131-8131-131313131313' })
+  studentId: string;
+
+  @ApiProperty({ enum: TheoryTestStatus, example: TheoryTestStatus.PASSED })
+  status: TheoryTestStatus;
+
+  @ApiProperty({ nullable: true, type: Number, example: 86 })
+  score: number | null;
+
+  @ApiProperty({ type: String, format: 'date-time' })
+  takenAt: Date;
 }
 
 export class CourseProgressDto {
@@ -90,13 +148,22 @@ export class CourseProgressDto {
       'Усі уроки курсу за порядком розділів і уроків. Повторне проходження не додає другий запис.',
   })
   lessons: CourseLessonProgressDto[];
+
+  @ApiProperty({
+    type: TheoryTestResultDto,
+    nullable: true,
+    description:
+      'Актуальний результат тесту цього курсу. null, якщо студент ще не здавав тест.',
+  })
+  test: TheoryTestResultDto | null;
 }
 
 export class SubmitTheoryTestDto {
   @ApiProperty({
     enum: TheoryTestStatus,
     example: TheoryTestStatus.PASSED,
-    description: 'PASSED закриває теорію разом із проходженням усіх уроків курсу.',
+    description:
+      'PASSED закриває теорію разом із проходженням усіх уроків курсу.',
   })
   @IsEnum(TheoryTestStatus, {
     message: 'status має бути PASSED або FAILED.',
@@ -114,24 +181,4 @@ export class SubmitTheoryTestDto {
   @Min(0, { message: 'score має бути не менше 0.' })
   @Max(100, { message: 'score має бути не більше 100.' })
   score?: number;
-}
-
-export class TheoryTestResultDto {
-  @ApiProperty({ example: '91919191-9191-4919-8919-919191919191' })
-  id: string;
-
-  @ApiProperty({ example: '41414141-4141-4414-8414-414141414141' })
-  courseId: string;
-
-  @ApiProperty({ example: '13131313-1313-4131-8131-131313131313' })
-  studentId: string;
-
-  @ApiProperty({ enum: TheoryTestStatus, example: TheoryTestStatus.PASSED })
-  status: TheoryTestStatus;
-
-  @ApiProperty({ nullable: true, type: Number, example: 86 })
-  score: number | null;
-
-  @ApiProperty({ type: String, format: 'date-time' })
-  takenAt: Date;
 }

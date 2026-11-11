@@ -3,6 +3,7 @@ import {
   LessonPersonDto,
   PracticeBookingStatus,
   PracticeLessonDto,
+  TheoryCourseLessonDto,
   TheoryLessonDto,
 } from './lessons.dto';
 import { lessonEnd } from './schedule-conflicts';
@@ -19,6 +20,13 @@ export const lessonPersonSelect = {
   lastName: true,
 } satisfies Prisma.UserSelect;
 
+export const theoryCourseLessonSelect = {
+  id: true,
+  courseId: true,
+  chapterId: true,
+  title: true,
+} satisfies Prisma.CourseLessonSelect;
+
 export const theoryLessonViewSelect = {
   id: true,
   topic: true,
@@ -28,6 +36,7 @@ export const theoryLessonViewSelect = {
   cancelledAt: true,
   cancellationReason: true,
   updatedAt: true,
+  courseLesson: { select: theoryCourseLessonSelect },
   group: {
     select: { id: true, name: true, teacher: { select: lessonPersonSelect } },
   },
@@ -92,6 +101,20 @@ export function toPerson(user: LessonPersonDto): LessonPersonDto {
   return { id: user.id, firstName: user.firstName, lastName: user.lastName };
 }
 
+export function toCourseLessonLink(
+  courseLesson: TheoryLessonView['courseLesson'],
+): TheoryCourseLessonDto | null {
+  if (!courseLesson) {
+    return null;
+  }
+  return {
+    id: courseLesson.id,
+    courseId: courseLesson.courseId,
+    chapterId: courseLesson.chapterId,
+    title: courseLesson.title,
+  };
+}
+
 export function toTheoryLessonDto(row: TheoryLessonView): TheoryLessonDto {
   return {
     id: row.id,
@@ -103,6 +126,7 @@ export function toTheoryLessonDto(row: TheoryLessonView): TheoryLessonDto {
     durationMin: row.durationMin,
     group: { id: row.group.id, name: row.group.name },
     teacher: toPerson(row.group.teacher),
+    courseLesson: toCourseLessonLink(row.courseLesson),
     cancelledAt: row.cancelledAt,
     cancellationReason: row.cancellationReason,
     updatedAt: row.updatedAt,
