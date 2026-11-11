@@ -11,7 +11,9 @@ import {
   GroupStatus,
   InvitationStatus,
   CarStatus,
+  LessonStatus,
   LicenseCategory,
+  PaymentStatus,
   Prisma,
   TrainingStatus,
   Transmission,
@@ -37,14 +39,29 @@ import {
   CreateStudentResponseDto,
   GrantPracticeAccessDto,
   ListStudentsQueryDto,
+  StudentAttendanceItemDto,
   StudentCardDto,
+  StudentGroupSummaryDto,
+  StudentInstructorSummaryDto,
   StudentListDto,
   StudentListItemDto,
+  StudentPaymentHistoryItemDto,
+  StudentPaymentsDto,
+  StudentPracticeDto,
+  StudentPracticeLessonDto,
   StudentSortField,
   StudentSortOrder,
+  StudentTestResultDto,
+  StudentTheoryDto,
   UpdateStudentDto,
   UpdateStudentTrainingStatusDto,
 } from './students.dto';
+import {
+  completedPracticeMinutes,
+  minutesToHours,
+  REQUIRED_PRACTICE_HOURS,
+  REQUIRED_PRACTICE_MINUTES,
+} from './theory-completion';
 
 export const STUDENT_LIST_ROLES = [
   UserRole.ADMIN,
@@ -99,29 +116,34 @@ export const STUDENT_PRACTICE_ACCESS_MESSAGE =
   'Допуск до практики — лише після завершення теорії (THEORY_COMPLETED), для активного студента з категорією й коробкою передач.';
 export const ARCHIVED_STUDENT_BOOKING_MESSAGE =
   'Архівованому студенту не можна створювати нове бронювання практики.';
+export const THEORY_STATUS_MANUAL_MESSAGE =
+  'THEORY_COMPLETED ставить система, коли завершено всі уроки призначеного курсу і тест складено.';
+export const PRACTICE_STATUS_MANUAL_MESSAGE =
+  'PRACTICE призначається лише допуском до практики.';
+export const EXAM_HOURS_MESSAGE =
+  'Іспит доступний лише після рівно 40 годин практики.';
 
 const TRAINING_STATUS_TRANSITIONS: Record<
   TrainingStatus,
   readonly TrainingStatus[]
 > = {
-  [TrainingStatus.INVITED]: [
+  [TrainingStatus.NEW]: [
     TrainingStatus.ACTIVE,
     TrainingStatus.DROPPED,
     TrainingStatus.ARCHIVED,
   ],
-  [TrainingStatus.ACTIVE]: [
-    TrainingStatus.THEORY_COMPLETED,
-    TrainingStatus.GRADUATED,
-    TrainingStatus.DROPPED,
-    TrainingStatus.ARCHIVED,
-  ],
-  // PRACTICE звідси — лише через допуск до практики (grantPracticeAccess).
+  [TrainingStatus.ACTIVE]: [TrainingStatus.DROPPED, TrainingStatus.ARCHIVED],
+  // THEORY_COMPLETED ставить система. PRACTICE — лише grantPracticeAccess.
   [TrainingStatus.THEORY_COMPLETED]: [
-    TrainingStatus.GRADUATED,
     TrainingStatus.DROPPED,
     TrainingStatus.ARCHIVED,
   ],
   [TrainingStatus.PRACTICE]: [
+    TrainingStatus.EXAM,
+    TrainingStatus.DROPPED,
+    TrainingStatus.ARCHIVED,
+  ],
+  [TrainingStatus.EXAM]: [
     TrainingStatus.GRADUATED,
     TrainingStatus.DROPPED,
     TrainingStatus.ARCHIVED,
@@ -138,7 +160,7 @@ const TERMINAL_TRAINING_STATUSES = [
 ] as const;
 
 export const NO_STUDENT_FIELDS_MESSAGE =
-  'Немає дозволених полів для оновлення (firstName, lastName, phone, category, transmission, birthDate, address, contractNumber).';
+  'Немає дозволених полів для оновлення (firstName, lastName, phone, category, transmission, birthDate, address, contractNumber, avatar).';
 
 const EMPTY_FIELD_MESSAGE = "Заповніть обов'язкове поле.";
 
@@ -159,11 +181,38 @@ const studentSelect = {
   organizationId: true,
   createdAt: true,
   deletedAt: true,
+  studentDrivingLessons: {
+    where: {
+      status: { not: LessonStatus.CANCELLED },
+      paymentStatus: PaymentStatus.UNPAID,
+    },
+    select: { id: true, organizationId: true },
+    take: 1,
+  },
   studentProfile: {
     select: {
       organizationId: true,
       category: true,
       transmission: true,
+      trainingStatus: true,
+      instructorId: true,
+      group: {
+        select: {
+          id: true,
+          name: true,
+          organizationId: true,
+          teacherId: true,
+        },
+      },
+      instructor: {
+        select: {
+          id: true,
+          firstName: true,
+          lastName: true,
+          organizationId: true,
+          deletedAt: true,
+        },
+      },
     },
   },
 } satisfies Prisma.UserSelect;
@@ -197,6 +246,40 @@ const studentCardSelect = {
       address: true,
       contractNumber: true,
       trainingStatus: true,
+      group: {
+        select: {
+          id: true,
+          name: true,
+          organizationId: true,
+          teacherId: true,
+          endDate: true,
+          course: {
+            select: {
+              id: true,
+              name: true,
+              organizationId: true,
+              publicationStatus: true,
+              lessons: {
+                select: {
+                  id: true,
+                  title: true,
+                  position: true,
+                  chapter: { select: { position: true } },
+                },
+              },
+            },
+          },
+        },
+      },
+      instructor: {
+        select: {
+          id: true,
+          firstName: true,
+          lastName: true,
+          organizationId: true,
+          deletedAt: true,
+        },
+      },
       car: {
         select: {
           id: true,
@@ -209,6 +292,66 @@ const studentCardSelect = {
         },
       },
     },
+  },
+  enrollments: {
+    select: {
+      groupId: true,
+      status: true,
+      enrolledAt: true,
+      group: {
+        select: { id: true, teacherId: true, organizationId: true },
+      },
+    },
+    orderBy: { enrolledAt: 'desc' },
+  },
+  lessonAttendances: {
+    select: {
+      status: true,
+      markedAt: true,
+      lesson: {
+        select: {
+          id: true,
+          topic: true,
+          scheduledAt: true,
+          status: true,
+          organizationId: true,
+        },
+      },
+    },
+    orderBy: { lesson: { scheduledAt: 'desc' } },
+  },
+  studentDrivingLessons: {
+    select: {
+      id: true,
+      organizationId: true,
+      scheduledAt: true,
+      durationMin: true,
+      status: true,
+      confirmationStatus: true,
+      paymentStatus: true,
+      instructorComment: true,
+    },
+    orderBy: { scheduledAt: 'desc' },
+  },
+  courseLessonCompletions: {
+    select: {
+      lessonId: true,
+      courseId: true,
+      completedAt: true,
+      organizationId: true,
+    },
+  },
+  theoryTestResults: {
+    select: {
+      id: true,
+      courseId: true,
+      status: true,
+      score: true,
+      takenAt: true,
+      organizationId: true,
+      course: { select: { name: true, organizationId: true } },
+    },
+    orderBy: { takenAt: 'desc' },
   },
 } satisfies Prisma.UserSelect;
 
@@ -297,9 +440,7 @@ function isEligibleForPractice(student: {
   const { trainingStatus, category, transmission } = student.studentProfile;
   return (
     student.status === UserStatus.ACTIVE &&
-    // THEORY_COMPLETED — перший допуск; PRACTICE — переприв'язка інструктора чи авто.
-    (trainingStatus === TrainingStatus.THEORY_COMPLETED ||
-      trainingStatus === TrainingStatus.PRACTICE) &&
+    trainingStatus === TrainingStatus.THEORY_COMPLETED &&
     category != null &&
     transmission != null
   );
@@ -349,8 +490,9 @@ function hashToken(token: string): string {
 }
 
 /**
- * ADMIN, TEACHER і INSTRUCTOR бачать студентів лише своєї організації.
- * Чужу організацію, інші ролі та soft-delete цей фільтр відсікає.
+ * ADMIN бачить студентів лише своєї організації.
+ * TEACHER — лише студентів своїх груп (поточна група або зарахування ACTIVE/COMPLETED).
+ * INSTRUCTOR — лише студентів, закріплених за ним.
  * STUDENT список не відкриває: власні дані читаються через getOwn.
  */
 function allowedStudentScope(actor: User): Prisma.UserWhereInput {
@@ -362,9 +504,45 @@ function allowedStudentScope(actor: User): Prisma.UserWhereInput {
 
   switch (actor.role) {
     case UserRole.ADMIN:
-    case UserRole.TEACHER:
-    case UserRole.INSTRUCTOR:
+    case UserRole.OWNER:
       return organizationStudents;
+    case UserRole.TEACHER:
+      return {
+        ...organizationStudents,
+        OR: [
+          {
+            studentProfile: {
+              is: {
+                organizationId: actor.organizationId,
+                group: { is: { teacherId: actor.id } },
+              },
+            },
+          },
+          {
+            enrollments: {
+              some: {
+                status: {
+                  in: [EnrollmentStatus.ACTIVE, EnrollmentStatus.COMPLETED],
+                },
+                group: {
+                  teacherId: actor.id,
+                  organizationId: actor.organizationId,
+                },
+              },
+            },
+          },
+        ],
+      };
+    case UserRole.INSTRUCTOR:
+      return {
+        ...organizationStudents,
+        studentProfile: {
+          is: {
+            organizationId: actor.organizationId,
+            instructorId: actor.id,
+          },
+        },
+      };
     default:
       throw new ForbiddenException('Insufficient permissions');
   }
@@ -403,6 +581,49 @@ function buildStudentWhere(
 
   if (query.status) {
     filters.push({ status: query.status });
+  }
+
+  if (
+    query.trainingStatus ||
+    query.groupId ||
+    query.instructorId ||
+    query.category
+  ) {
+    filters.push({
+      studentProfile: {
+        is: {
+          organizationId: actor.organizationId,
+          ...(query.trainingStatus
+            ? { trainingStatus: query.trainingStatus }
+            : {}),
+          ...(query.groupId ? { groupId: query.groupId } : {}),
+          ...(query.instructorId ? { instructorId: query.instructorId } : {}),
+          ...(query.category ? { category: query.category } : {}),
+        },
+      },
+    });
+  }
+
+  if (query.paymentStatus === PaymentStatus.UNPAID) {
+    filters.push({
+      studentDrivingLessons: {
+        some: {
+          organizationId: actor.organizationId,
+          paymentStatus: PaymentStatus.UNPAID,
+          status: { not: LessonStatus.CANCELLED },
+        },
+      },
+    });
+  } else if (query.paymentStatus === PaymentStatus.PAID) {
+    filters.push({
+      studentDrivingLessons: {
+        none: {
+          organizationId: actor.organizationId,
+          paymentStatus: PaymentStatus.UNPAID,
+          status: { not: LessonStatus.CANCELLED },
+        },
+      },
+    });
   }
 
   const search = query.search?.trim();
@@ -448,6 +669,24 @@ function toStudentListItem(row: StudentRow): StudentListItemDto {
     row.studentProfile.organizationId === row.organizationId
       ? row.studentProfile
       : null;
+  const group =
+    profile?.group && profile.group.organizationId === row.organizationId
+      ? { id: profile.group.id, name: profile.group.name }
+      : null;
+  const instructorUser = profile?.instructor;
+  const instructor =
+    instructorUser &&
+    !instructorUser.deletedAt &&
+    instructorUser.organizationId === row.organizationId
+      ? {
+          id: instructorUser.id,
+          firstName: instructorUser.firstName,
+          lastName: instructorUser.lastName,
+        }
+      : null;
+  const hasUnpaid = (row.studentDrivingLessons ?? []).some(
+    (lesson) => lesson.organizationId === row.organizationId,
+  );
 
   return {
     id: row.id,
@@ -461,8 +700,41 @@ function toStudentListItem(row: StudentRow): StudentListItemDto {
     organizationId: row.organizationId,
     category: profile?.category ?? null,
     transmission: profile?.transmission ?? null,
+    trainingStatus: profile?.trainingStatus ?? null,
+    group,
+    instructor,
+    paymentStatus: hasUnpaid ? PaymentStatus.UNPAID : PaymentStatus.PAID,
     createdAt: row.createdAt,
   };
+}
+
+function canStaffViewStudent(actor: User, row: StudentCardRow): boolean {
+  if (!belongsToOrganization(row, actor.organizationId)) {
+    return false;
+  }
+  if (actor.role === UserRole.ADMIN || actor.role === UserRole.OWNER) {
+    return true;
+  }
+  const profile = row.studentProfile;
+  if (!profile || profile.organizationId !== actor.organizationId) {
+    return false;
+  }
+  if (actor.role === UserRole.INSTRUCTOR) {
+    return profile.instructorId === actor.id;
+  }
+  if (actor.role === UserRole.TEACHER) {
+    if (profile.group?.teacherId === actor.id) {
+      return true;
+    }
+    return (row.enrollments ?? []).some(
+      (enrollment) =>
+        (enrollment.status === EnrollmentStatus.ACTIVE ||
+          enrollment.status === EnrollmentStatus.COMPLETED) &&
+        enrollment.group.teacherId === actor.id &&
+        enrollment.group.organizationId === actor.organizationId,
+    );
+  }
+  return false;
 }
 
 function belongsToOrganization(
@@ -531,7 +803,211 @@ function toPracticeCar(
   };
 }
 
+function lessonProgressPercent(completed: number, total: number): number {
+  if (total <= 0) {
+    return 0;
+  }
+  return Math.round((completed * 100) / total);
+}
+
+function toGroupSummary(
+  profile: NonNullable<StudentCardRow['studentProfile']>,
+): StudentGroupSummaryDto | null {
+  if (!profile.groupId) {
+    return null;
+  }
+  if (
+    !profile.group ||
+    profile.group.organizationId !== profile.organizationId
+  ) {
+    return { id: profile.groupId, name: null };
+  }
+  return { id: profile.group.id, name: profile.group.name };
+}
+
+function toInstructorSummary(
+  profile: NonNullable<StudentCardRow['studentProfile']>,
+): StudentInstructorSummaryDto | null {
+  const instructor = profile.instructor;
+  if (
+    !instructor ||
+    instructor.deletedAt ||
+    instructor.organizationId !== profile.organizationId
+  ) {
+    return null;
+  }
+  return {
+    id: instructor.id,
+    firstName: instructor.firstName,
+    lastName: instructor.lastName,
+  };
+}
+
+function enrolledAtFor(row: StudentCardRow, groupId: string | null): Date | null {
+  if (!groupId) {
+    return null;
+  }
+  const enrollment = (row.enrollments ?? []).find(
+    (item) => item.groupId === groupId,
+  );
+  return enrollment?.enrolledAt ?? null;
+}
+
+function toTheory(
+  profile: NonNullable<StudentCardRow['studentProfile']>,
+  completions: StudentCardRow['courseLessonCompletions'],
+): StudentTheoryDto {
+  const course = profile.group?.course;
+  if (!course || course.organizationId !== profile.organizationId) {
+    return { course: null, progress: null };
+  }
+  const completedAtByLesson = new Map(
+    (completions ?? [])
+      .filter(
+        (item) =>
+          item.courseId === course.id &&
+          item.organizationId === profile.organizationId,
+      )
+      .map((item) => [item.lessonId, item.completedAt]),
+  );
+  const lessons = [...(course.lessons ?? [])].sort(
+    (left, right) =>
+      left.chapter.position - right.chapter.position ||
+      left.position - right.position ||
+      left.id.localeCompare(right.id),
+  );
+  const completedLessonCount = lessons.filter((lesson) =>
+    completedAtByLesson.has(lesson.id),
+  ).length;
+  return {
+    course: {
+      id: course.id,
+      name: course.name,
+      publicationStatus: course.publicationStatus,
+    },
+    progress: {
+      completedLessonCount,
+      totalLessonCount: lessons.length,
+      percent: lessonProgressPercent(completedLessonCount, lessons.length),
+      lessons: lessons.map((lesson) => ({
+        lessonId: lesson.id,
+        title: lesson.title,
+        completed: completedAtByLesson.has(lesson.id),
+        completedAt: completedAtByLesson.get(lesson.id) ?? null,
+      })),
+    },
+  };
+}
+
+function toTests(row: StudentCardRow): StudentTestResultDto[] {
+  return (row.theoryTestResults ?? [])
+    .filter(
+      (result) =>
+        result.organizationId === row.organizationId &&
+        result.course.organizationId === row.organizationId,
+    )
+    .map((result) => ({
+      id: result.id,
+      courseId: result.courseId,
+      courseName: result.course.name,
+      status: result.status,
+      score: result.score,
+      takenAt: result.takenAt,
+    }));
+}
+
+function toAttendance(row: StudentCardRow): StudentAttendanceItemDto[] {
+  return (row.lessonAttendances ?? [])
+    .filter((item) => item.lesson.organizationId === row.organizationId)
+    .map((item) => ({
+      lessonId: item.lesson.id,
+      topic: item.lesson.topic,
+      scheduledAt: item.lesson.scheduledAt,
+      lessonStatus: item.lesson.status,
+      status: item.status,
+      markedAt: item.markedAt,
+    }));
+}
+
+function practiceLessonsOf(row: StudentCardRow) {
+  return (row.studentDrivingLessons ?? []).filter(
+    (lesson) => lesson.organizationId === row.organizationId,
+  );
+}
+
+function toPractice(row: StudentCardRow): StudentPracticeDto {
+  const lessons = practiceLessonsOf(row);
+  const paidMinutes = lessons
+    .filter(
+      (lesson) =>
+        lesson.status !== LessonStatus.CANCELLED &&
+        lesson.paymentStatus === PaymentStatus.PAID,
+    )
+    .reduce((total, lesson) => total + lesson.durationMin, 0);
+  const completedMinutes = lessons
+    .filter((lesson) => lesson.status === LessonStatus.COMPLETED)
+    .reduce((total, lesson) => total + lesson.durationMin, 0);
+  const history: StudentPracticeLessonDto[] = lessons.map((lesson) => ({
+    id: lesson.id,
+    scheduledAt: lesson.scheduledAt,
+    durationMin: lesson.durationMin,
+    status: lesson.status,
+    confirmationStatus: lesson.confirmationStatus,
+    paymentStatus: lesson.paymentStatus,
+    instructorComment: lesson.instructorComment,
+  }));
+  return {
+    requiredHours: REQUIRED_PRACTICE_HOURS,
+    paidHours: minutesToHours(paidMinutes),
+    completedHours: minutesToHours(completedMinutes),
+    remainingHours: minutesToHours(paidMinutes - completedMinutes),
+    examAvailable: completedMinutes === REQUIRED_PRACTICE_MINUTES,
+    lessons: history,
+  };
+}
+
+function toPayments(row: StudentCardRow): StudentPaymentsDto {
+  const lessons = practiceLessonsOf(row);
+  const unpaid = lessons.some(
+    (lesson) =>
+      lesson.status !== LessonStatus.CANCELLED &&
+      lesson.paymentStatus === PaymentStatus.UNPAID,
+  );
+  const history: StudentPaymentHistoryItemDto[] = lessons.map((lesson) => ({
+    id: lesson.id,
+    scheduledAt: lesson.scheduledAt,
+    hours: minutesToHours(lesson.durationMin),
+    lessonStatus: lesson.status,
+    paymentStatus: lesson.paymentStatus,
+  }));
+  return {
+    status: unpaid ? PaymentStatus.UNPAID : PaymentStatus.PAID,
+    history,
+  };
+}
+
+function emptyCardSections(): Pick<
+  StudentCardDto,
+  'theory' | 'tests' | 'attendance' | 'practice' | 'payments'
+> {
+  return {
+    theory: { course: null, progress: null },
+    tests: [],
+    attendance: [],
+    practice: {
+      requiredHours: REQUIRED_PRACTICE_HOURS,
+      paidHours: 0,
+      completedHours: 0,
+      remainingHours: 0,
+      examAvailable: false,
+      lessons: [],
+    },
+    payments: { status: PaymentStatus.PAID, history: [] },
+  };
+}
+
 function toStudentCard(row: StudentCardRow): StudentCardDto {
+  const profile = row.studentProfile;
   return {
     id: row.id,
     email: row.email,
@@ -544,26 +1020,37 @@ function toStudentCard(row: StudentCardRow): StudentCardDto {
     organizationId: row.organizationId,
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
-    student: row.studentProfile
+    student: profile
       ? {
-          id: row.studentProfile.id,
-          userId: row.studentProfile.userId,
-          organizationId: row.studentProfile.organizationId,
-          groupId: row.studentProfile.groupId,
-          instructorId: row.studentProfile.instructorId,
-          carId: row.studentProfile.carId,
-          car: toPracticeCar(
-            row.studentProfile.car,
-            row.studentProfile.organizationId,
-          ),
-          category: row.studentProfile.category ?? null,
-          transmission: row.studentProfile.transmission ?? null,
-          birthDate: formatDateOnly(row.studentProfile.birthDate),
-          address: row.studentProfile.address ?? null,
-          contractNumber: row.studentProfile.contractNumber ?? null,
-          trainingStatus: row.studentProfile.trainingStatus,
+          id: profile.id,
+          userId: profile.userId,
+          organizationId: profile.organizationId,
+          groupId: profile.groupId,
+          instructorId: profile.instructorId,
+          carId: profile.carId,
+          car: toPracticeCar(profile.car, profile.organizationId),
+          category: profile.category ?? null,
+          transmission: profile.transmission ?? null,
+          birthDate: formatDateOnly(profile.birthDate),
+          address: profile.address ?? null,
+          contractNumber: profile.contractNumber ?? null,
+          avatar: row.avatarUrl ?? null,
+          enrolledAt: enrolledAtFor(row, profile.groupId),
+          estimatedCompletionDate: formatDateOnly(profile.group?.endDate),
+          group: toGroupSummary(profile),
+          instructor: toInstructorSummary(profile),
+          trainingStatus: profile.trainingStatus,
         }
       : null,
+    ...(profile
+      ? {
+          theory: toTheory(profile, row.courseLessonCompletions),
+          tests: toTests(row),
+          attendance: toAttendance(row),
+          practice: toPractice(row),
+          payments: toPayments(row),
+        }
+      : emptyCardSections()),
   };
 }
 
@@ -597,6 +1084,11 @@ function profileUpdate(
 
   if (payload.phone !== undefined) {
     data.phone = payload.phone === null ? null : payload.phone.trim() || null;
+  }
+
+  if (payload.avatar !== undefined) {
+    data.avatarUrl =
+      payload.avatar === null ? null : payload.avatar.trim() || null;
   }
 
   return Object.keys(data).length > 0 ? data : null;
@@ -749,6 +1241,12 @@ export class StudentsService {
         organizationId: string;
       };
       emailDelivery: InvitationEmailDelivery;
+      assignedGroup: {
+        id: string;
+        name: string;
+        endDate: Date | null;
+      } | null;
+      enrolledAt: Date | null;
     };
 
     try {
@@ -758,6 +1256,11 @@ export class StudentsService {
           throw this.emailAlreadyExists();
         }
 
+        let assignedGroup: {
+          id: string;
+          name: string;
+          endDate: Date | null;
+        } | null = null;
         if (groupId) {
           // FOR SHARE: закриття групи чекає на це зарахування, а зарахування —
           // на закриття (див. GroupsService.changeStatus).
@@ -769,6 +1272,11 @@ export class StudentsService {
           if (!isOpenGroup(group.status)) {
             throw new ConflictException(GROUP_NOT_ASSIGNABLE_MESSAGE);
           }
+          assignedGroup = {
+            id: group.id,
+            name: group.name,
+            endDate: group.endDate,
+          };
         }
 
         const user = await tx.user.create({
@@ -796,12 +1304,13 @@ export class StudentsService {
             birthDate,
             address,
             contractNumber,
-            trainingStatus: TrainingStatus.INVITED,
+            trainingStatus: TrainingStatus.NEW,
           },
         });
 
+        let enrolledAt: Date | null = null;
         if (groupId) {
-          await tx.enrollment.upsert({
+          const enrollment = await tx.enrollment.upsert({
             where: {
               groupId_studentId: {
                 groupId,
@@ -815,6 +1324,7 @@ export class StudentsService {
             },
             update: { status: EnrollmentStatus.ACTIVE },
           });
+          enrolledAt = enrollment?.enrolledAt ?? null;
         }
 
         const invitation = await tx.invitation.create({
@@ -835,7 +1345,14 @@ export class StudentsService {
           tokenHash,
         });
 
-        return { user, student, invitation, emailDelivery };
+        return {
+          user,
+          student,
+          invitation,
+          emailDelivery,
+          assignedGroup,
+          enrolledAt,
+        };
       });
     } catch (error) {
       if (
@@ -874,8 +1391,17 @@ export class StudentsService {
         category: created.student.category ?? null,
         transmission: created.student.transmission ?? null,
         birthDate: formatDateOnly(created.student.birthDate),
-        address: created.student.address,
-        contractNumber: created.student.contractNumber,
+        address: created.student.address ?? null,
+        contractNumber: created.student.contractNumber ?? null,
+        avatar: null,
+        enrolledAt: created.enrolledAt,
+        estimatedCompletionDate: formatDateOnly(
+          created.assignedGroup?.endDate,
+        ),
+        group: created.assignedGroup
+          ? { id: created.assignedGroup.id, name: created.assignedGroup.name }
+          : null,
+        instructor: null,
         trainingStatus: created.student.trainingStatus,
       },
       invitation: {
@@ -1265,10 +1791,26 @@ export class StudentsService {
 
       const current = student.studentProfile.trainingStatus;
       const next = payload.status;
+      if (next === TrainingStatus.THEORY_COMPLETED) {
+        throw new ConflictException(THEORY_STATUS_MANUAL_MESSAGE);
+      }
+      if (next === TrainingStatus.PRACTICE) {
+        throw new ConflictException(PRACTICE_STATUS_MANUAL_MESSAGE);
+      }
       if (!canChangeTrainingStatus(current, next)) {
         throw new ConflictException(
           `${TRAINING_STATUS_TRANSITION_MESSAGE} ${current} → ${next}.`,
         );
+      }
+      if (next === TrainingStatus.EXAM) {
+        const minutes = await completedPracticeMinutes(
+          tx,
+          student.id,
+          actor.organizationId,
+        );
+        if (minutes !== REQUIRED_PRACTICE_MINUTES) {
+          throw new ConflictException(EXAM_HOURS_MESSAGE);
+        }
       }
 
       const profile = await tx.student.update({
@@ -1482,7 +2024,7 @@ export class StudentsService {
       select: studentCardSelect,
     });
 
-    if (!row || !belongsToOrganization(row, actor.organizationId)) {
+    if (!row || !canStaffViewStudent(actor, row)) {
       throw new NotFoundException(STUDENT_NOT_FOUND_MESSAGE);
     }
 

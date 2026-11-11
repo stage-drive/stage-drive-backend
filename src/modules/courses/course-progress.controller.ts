@@ -1,4 +1,5 @@
 import {
+  Body,
   Controller,
   Get,
   HttpCode,
@@ -12,6 +13,7 @@ import {
   ApiBearerAuth,
   ApiForbiddenResponse,
   ApiNotFoundResponse,
+  ApiBadRequestResponse,
   ApiOkResponse,
   ApiOperation,
   ApiParam,
@@ -23,7 +25,11 @@ import { AuthGuard } from '../auth/auth.guard';
 import { CurrentUser } from '../auth/current-user.decorator';
 import { Roles } from '../auth/roles.decorator';
 import { RolesGuard } from '../auth/roles.guard';
-import { CourseProgressDto } from './course-progress.dto';
+import {
+  CourseProgressDto,
+  SubmitTheoryTestDto,
+  TheoryTestResultDto,
+} from './course-progress.dto';
 import {
   COURSE_PROGRESS_STAFF_ROLES,
   CourseProgressService,
@@ -117,7 +123,9 @@ export class CourseProgressController {
     description:
       'STUDENT зберігає проходження уроку свого опублікованого курсу. Тіла немає. ' +
       'Урок має належати курсу з адреси. Повторний запит не створює другий запис і не змінює completedAt. ' +
-      'Після запису перераховується збережений прогрес: completedLessonCount, totalLessonCount і percent. ' +
+      'Після запису перераховується збережений прогрес. Якщо пройдені всі уроки опублікованого курсу ' +
+      'і тест цього курсу має статус PASSED, система ставить навчальний статус THEORY_COMPLETED. ' +
+      'Журнал очної відвідуваності на цей статус не впливає. ' +
       'Відповідь — актуальний прогрес по всьому курсу, включно зі статусом кожного уроку. ' +
       'Курс іншої автошколи — 404. Чужий або неіснуючий урок цього курсу — 404. ' +
       'Курс не призначено, ще не опубліковано або архівовано — 403.',
@@ -139,6 +147,37 @@ export class CourseProgressController {
     @Param('lessonId', uuidPipe) lessonId: string,
   ) {
     return this.progress.completeLesson(user, courseId, lessonId);
+  }
+
+  @Post(':courseId/test')
+  @Roles(...COURSE_STUDENT_ROLES)
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({
+    summary: 'Зберегти результат теоретичного тесту курсу',
+    description:
+      'STUDENT записує актуальний результат тесту свого опублікованого курсу. ' +
+      'Повторний запит перезаписує попередній результат. ' +
+      'Якщо статус PASSED і всі уроки курсу вже пройдені, система ставить THEORY_COMPLETED. ' +
+      'Відвідуваність очних занять не враховується.',
+  })
+  @ApiParam(courseIdParam)
+  @ApiOkResponse({ type: TheoryTestResultDto })
+  @ApiBadRequestResponse({
+    description: 'status має бути PASSED або FAILED. score — ціле від 0 до 100.',
+  })
+  @ApiForbiddenResponse({
+    description:
+      'Тест здає лише STUDENT, якому цей опублікований курс призначено групою.',
+  })
+  @ApiNotFoundResponse({
+    description: 'Курс не знайдено в автошколі студента, або автошколу видалено.',
+  })
+  submitTest(
+    @CurrentUser() user: User,
+    @Param('courseId', uuidPipe) courseId: string,
+    @Body() body: SubmitTheoryTestDto,
+  ) {
+    return this.progress.submitTest(user, courseId, body);
   }
 
   @Get(':courseId/students/:studentId/progress')

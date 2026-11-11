@@ -16,6 +16,8 @@ import { PrismaService } from '../../prisma/prisma.service';
 import {
   CourseLessonProgressDto,
   CourseProgressDto,
+  SubmitTheoryTestDto,
+  TheoryTestResultDto,
 } from './course-progress.dto';
 import { LESSON_NOT_FOUND_MESSAGE } from './course-structure.service';
 import {
@@ -23,6 +25,7 @@ import {
   COURSE_NOT_PUBLISHED_MESSAGE,
   COURSE_STUDENT_ROLES,
 } from './courses.service';
+import { syncTheoryCompletion } from '../students/theory-completion';
 
 export const COURSE_PROGRESS_STAFF_ROLES = [
   UserRole.ADMIN,
@@ -172,13 +175,68 @@ export class CourseProgressService {
         throw new NotFoundException(LESSON_NOT_FOUND_MESSAGE);
       }
       await this.markCompleted(tx, actor, courseId, lessonId);
-      return this.syncProgress(tx, actor.organizationId, courseId, actor.id);
+      const progress = await this.syncProgress(
+        tx,
+        actor.organizationId,
+        courseId,
+        actor.id,
+      );
+      await syncTheoryCompletion(tx, actor.id, actor.organizationId);
+      return progress;
     });
 
     this.logger.log(
       `Course progress saved courseId=${courseId} lessonId=${lessonId} studentId=${actor.id} completedLessonCount=${progress.completedLessonCount} totalLessonCount=${progress.totalLessonCount} percent=${progress.percent} organizationId=${actor.organizationId} actorId=${actor.id}`,
     );
     return progress;
+  }
+
+  /**
+   * Зберігає актуальний результат тесту курсу і, якщо всі уроки вже пройдені
+   * і результат PASSED, переводить навчальний статус в THEORY_COMPLETED.
+   */
+  async submitTest(
+    actor: User,
+    courseId: string,
+    payload: SubmitTheoryTestDto,
+  ): Promise<TheoryTestResultDto> {
+    assertStudent(actor);
+    await this.requireOrganization(actor.organizationId);
+    await this.requireAssignedPublishedCourse(actor, courseId);
+
+    const saved = await this.prisma.$transaction(async (tx) => {
+      await lockCourse(tx, courseId, actor.organizationId);
+      const result = await tx.theoryTestResult.upsert({
+        where: { studentId_courseId: { studentId: actor.id, courseId } },
+        create: {
+          organizationId: actor.organizationId,
+          courseId,
+          studentId: actor.id,
+          status: payload.status,
+          score: payload.score ?? null,
+        },
+        update: {
+          status: payload.status,
+          score: payload.score ?? null,
+          takenAt: new Date(),
+        },
+        select: {
+          id: true,
+          courseId: true,
+          studentId: true,
+          status: true,
+          score: true,
+          takenAt: true,
+        },
+      });
+      await syncTheoryCompletion(tx, actor.id, actor.organizationId);
+      return result;
+    });
+
+    this.logger.log(
+      `Theory test saved courseId=${courseId} studentId=${actor.id} status=${saved.status} organizationId=${actor.organizationId}`,
+    );
+    return saved;
   }
 
   /**

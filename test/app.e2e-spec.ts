@@ -574,7 +574,7 @@ describe('API (e2e)', () => {
           groupId: args.data.groupId,
           instructorId: args.data.instructorId,
           carId: args.data.carId,
-          trainingStatus: args.data.trainingStatus ?? 'INVITED',
+          trainingStatus: args.data.trainingStatus ?? 'NEW',
         }),
     );
     prismaMock.refreshToken.updateMany.mockResolvedValue({ count: 0 });
@@ -3213,7 +3213,7 @@ describe('API (e2e)', () => {
         groupId: null,
         instructorId: null,
         carId: null,
-        trainingStatus: 'INVITED',
+        trainingStatus: 'NEW',
       },
       invitation: {
         id: createdInvitation.id,
@@ -3236,7 +3236,7 @@ describe('API (e2e)', () => {
       }),
     });
     expect(prismaMock.student.create).toHaveBeenCalledWith({
-      data: {
+      data: expect.objectContaining({
         userId: createdStudentUserId,
         organizationId: organization.id,
         groupId: null,
@@ -3244,8 +3244,8 @@ describe('API (e2e)', () => {
         carId: null,
         category: null,
         transmission: null,
-        trainingStatus: 'INVITED',
-      },
+        trainingStatus: 'NEW',
+      }),
     });
     expect(response.body.invitation.emailDelivery).toMatchObject({
       status: 'QUEUED',
@@ -3380,9 +3380,11 @@ describe('API (e2e)', () => {
       status?: 'INVITED' | 'ACTIVE' | 'BLOCKED' | 'ARCHIVED';
       groupId?: string | null;
       trainingStatus?:
-        | 'INVITED'
+        | 'NEW'
         | 'ACTIVE'
+        | 'THEORY_COMPLETED'
         | 'PRACTICE'
+        | 'EXAM'
         | 'GRADUATED'
         | 'DROPPED'
         | 'ARCHIVED';
@@ -3886,7 +3888,7 @@ describe('API (e2e)', () => {
         {
           field: 'body',
           message:
-            'Немає дозволених полів для оновлення (firstName, lastName, phone, category, transmission).',
+            'Немає дозволених полів для оновлення (firstName, lastName, phone, category, transmission, birthDate, address, contractNumber, avatar).',
         },
       ],
     });
@@ -4920,7 +4922,7 @@ describe('API (e2e)', () => {
       errors: [
         {
           field: 'category',
-          message: 'category має бути A, B, C або D.',
+          message: 'category має бути A1, A, B1, B, BE, C1, C1E, C, CE, D1, D1E, D, DE або T.',
         },
       ],
     });
@@ -5066,7 +5068,7 @@ describe('API (e2e)', () => {
     expect(invalid.body).toMatchObject({
       statusCode: 400,
       errors: [
-        { field: 'category', message: 'category має бути A, B, C або D.' },
+        { field: 'category', message: 'category має бути A1, A, B1, B, BE, C1, C1E, C, CE, D1, D1E, D, DE або T.' },
       ],
     });
     expect(prismaMock.car.create).not.toHaveBeenCalled();

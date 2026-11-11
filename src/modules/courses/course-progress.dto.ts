@@ -1,4 +1,6 @@
-import { ApiProperty } from '@nestjs/swagger';
+import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
+import { TheoryTestStatus } from '@prisma/client';
+import { IsEnum, IsInt, IsOptional, Max, Min } from 'class-validator';
 
 export class CourseLessonProgressDto {
   @ApiProperty({ example: '61616161-6161-4616-8616-616161616161' })
@@ -88,4 +90,48 @@ export class CourseProgressDto {
       'Усі уроки курсу за порядком розділів і уроків. Повторне проходження не додає другий запис.',
   })
   lessons: CourseLessonProgressDto[];
+}
+
+export class SubmitTheoryTestDto {
+  @ApiProperty({
+    enum: TheoryTestStatus,
+    example: TheoryTestStatus.PASSED,
+    description: 'PASSED закриває теорію разом із проходженням усіх уроків курсу.',
+  })
+  @IsEnum(TheoryTestStatus, {
+    message: 'status має бути PASSED або FAILED.',
+  })
+  status: TheoryTestStatus;
+
+  @ApiPropertyOptional({
+    minimum: 0,
+    maximum: 100,
+    example: 86,
+    description: 'Бал від 0 до 100. Можна не передавати.',
+  })
+  @IsOptional()
+  @IsInt({ message: 'score має бути цілим числом.' })
+  @Min(0, { message: 'score має бути не менше 0.' })
+  @Max(100, { message: 'score має бути не більше 100.' })
+  score?: number;
+}
+
+export class TheoryTestResultDto {
+  @ApiProperty({ example: '91919191-9191-4919-8919-919191919191' })
+  id: string;
+
+  @ApiProperty({ example: '41414141-4141-4414-8414-414141414141' })
+  courseId: string;
+
+  @ApiProperty({ example: '13131313-1313-4131-8131-131313131313' })
+  studentId: string;
+
+  @ApiProperty({ enum: TheoryTestStatus, example: TheoryTestStatus.PASSED })
+  status: TheoryTestStatus;
+
+  @ApiProperty({ nullable: true, type: Number, example: 86 })
+  score: number | null;
+
+  @ApiProperty({ type: String, format: 'date-time' })
+  takenAt: Date;
 }

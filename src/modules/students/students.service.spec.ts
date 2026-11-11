@@ -37,8 +37,11 @@ import {
   ARCHIVED_STUDENT_BOOKING_MESSAGE,
   STUDENT_NOT_FOUND_MESSAGE,
   STUDENT_NOT_IN_GROUP_MESSAGE,
+  EXAM_HOURS_MESSAGE,
+  PRACTICE_STATUS_MANUAL_MESSAGE,
   STUDENT_PRACTICE_ACCESS_MESSAGE,
   STUDENT_TRAINING_STATUS_MESSAGE,
+  THEORY_STATUS_MANUAL_MESSAGE,
   TRAINING_STATUS_TRANSITION_MESSAGE,
   StudentsService,
 } from './students.service';
@@ -109,6 +112,7 @@ describe('StudentsService', () => {
     group: { findUnique: jest.fn(), findFirst: jest.fn() },
     student: { create: jest.fn(), update: jest.fn(), delete: jest.fn() },
     car: { findUnique: jest.fn() },
+    drivingLesson: { findMany: jest.fn() },
     enrollment: {
       findFirst: jest.fn(),
       findUnique: jest.fn(),
@@ -171,6 +175,10 @@ describe('StudentsService', () => {
           organizationId: 'org-1',
           category: null,
           transmission: null,
+          trainingStatus: null,
+          group: null,
+          instructor: null,
+          paymentStatus: 'PAID',
           createdAt: row.createdAt,
         },
       ],
@@ -198,11 +206,12 @@ describe('StudentsService', () => {
     };
     expect(queryArgs.select.email).toBe(true);
     expect(queryArgs.select.studentProfile).toEqual({
-      select: {
+      select: expect.objectContaining({
         organizationId: true,
         category: true,
         transmission: true,
-      },
+        trainingStatus: true,
+      }),
     });
     expect(queryArgs.select).not.toHaveProperty('passwordHash');
     expect(prisma.user.count).toHaveBeenCalledWith({
@@ -218,26 +227,48 @@ describe('StudentsService', () => {
     });
   });
 
-  it.each([UserRole.TEACHER, UserRole.INSTRUCTOR] as const)(
-    'limits %s to students of their organization',
-    async (role) => {
-      await service.list(actor(role, 'org-2'), {});
+  it('limits a teacher to students of their own groups', async () => {
+    await service.list(actor(UserRole.TEACHER, 'org-2'), {});
 
-      expect(prisma.user.findMany).toHaveBeenCalledWith(
-        expect.objectContaining({
-          where: {
-            AND: [
-              {
-                organizationId: 'org-2',
-                role: UserRole.STUDENT,
-                deletedAt: null,
+    expect(prisma.user.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: {
+          AND: [
+            expect.objectContaining({
+              organizationId: 'org-2',
+              role: UserRole.STUDENT,
+              deletedAt: null,
+              OR: expect.any(Array),
+            }),
+          ],
+        },
+      }),
+    );
+  });
+
+  it('limits an instructor to students assigned to them', async () => {
+    await service.list(actor(UserRole.INSTRUCTOR, 'org-2'), {});
+
+    expect(prisma.user.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: {
+          AND: [
+            {
+              organizationId: 'org-2',
+              role: UserRole.STUDENT,
+              deletedAt: null,
+              studentProfile: {
+                is: {
+                  organizationId: 'org-2',
+                  instructorId: 'instructor-1',
+                },
               },
-            ],
-          },
-        }),
-      );
-    },
-  );
+            },
+          ],
+        },
+      }),
+    );
+  });
 
   it('does not return a student from another organization', async () => {
     prisma.user.findMany.mockResolvedValue([
@@ -363,7 +394,7 @@ describe('StudentsService', () => {
   });
 
   it('ignores a blank search', async () => {
-    await service.list(actor(UserRole.TEACHER), { search: '   ' });
+    await service.list(actor(UserRole.ADMIN), { search: '   ' });
 
     expect(prisma.user.findMany).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -452,7 +483,7 @@ describe('StudentsService', () => {
       birthDate: null,
       address: null,
       contractNumber: null,
-      trainingStatus: TrainingStatus.INVITED,
+      trainingStatus: TrainingStatus.NEW,
     };
 
     const createdInvitation = {
@@ -520,7 +551,7 @@ describe('StudentsService', () => {
           birthDate: null,
           address: null,
           contractNumber: null,
-          trainingStatus: TrainingStatus.INVITED,
+          trainingStatus: TrainingStatus.NEW,
         },
       });
       expect(prisma.invitation.create).toHaveBeenCalledWith({
@@ -557,7 +588,12 @@ describe('StudentsService', () => {
           birthDate: null,
           address: null,
           contractNumber: null,
-          trainingStatus: TrainingStatus.INVITED,
+          avatar: null,
+          enrolledAt: null,
+          estimatedCompletionDate: null,
+          group: null,
+          instructor: null,
+          trainingStatus: TrainingStatus.NEW,
         },
         invitation: {
           id: 'invite-1',
@@ -879,7 +915,26 @@ describe('StudentsService', () => {
       organizationId: 'org-1',
       createdAt: new Date('2026-01-02T00:00:00.000Z'),
       updatedAt: new Date('2026-02-01T00:00:00.000Z'),
-      student: profile,
+      student: {
+        ...profile,
+        avatar: null,
+        enrolledAt: null,
+        estimatedCompletionDate: null,
+        group: { id: 'group-1', name: null },
+        instructor: null,
+      },
+      theory: { course: null, progress: null },
+      tests: [],
+      attendance: [],
+      practice: {
+        requiredHours: 40,
+        paidHours: 0,
+        completedHours: 0,
+        remainingHours: 0,
+        examAvailable: false,
+        lessons: [],
+      },
+      payments: { status: 'PAID', history: [] },
     };
 
     const student = actor(UserRole.STUDENT);
@@ -1084,17 +1139,25 @@ describe('StudentsService', () => {
       prisma.user.findFirst.mockResolvedValue(null);
     });
 
-    it.each([
-      UserRole.OWNER,
-      UserRole.ADMIN,
-      UserRole.TEACHER,
-      UserRole.INSTRUCTOR,
-    ] as const)('returns the student card for %s', async (role) => {
+    it.each([UserRole.OWNER, UserRole.ADMIN] as const)(
+      'returns the student card for %s',
+      async (role) => {
       prisma.user.findFirst.mockResolvedValue(cardRow());
 
-      await expect(service.getById(actor(role), 'student-1')).resolves.toEqual(
-        visibleCard,
-      );
+      await expect(service.getById(actor(role), 'student-1')).resolves.toMatchObject({
+        id: visibleCard.id,
+        email: visibleCard.email,
+        role: UserRole.STUDENT,
+        organizationId: 'org-1',
+        student: {
+          id: 'profile-1',
+          groupId: 'group-1',
+          trainingStatus: TrainingStatus.ACTIVE,
+          avatar: null,
+        },
+        practice: { requiredHours: 40, examAvailable: false },
+        payments: { status: 'PAID', history: [] },
+      });
       expect(prisma.user.findFirst).toHaveBeenCalledWith({
         where: {
           id: 'student-1',
@@ -1142,6 +1205,7 @@ describe('StudentsService', () => {
         cardRow({
           studentProfile: {
             ...profile,
+            instructorId: 'instructor-1',
             carId: 'car-1',
             car: { ...practiceCar, organizationId: 'org-2' },
           },
@@ -2234,6 +2298,7 @@ describe('StudentsService', () => {
     });
 
     it('stores an allowed transition and returns the current student', async () => {
+      prisma.user.findFirst.mockResolvedValue(statusRow(TrainingStatus.EXAM));
       const result = await service.changeTrainingStatus(
         actor(UserRole.ADMIN),
         'student-1',
@@ -2260,7 +2325,7 @@ describe('StudentsService', () => {
         student: { trainingStatus: TrainingStatus.GRADUATED },
       });
       expect(log).toHaveBeenCalledWith(
-        'Student training status changed studentId=student-1 from=ACTIVE to=GRADUATED actorId=admin-1 organizationId=org-1',
+        'Student training status changed studentId=student-1 from=EXAM to=GRADUATED actorId=admin-1 organizationId=org-1',
       );
     });
 
@@ -2291,35 +2356,18 @@ describe('StudentsService', () => {
       });
     });
 
-    it('marks theory as completed and closes active enrollments as COMPLETED', async () => {
-      const result = await service.changeTrainingStatus(
-        actor(UserRole.ADMIN),
-        'student-1',
-        { status: TrainingStatus.THEORY_COMPLETED },
-      );
-
-      expect(prisma.student.update).toHaveBeenCalledWith({
-        where: { id: 'profile-1' },
-        data: { trainingStatus: TrainingStatus.THEORY_COMPLETED },
-      });
-      expect(prisma.enrollment.updateMany).toHaveBeenCalledWith({
-        where: {
-          studentId: 'student-1',
-          status: EnrollmentStatus.ACTIVE,
-          group: { organizationId: 'org-1' },
-        },
-        data: { status: EnrollmentStatus.COMPLETED },
-      });
-      expect(result).toMatchObject({
-        student: { trainingStatus: TrainingStatus.THEORY_COMPLETED },
-      });
+    it('does not let an admin set THEORY_COMPLETED by hand', async () => {
+      await expect(
+        service.changeTrainingStatus(actor(UserRole.ADMIN), 'student-1', {
+          status: TrainingStatus.THEORY_COMPLETED,
+        }),
+      ).rejects.toMatchObject({ message: THEORY_STATUS_MANUAL_MESSAGE });
+      expect(prisma.student.update).not.toHaveBeenCalled();
     });
 
-    it.each([
-      TrainingStatus.GRADUATED,
-      TrainingStatus.DROPPED,
-      TrainingStatus.ARCHIVED,
-    ])('lets a student leave THEORY_COMPLETED toward %s', async (next) => {
+    it.each([TrainingStatus.DROPPED, TrainingStatus.ARCHIVED])(
+      'lets a student leave THEORY_COMPLETED toward %s',
+      async (next) => {
       prisma.user.findFirst.mockResolvedValue(
         statusRow(TrainingStatus.THEORY_COMPLETED),
       );
@@ -2335,10 +2383,10 @@ describe('StudentsService', () => {
     });
 
     it.each([
-      [TrainingStatus.THEORY_COMPLETED, TrainingStatus.PRACTICE],
       [TrainingStatus.THEORY_COMPLETED, TrainingStatus.ACTIVE],
-      [TrainingStatus.INVITED, TrainingStatus.THEORY_COMPLETED],
-      [TrainingStatus.PRACTICE, TrainingStatus.THEORY_COMPLETED],
+      [TrainingStatus.NEW, TrainingStatus.GRADUATED],
+      [TrainingStatus.PRACTICE, TrainingStatus.GRADUATED],
+      [TrainingStatus.ACTIVE, TrainingStatus.EXAM],
     ])('refuses %s → %s through the status endpoint', async (from, to) => {
       prisma.user.findFirst.mockResolvedValue(statusRow(from));
 
@@ -2358,7 +2406,7 @@ describe('StudentsService', () => {
           status: TrainingStatus.PRACTICE,
         }),
       ).rejects.toMatchObject({
-        message: `${TRAINING_STATUS_TRANSITION_MESSAGE} ACTIVE → PRACTICE.`,
+        message: PRACTICE_STATUS_MANUAL_MESSAGE,
       });
       expect(prisma.student.update).not.toHaveBeenCalled();
     });
@@ -2379,18 +2427,36 @@ describe('StudentsService', () => {
       expect(log).not.toHaveBeenCalled();
     });
 
-    it('allows leaving PRACTICE toward graduation', async () => {
+    it('opens EXAM only after exactly 40 completed practice hours', async () => {
       prisma.user.findFirst.mockResolvedValue(
         statusRow(TrainingStatus.PRACTICE),
       );
+      prisma.drivingLesson.findMany.mockResolvedValue([
+        { durationMin: 20 * 60 },
+        { durationMin: 20 * 60 },
+      ]);
 
       await expect(
         service.changeTrainingStatus(actor(UserRole.ADMIN), 'student-1', {
-          status: TrainingStatus.GRADUATED,
+          status: TrainingStatus.EXAM,
         }),
       ).resolves.toMatchObject({
-        student: { trainingStatus: TrainingStatus.GRADUATED },
+        student: { trainingStatus: TrainingStatus.EXAM },
       });
+    });
+
+    it('rejects EXAM when completed practice is not exactly 40 hours', async () => {
+      prisma.user.findFirst.mockResolvedValue(
+        statusRow(TrainingStatus.PRACTICE),
+      );
+      prisma.drivingLesson.findMany.mockResolvedValue([{ durationMin: 38 * 60 }]);
+
+      await expect(
+        service.changeTrainingStatus(actor(UserRole.ADMIN), 'student-1', {
+          status: TrainingStatus.EXAM,
+        }),
+      ).rejects.toMatchObject({ message: EXAM_HOURS_MESSAGE });
+      expect(prisma.student.update).not.toHaveBeenCalled();
     });
 
     it('does not change a student of another organization', async () => {
@@ -2534,7 +2600,7 @@ describe('StudentsService', () => {
       );
     });
 
-    it('allows changing instructor and car when the student is already in PRACTICE', async () => {
+    it('does not grant practice while the student is already in PRACTICE', async () => {
       prisma.user.findFirst.mockResolvedValue(
         practiceRow({
           studentProfile: {
@@ -2552,13 +2618,8 @@ describe('StudentsService', () => {
           'student-1',
           payload,
         ),
-      ).resolves.toMatchObject({
-        student: {
-          instructorId: 'instructor-1',
-          carId: 'car-1',
-          trainingStatus: TrainingStatus.PRACTICE,
-        },
-      });
+      ).rejects.toMatchObject({ message: STUDENT_PRACTICE_ACCESS_MESSAGE });
+      expect(prisma.student.update).not.toHaveBeenCalled();
     });
 
     it.each([
@@ -2598,7 +2659,7 @@ describe('StudentsService', () => {
     it.each([
       // Теорію ще не завершено: спершу ADMIN ставить THEORY_COMPLETED.
       TrainingStatus.ACTIVE,
-      TrainingStatus.INVITED,
+      TrainingStatus.NEW,
       TrainingStatus.GRADUATED,
       TrainingStatus.DROPPED,
     ])('rejects training status %s', async (trainingStatus) => {

@@ -660,7 +660,7 @@ export class UsersService {
           create: {
             userId: member.id,
             organizationId: member.organizationId,
-            trainingStatus: TrainingStatus.INVITED,
+            trainingStatus: TrainingStatus.NEW,
           },
         });
       }

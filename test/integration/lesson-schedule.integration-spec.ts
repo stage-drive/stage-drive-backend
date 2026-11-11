@@ -2436,11 +2436,14 @@ describe('Lesson schedule (integration, real Postgres)', () => {
         ),
       ).rejects.toThrow(STUDENT_PRACTICE_ACCESS_MESSAGE);
 
-      await studentsService.changeTrainingStatus(
-        school.admin,
-        school.student2.id,
-        { status: TrainingStatus.THEORY_COMPLETED },
-      );
+      await prisma.student.update({
+        where: { userId: school.student2.id },
+        data: { trainingStatus: TrainingStatus.THEORY_COMPLETED },
+      });
+      await prisma.enrollment.updateMany({
+        where: { studentId: school.student2.id, groupId: school.group.id },
+        data: { status: EnrollmentStatus.COMPLETED },
+      });
       await expect(
         prisma.enrollment.findFirstOrThrow({
           where: { studentId: school.student2.id, groupId: school.group.id },

@@ -270,7 +270,7 @@ describe('InvitationsService', () => {
         organizationId: 'org-1',
         instructorId: null,
         carId: null,
-        trainingStatus: TrainingStatus.INVITED,
+        trainingStatus: TrainingStatus.NEW,
       },
     });
     expect(result.user.role).toBe(UserRole.STUDENT);
@@ -551,7 +551,7 @@ describe('InvitationsService', () => {
             data: expect.objectContaining({
               userId: 'teacher-1',
               organizationId: 'org-1',
-              trainingStatus: TrainingStatus.INVITED,
+              trainingStatus: TrainingStatus.NEW,
             }),
           });
         } else {
