@@ -20,6 +20,7 @@ import { AttendanceRecordDto } from './lesson-attendance.dto';
 import {
   ATTENDANCE_GROUP_CLOSED_MESSAGE,
   ATTENDANCE_LESSON_CANCELLED_MESSAGE,
+  ATTENDANCE_STATUS_MISMATCH_MESSAGE,
   ATTENDANCE_NOT_STARTED_MESSAGE,
   ATTENDANCE_STUDENT_NOT_IN_GROUP_MESSAGE,
   LessonAttendanceService,
@@ -112,6 +113,7 @@ describe('LessonAttendanceService', () => {
       status: LessonStatus.SCHEDULED as LessonStatus,
       cancelledAt: null as Date | null,
       cancellationReason: null as string | null,
+      courseLesson: null,
       updatedAt: new Date('2026-10-20T09:00:00.000Z'),
       group: {
         id: 'group-1',
@@ -294,6 +296,7 @@ describe('LessonAttendanceService', () => {
           durationMin: 90,
           group: { id: 'group-1', name: 'ПДР — Група А' },
           teacher: people['teacher-1'],
+          courseLesson: null,
           cancelledAt: null,
           cancellationReason: null,
           updatedAt: new Date('2026-10-20T09:00:00.000Z'),
@@ -734,6 +737,29 @@ describe('LessonAttendanceService', () => {
         error: 'Conflict',
         currentStatus: LessonStatus.CANCELLED,
       });
+    });
+
+    it('refuses a lesson whose status is not SCHEDULED or COMPLETED', async () => {
+      prisma.lesson.findFirst.mockResolvedValue(
+        lessonRow({ lesson: { status: LessonStatus.NO_SHOW } }),
+      );
+
+      const error = await caught(
+        service.updateAttendance(
+          admin as never,
+          'lesson-1',
+          records(['student-1', AttendanceStatus.PRESENT]),
+        ),
+      );
+
+      expect(error).toBeInstanceOf(ConflictException);
+      expect(error.getResponse()).toEqual({
+        statusCode: 409,
+        message: ATTENDANCE_STATUS_MISMATCH_MESSAGE,
+        error: 'Conflict',
+        currentStatus: LessonStatus.NO_SHOW,
+      });
+      expect(prisma.lessonAttendance.createMany).not.toHaveBeenCalled();
     });
 
     it.each([GroupStatus.COMPLETED, GroupStatus.ARCHIVED])(

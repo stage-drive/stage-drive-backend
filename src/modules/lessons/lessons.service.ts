@@ -33,6 +33,7 @@ import {
 import {
   lessonPersonSelect,
   practiceBookingStatus,
+  theoryCourseLessonSelect,
   toPracticeLessonDto,
   toTheoryLessonDto,
 } from './lesson-view';
@@ -139,7 +140,13 @@ export const STUDENT_RESCHEDULE_NOT_ACTIVE_MESSAGE =
   'Перенести можна лише заплановане заняття. Щоб записатися знову, забронюйте новий слот.';
 export const STUDENT_DURATION_MESSAGE = 'Студент не змінює тривалість заняття.';
 export const NO_THEORY_LESSON_FIELDS_MESSAGE =
-  'Немає дозволених полів для оновлення (topic, durationMin).';
+  'Немає дозволених полів для оновлення (topic, durationMin, courseLessonId).';
+export const GROUP_COURSE_REQUIRED_MESSAGE =
+  'Групі не призначено теоретичний курс.';
+export const COURSE_LESSON_NOT_IN_GROUP_MESSAGE =
+  'Урок не входить до курсу, призначеного групі.';
+export const COURSE_LESSON_ALREADY_LINKED_MESSAGE =
+  'Цей урок курсу вже прив’язано до іншого заняття групи.';
 export const NO_PRACTICE_LESSON_FIELDS_MESSAGE =
   'Немає дозволених полів для оновлення (durationMin, instructorId, carId, meetingPlace).';
 export const LESSON_NOT_CANCELLABLE_MESSAGE =
@@ -170,6 +177,7 @@ const lessonGroupSelect = {
   teacherId: true,
   startDate: true,
   endDate: true,
+  courseId: true,
   teacher: {
     select: { ...lessonPersonSelect, status: true, deletedAt: true },
   },
@@ -179,6 +187,7 @@ const lessonGroupSelect = {
 const theoryLessonSelect = {
   id: true,
   groupId: true,
+  courseLessonId: true,
   topic: true,
   scheduledAt: true,
   durationMin: true,
@@ -186,6 +195,7 @@ const theoryLessonSelect = {
   cancelledAt: true,
   cancellationReason: true,
   updatedAt: true,
+  courseLesson: { select: theoryCourseLessonSelect },
   group: { select: lessonGroupSelect },
 } satisfies Prisma.LessonSelect;
 
@@ -197,6 +207,7 @@ type TheoryChange = {
   topic?: string;
   scheduledAt?: Date;
   durationMin?: number;
+  courseLessonId?: string | null;
 };
 
 type PracticeChange = {
@@ -248,6 +259,13 @@ function fieldError(field: string, message: string): BadRequestException {
     statusCode: 400,
     errors: [{ field, message }],
   });
+}
+
+function isCourseLessonTaken(error: unknown): boolean {
+  return (
+    error instanceof Prisma.PrismaClientKnownRequestError &&
+    error.code === 'P2002'
+  );
 }
 
 function isEmptyPayload(payload: object): boolean {
@@ -369,6 +387,15 @@ export class LessonsService {
       }
       assertWithinGroupDates(scheduledAt, group, organization.timezone);
       assertTeacherActive(group.teacher);
+      if (payload.courseLessonId !== undefined) {
+        await this.assertCourseLessonLink(tx, {
+          organizationId: actor.organizationId,
+          groupId: group.id,
+          groupCourseId: group.courseId,
+          courseLessonId: payload.courseLessonId,
+          lessonId: null,
+        });
+      }
 
       await this.assertTheorySlotFree(tx, actor, {
         lessonId: null,
@@ -377,16 +404,26 @@ export class LessonsService {
         slot: lessonSlot(scheduledAt, durationMin),
       });
 
-      return tx.lesson.create({
-        data: {
-          organizationId: actor.organizationId,
-          groupId: group.id,
-          topic: payload.topic,
-          scheduledAt,
-          durationMin,
-        },
-        select: theoryLessonSelect,
-      });
+      try {
+        return await tx.lesson.create({
+          data: {
+            organizationId: actor.organizationId,
+            groupId: group.id,
+            topic: payload.topic,
+            scheduledAt,
+            durationMin,
+            ...(payload.courseLessonId !== undefined
+              ? { courseLessonId: payload.courseLessonId }
+              : {}),
+          },
+          select: theoryLessonSelect,
+        });
+      } catch (error) {
+        if (isCourseLessonTaken(error)) {
+          throw new ConflictException(COURSE_LESSON_ALREADY_LINKED_MESSAGE);
+        }
+        throw error;
+      }
     });
 
     this.logger.log(
@@ -493,6 +530,7 @@ export class LessonsService {
     return this.changeTheory(actor, lessonId, {
       topic: payload.topic,
       durationMin: payload.durationMin,
+      courseLessonId: payload.courseLessonId,
     });
   }
 
@@ -788,6 +826,10 @@ export class LessonsService {
         topic: change.topic ?? lesson.topic,
         scheduledAt: change.scheduledAt ?? lesson.scheduledAt,
         durationMin: change.durationMin ?? lesson.durationMin,
+        courseLessonId:
+          change.courseLessonId !== undefined
+            ? change.courseLessonId
+            : lesson.courseLessonId,
       };
       const data: TheoryChange = {};
       if (next.topic !== lesson.topic) {
@@ -798,6 +840,16 @@ export class LessonsService {
       }
       if (next.durationMin !== lesson.durationMin) {
         data.durationMin = next.durationMin;
+      }
+      if (next.courseLessonId !== lesson.courseLessonId) {
+        await this.assertCourseLessonLink(tx, {
+          organizationId: actor.organizationId,
+          groupId: lesson.groupId,
+          groupCourseId: lesson.group.courseId,
+          courseLessonId: next.courseLessonId,
+          lessonId: lesson.id,
+        });
+        data.courseLessonId = next.courseLessonId;
       }
       if (Object.keys(data).length === 0) {
         return { lesson, changed: [] as string[] };
@@ -834,12 +886,19 @@ export class LessonsService {
         });
       }
 
-      const saved = await tx.lesson.update({
-        where: { id: lesson.id },
-        data,
-        select: theoryLessonSelect,
-      });
-      return { lesson: saved, changed: Object.keys(data) };
+      try {
+        const saved = await tx.lesson.update({
+          where: { id: lesson.id },
+          data,
+          select: theoryLessonSelect,
+        });
+        return { lesson: saved, changed: Object.keys(data) };
+      } catch (error) {
+        if (isCourseLessonTaken(error)) {
+          throw new ConflictException(COURSE_LESSON_ALREADY_LINKED_MESSAGE);
+        }
+        throw error;
+      }
     });
 
     if (result.changed.length > 0) {
@@ -1043,6 +1102,53 @@ export class LessonsService {
       throw new ForbiddenException('Insufficient permissions');
     }
     return lesson;
+  }
+
+  /**
+   * Урок має належати курсу, призначеному цій групі в цій автошколі.
+   * Один урок курсу — одне нескасоване заняття групи.
+   * courseLessonId null знімає прив’язку.
+   */
+  private async assertCourseLessonLink(
+    tx: Prisma.TransactionClient,
+    input: {
+      organizationId: string;
+      groupId: string;
+      groupCourseId: string | null;
+      courseLessonId: string | null;
+      lessonId: string | null;
+    },
+  ): Promise<void> {
+    if (input.courseLessonId === null) {
+      return;
+    }
+    if (!input.groupCourseId) {
+      throw new ConflictException(GROUP_COURSE_REQUIRED_MESSAGE);
+    }
+    const courseLesson = await tx.courseLesson.findFirst({
+      where: {
+        id: input.courseLessonId,
+        courseId: input.groupCourseId,
+        course: { organizationId: input.organizationId },
+      },
+      select: { id: true },
+    });
+    if (!courseLesson) {
+      throw fieldError('courseLessonId', COURSE_LESSON_NOT_IN_GROUP_MESSAGE);
+    }
+    const taken = await tx.lesson.findFirst({
+      where: {
+        organizationId: input.organizationId,
+        groupId: input.groupId,
+        courseLessonId: input.courseLessonId,
+        status: { not: LessonStatus.CANCELLED },
+        ...(input.lessonId ? { id: { not: input.lessonId } } : {}),
+      },
+      select: { id: true },
+    });
+    if (taken) {
+      throw new ConflictException(COURSE_LESSON_ALREADY_LINKED_MESSAGE);
+    }
   }
 
   private async requireOrganization(organizationId: string) {

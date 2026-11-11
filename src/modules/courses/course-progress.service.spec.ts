@@ -109,6 +109,8 @@ describe('CourseProgressService', () => {
     },
     courseProgress: { findUnique: jest.fn(), upsert: jest.fn() },
     student: { findUnique: jest.fn() },
+    lesson: { findMany: jest.fn() },
+    theoryTestResult: { findUnique: jest.fn() },
     $queryRaw: jest.fn(),
     $transaction: jest.fn(),
   };
@@ -156,6 +158,8 @@ describe('CourseProgressService', () => {
     prisma.courseLessonCompletion.create.mockResolvedValue({ id: 'done-1' });
     prisma.courseProgress.findUnique.mockResolvedValue(null);
     prisma.student.findUnique.mockResolvedValue(null);
+    prisma.lesson.findMany.mockResolvedValue([]);
+    prisma.theoryTestResult.findUnique.mockResolvedValue(null);
     prisma.courseProgress.upsert.mockResolvedValue({ updatedAt });
     prisma.$queryRaw.mockResolvedValue([{ id: courseId }]);
     prisma.$transaction.mockImplementation(
@@ -277,6 +281,7 @@ describe('CourseProgressService', () => {
           totalLessonCount: 3,
           percent: 0,
           updatedAt: null,
+          test: null,
           lessons: [
             {
               lessonId: control.id,
@@ -286,6 +291,7 @@ describe('CourseProgressService', () => {
               chapterPosition: 1,
               completed: false,
               completedAt: null,
+              sessions: [],
             },
             {
               lessonId: signs.id,
@@ -295,6 +301,7 @@ describe('CourseProgressService', () => {
               chapterPosition: 1,
               completed: false,
               completedAt: null,
+              sessions: [],
             },
             {
               lessonId: engine.id,
@@ -304,12 +311,98 @@ describe('CourseProgressService', () => {
               chapterPosition: 2,
               completed: false,
               completedAt: null,
+              sessions: [],
             },
           ],
         },
       );
       expect(prisma.courseProgress.upsert).not.toHaveBeenCalled();
       expect(prisma.$queryRaw).not.toHaveBeenCalled();
+    });
+
+    it('returns the linked group lesson and the course test', async () => {
+      allowStudentCourse();
+      givenLessons();
+      const takenAt = new Date('2026-11-02T10:00:00.000Z');
+      const scheduledAt = new Date('2026-11-03T16:00:00.000Z');
+      prisma.lesson.findMany.mockResolvedValue([
+        {
+          id: 'session-1',
+          topic: 'Знаки в аудиторії',
+          scheduledAt,
+          durationMin: 90,
+          status: 'SCHEDULED',
+          courseLessonId: signs.id,
+          attendances: [{ status: 'PRESENT' }],
+        },
+      ]);
+      prisma.theoryTestResult.findUnique.mockResolvedValue({
+        id: 'test-1',
+        organizationId: 'org-1',
+        courseId,
+        studentId: 'student-1',
+        status: 'PASSED',
+        score: 86,
+        takenAt,
+      });
+
+      const progress = await service.getOwn(student as never, courseId);
+
+      expect(
+        progress.lessons.find((lesson) => lesson.lessonId === signs.id)
+          ?.sessions,
+      ).toEqual([
+        {
+          lessonId: 'session-1',
+          topic: 'Знаки в аудиторії',
+          scheduledAt,
+          durationMin: 90,
+          status: 'SCHEDULED',
+          attendance: 'PRESENT',
+        },
+      ]);
+      expect(progress.test).toEqual({
+        id: 'test-1',
+        courseId,
+        studentId: 'student-1',
+        status: 'PASSED',
+        score: 86,
+        takenAt,
+      });
+      expect(prisma.lesson.findMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: expect.objectContaining({
+            organizationId: 'org-1',
+            group: expect.objectContaining({
+              courseId,
+              enrollments: {
+                some: {
+                  studentId: 'student-1',
+                  status: { in: [EnrollmentStatus.ACTIVE] },
+                },
+              },
+            }),
+          }),
+        }),
+      );
+    });
+
+    it('hides a test result that belongs to another organization', async () => {
+      allowStudentCourse();
+      givenLessons();
+      prisma.theoryTestResult.findUnique.mockResolvedValue({
+        id: 'test-1',
+        organizationId: 'org-2',
+        courseId,
+        studentId: 'student-1',
+        status: 'PASSED',
+        score: 86,
+        takenAt: updatedAt,
+      });
+
+      await expect(
+        service.getOwn(student as never, courseId),
+      ).resolves.toMatchObject({ test: null });
     });
 
     it('reads the published course of the latest active enrollment', async () => {

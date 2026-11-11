@@ -265,6 +265,20 @@ const studentCardSelect = {
                   title: true,
                   position: true,
                   chapter: { select: { position: true } },
+                  scheduledLessons: {
+                    select: {
+                      id: true,
+                      groupId: true,
+                      organizationId: true,
+                      topic: true,
+                      scheduledAt: true,
+                      durationMin: true,
+                      status: true,
+                      attendances: {
+                        select: { studentId: true, status: true },
+                      },
+                    },
+                  },
                 },
               },
             },
@@ -315,6 +329,13 @@ const studentCardSelect = {
           scheduledAt: true,
           status: true,
           organizationId: true,
+          courseLesson: {
+            select: {
+              id: true,
+              courseId: true,
+              course: { select: { organizationId: true } },
+            },
+          },
         },
       },
     },
@@ -843,7 +864,10 @@ function toInstructorSummary(
   };
 }
 
-function enrolledAtFor(row: StudentCardRow, groupId: string | null): Date | null {
+function enrolledAtFor(
+  row: StudentCardRow,
+  groupId: string | null,
+): Date | null {
   if (!groupId) {
     return null;
   }
@@ -894,6 +918,28 @@ function toTheory(
         title: lesson.title,
         completed: completedAtByLesson.has(lesson.id),
         completedAt: completedAtByLesson.get(lesson.id) ?? null,
+        sessions: (lesson.scheduledLessons ?? [])
+          .filter(
+            (session) =>
+              session.organizationId === profile.organizationId &&
+              session.groupId === profile.group?.id,
+          )
+          .sort(
+            (left, right) =>
+              left.scheduledAt.getTime() - right.scheduledAt.getTime() ||
+              left.id.localeCompare(right.id),
+          )
+          .map((session) => ({
+            lessonId: session.id,
+            topic: session.topic,
+            scheduledAt: session.scheduledAt,
+            durationMin: session.durationMin,
+            status: session.status,
+            attendance:
+              session.attendances.find(
+                (mark) => mark.studentId === profile.userId,
+              )?.status ?? null,
+          })),
       })),
     },
   };
@@ -916,6 +962,17 @@ function toTests(row: StudentCardRow): StudentTestResultDto[] {
     }));
 }
 
+function courseLessonOf(
+  lesson: StudentCardRow['lessonAttendances'][number]['lesson'],
+  organizationId: string,
+) {
+  const linked = lesson.courseLesson;
+  if (!linked || linked.course.organizationId !== organizationId) {
+    return null;
+  }
+  return linked;
+}
+
 function toAttendance(row: StudentCardRow): StudentAttendanceItemDto[] {
   return (row.lessonAttendances ?? [])
     .filter((item) => item.lesson.organizationId === row.organizationId)
@@ -924,6 +981,10 @@ function toAttendance(row: StudentCardRow): StudentAttendanceItemDto[] {
       topic: item.lesson.topic,
       scheduledAt: item.lesson.scheduledAt,
       lessonStatus: item.lesson.status,
+      courseLessonId:
+        courseLessonOf(item.lesson, row.organizationId)?.id ?? null,
+      courseId:
+        courseLessonOf(item.lesson, row.organizationId)?.courseId ?? null,
       status: item.status,
       markedAt: item.markedAt,
     }));
@@ -1395,9 +1456,7 @@ export class StudentsService {
         contractNumber: created.student.contractNumber ?? null,
         avatar: null,
         enrolledAt: created.enrolledAt,
-        estimatedCompletionDate: formatDateOnly(
-          created.assignedGroup?.endDate,
-        ),
+        estimatedCompletionDate: formatDateOnly(created.assignedGroup?.endDate),
         group: created.assignedGroup
           ? { id: created.assignedGroup.id, name: created.assignedGroup.name }
           : null,

@@ -62,6 +62,7 @@ function theoryRow(
     status: LessonStatus.SCHEDULED,
     cancelledAt: null,
     cancellationReason: null,
+    courseLesson: null,
     updatedAt: NOW,
     group: {
       id: 'group-1',
@@ -364,6 +365,7 @@ describe('PersonalScheduleService', () => {
         durationMin: 90,
         group: { id: 'group-1', name: 'ПДР — Група А' },
         teacher: { id: 'teacher-1', firstName: 'Ірина', lastName: 'Мельник' },
+        courseLesson: null,
         cancelledAt: null,
         cancellationReason: null,
         updatedAt: NOW,

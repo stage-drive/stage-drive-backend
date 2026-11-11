@@ -34,6 +34,11 @@ import {
   UpdateLessonAttendanceDto,
 } from './lesson-attendance.dto';
 import { LessonAttendanceService } from './lesson-attendance.service';
+import { TheoryLessonContentDto } from './theory-content.dto';
+import {
+  THEORY_CONTENT_ROLES,
+  TheoryContentService,
+} from './theory-content.service';
 import {
   CancelLessonDto,
   CreatePracticeLessonDto,
@@ -143,6 +148,7 @@ export class LessonsController {
     private readonly lessonsService: LessonsService,
     private readonly personalScheduleService: PersonalScheduleService,
     private readonly lessonAttendanceService: LessonAttendanceService,
+    private readonly theoryContentService: TheoryContentService,
   ) {}
 
   @Get('me')
@@ -176,6 +182,7 @@ export class LessonsController {
     summary: 'Створити теоретичне заняття',
     description:
       'ADMIN або викладач групи створює заняття групи своєї автошколи. Викладач заняття — викладач групи. ' +
+      'courseLessonId, якщо передано, має бути уроком курсу, призначеного цій групі, і не зайнятим іншим нескасованим заняттям групи. ' +
       `${CREATE_RULES} ${THEORY_CHECKS}`,
   })
   @ApiCreatedResponse({ type: TheoryLessonDto })
@@ -240,8 +247,8 @@ export class LessonsController {
   @ApiOperation({
     summary: 'Редагувати теоретичне заняття',
     description:
-      'ADMIN або викладач групи змінює topic і durationMin заняття своєї автошколи. ' +
-      'Зміна лише topic не перевіряє розклад. ' +
+      'ADMIN або викладач групи змінює topic, durationMin і courseLessonId заняття своєї автошколи. ' +
+      'courseLessonId: null знімає прив’язку до уроку курсу. Зміна лише topic або courseLessonId не перевіряє розклад. ' +
       `${SCHEDULE_RULES} ${THEORY_CHECKS}`,
   })
   @ApiParam({
@@ -468,6 +475,40 @@ export class LessonsController {
     return this.lessonsService.cancelPractice(user, id, body);
   }
 
+  @Get('theory/:id/content')
+  @Roles(...THEORY_CONTENT_ROLES)
+  @ApiOperation({
+    summary: 'Контент курсу, прив’язаний до теоретичного заняття',
+    description:
+      'ADMIN бачить урок курсу свого заняття, зокрема чернетку. ' +
+      'TEACHER — лише заняття своєї групи. ' +
+      'STUDENT — лише якщо в нього активне зарахування в групу заняття і курс ACTIVE та PUBLISHED. ' +
+      'Заняття без прив’язки або з уроком не з поточного курсу групи — 404. ' +
+      'Заняття іншої автошколи — 404.',
+  })
+  @ApiParam({
+    name: 'id',
+    format: 'uuid',
+    description: 'Id теоретичного заняття.',
+  })
+  @ApiOkResponse({ type: TheoryLessonContentDto })
+  @ApiBadRequestResponse({ description: 'id не UUID.' })
+  @ApiForbiddenResponse({
+    description:
+      'Роль не ADMIN, TEACHER чи STUDENT; викладач відкриває чужу групу; ' +
+      'студент не зарахований у групу заняття; або курс для студента ще не опубліковано.',
+  })
+  @ApiNotFoundResponse({
+    description:
+      'Заняття не знайдено, воно чужої автошколи, не прив’язане до уроку курсу групи, або автошколу видалено.',
+  })
+  getTheoryContent(
+    @CurrentUser() user: User,
+    @Param('id', new ParseUUIDPipe({ version: '4' })) id: string,
+  ): Promise<TheoryLessonContentDto> {
+    return this.theoryContentService.getForLesson(user, id);
+  }
+
   @Get('theory/:id/attendance')
   @Roles(...THEORY_LESSON_EDIT_ROLES)
   @ApiOperation({
@@ -525,7 +566,7 @@ export class LessonsController {
   })
   @ApiConflictResponse({
     description:
-      'Заняття скасоване (тіло з currentStatus), ще не почалося, або група закрита.',
+      'Заняття скасоване або в статусі, для якого відвідування не ведеться (тіло з currentStatus), ще не почалося, або група закрита.',
   })
   updateAttendance(
     @CurrentUser() user: User,

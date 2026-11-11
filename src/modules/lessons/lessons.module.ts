@@ -11,6 +11,7 @@ import { PracticeLessonsController } from './practice-lessons.controller';
 import { PracticeLessonsService } from './practice-lessons.service';
 import { PracticePaymentService } from './practice-payment.service';
 import { PracticeRequestExpiryJob } from './practice-request-expiry.job';
+import { TheoryContentService } from './theory-content.service';
 
 @Module({
   imports: [AuthModule],
@@ -28,6 +29,7 @@ import { PracticeRequestExpiryJob } from './practice-request-expiry.job';
     PracticeLessonWorkflowService,
     PracticePaymentService,
     PracticeRequestExpiryJob,
+    TheoryContentService,
   ],
 })
 export class LessonsModule {}

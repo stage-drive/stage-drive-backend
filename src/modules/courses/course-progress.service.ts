@@ -16,6 +16,7 @@ import { PrismaService } from '../../prisma/prisma.service';
 import {
   CourseLessonProgressDto,
   CourseProgressDto,
+  LinkedTheorySessionDto,
   SubmitTheoryTestDto,
   TheoryTestResultDto,
 } from './course-progress.dto';
@@ -52,6 +53,11 @@ type LessonProgressRow = Prisma.CourseLessonGetPayload<{
   select: typeof lessonProgressSelect;
 }>;
 
+type SessionScope = {
+  statuses: EnrollmentStatus[];
+  teacherId?: string;
+};
+
 type ProgressSnapshot = {
   organizationId: string;
   completedLessonCount: number;
@@ -79,6 +85,17 @@ function assertCanReadStudentProgress(actor: User): void {
   ) {
     throw new ForbiddenException('Insufficient permissions');
   }
+}
+
+function studentSessionScope(): SessionScope {
+  return { statuses: [EnrollmentStatus.ACTIVE] };
+}
+
+function staffSessionScope(actor: User): SessionScope {
+  return {
+    statuses: [...VISIBLE_ENROLLMENT],
+    ...(actor.role === UserRole.TEACHER ? { teacherId: actor.id } : {}),
+  };
 }
 
 function enrollmentWhere(
@@ -124,7 +141,12 @@ export class CourseProgressService {
     assertStudent(actor);
     await this.requireOrganization(actor.organizationId);
     await this.requireAssignedPublishedCourse(actor, courseId);
-    return this.loadProgress(actor.organizationId, courseId, actor.id);
+    return this.loadProgress(
+      actor.organizationId,
+      courseId,
+      actor.id,
+      studentSessionScope(),
+    );
   }
 
   /** Прогрес по курсу групи, у якій у студента активне зарахування. */
@@ -149,7 +171,12 @@ export class CourseProgressService {
       throw new NotFoundException(COURSE_NOT_FOUND_MESSAGE);
     }
     await this.requireAssignedPublishedCourse(actor, courseId);
-    return this.loadProgress(actor.organizationId, courseId, actor.id);
+    return this.loadProgress(
+      actor.organizationId,
+      courseId,
+      actor.id,
+      studentSessionScope(),
+    );
   }
 
   /**
@@ -180,6 +207,7 @@ export class CourseProgressService {
         actor.organizationId,
         courseId,
         actor.id,
+        studentSessionScope(),
       );
       await syncTheoryCompletion(tx, actor.id, actor.organizationId);
       return progress;
@@ -273,7 +301,12 @@ export class CourseProgressService {
     }
 
     await this.requireStaffEnrollment(actor, courseId, studentId);
-    return this.loadProgress(actor.organizationId, courseId, studentId);
+    return this.loadProgress(
+      actor.organizationId,
+      courseId,
+      studentId,
+      staffSessionScope(actor),
+    );
   }
 
   private async requireAssignedPublishedCourse(
@@ -346,9 +379,10 @@ export class CourseProgressService {
     organizationId: string,
     courseId: string,
     studentId: string,
+    scope: SessionScope,
   ): Promise<CourseProgressDto> {
     return this.prisma.$transaction((tx) =>
-      this.syncProgress(tx, organizationId, courseId, studentId),
+      this.syncProgress(tx, organizationId, courseId, studentId, scope),
     );
   }
 
@@ -402,6 +436,7 @@ export class CourseProgressService {
     organizationId: string,
     courseId: string,
     studentId: string,
+    scope: SessionScope,
   ): Promise<CourseProgressDto> {
     const lessons = await tx.courseLesson.findMany({
       where: { courseId },
@@ -447,6 +482,14 @@ export class CourseProgressService {
       percent,
       snapshot,
     });
+    const sessionsByLesson = await this.loadLinkedSessions(tx, {
+      organizationId,
+      courseId,
+      studentId,
+      courseLessonIds: lessons.map((lesson) => lesson.id),
+      scope,
+    });
+    const test = await this.loadTest(tx, organizationId, courseId, studentId);
 
     return {
       courseId,
@@ -456,8 +499,112 @@ export class CourseProgressService {
       percent,
       updatedAt,
       lessons: lessons
-        .map((lesson) => toLessonProgress(lesson, completedAtByLesson))
+        .map((lesson) =>
+          toLessonProgress(
+            lesson,
+            completedAtByLesson,
+            sessionsByLesson.get(lesson.id) ?? [],
+          ),
+        )
         .sort(byCourseOrder),
+      test,
+    };
+  }
+
+  /** Очні заняття груп студента, прив’язані до уроків цього курсу, і його відмітка. */
+  private async loadLinkedSessions(
+    tx: Prisma.TransactionClient,
+    input: {
+      organizationId: string;
+      courseId: string;
+      studentId: string;
+      courseLessonIds: string[];
+      scope: SessionScope;
+    },
+  ): Promise<Map<string, LinkedTheorySessionDto[]>> {
+    const grouped = new Map<string, LinkedTheorySessionDto[]>();
+    if (input.courseLessonIds.length === 0) {
+      return grouped;
+    }
+    const rows = await tx.lesson.findMany({
+      where: {
+        organizationId: input.organizationId,
+        courseLessonId: { in: input.courseLessonIds },
+        group: {
+          organizationId: input.organizationId,
+          courseId: input.courseId,
+          ...(input.scope.teacherId
+            ? { teacherId: input.scope.teacherId }
+            : {}),
+          enrollments: {
+            some: {
+              studentId: input.studentId,
+              status: { in: input.scope.statuses },
+            },
+          },
+        },
+      },
+      select: {
+        id: true,
+        topic: true,
+        scheduledAt: true,
+        durationMin: true,
+        status: true,
+        courseLessonId: true,
+        attendances: {
+          where: { studentId: input.studentId },
+          select: { status: true },
+        },
+      },
+      orderBy: { scheduledAt: 'asc' },
+    });
+    for (const row of rows) {
+      if (!row.courseLessonId) {
+        continue;
+      }
+      const session: LinkedTheorySessionDto = {
+        lessonId: row.id,
+        topic: row.topic,
+        scheduledAt: row.scheduledAt,
+        durationMin: row.durationMin,
+        status: row.status,
+        attendance: row.attendances[0]?.status ?? null,
+      };
+      const list = grouped.get(row.courseLessonId) ?? [];
+      list.push(session);
+      grouped.set(row.courseLessonId, list);
+    }
+    return grouped;
+  }
+
+  private async loadTest(
+    tx: Prisma.TransactionClient,
+    organizationId: string,
+    courseId: string,
+    studentId: string,
+  ): Promise<TheoryTestResultDto | null> {
+    const result = await tx.theoryTestResult.findUnique({
+      where: { studentId_courseId: { studentId, courseId } },
+      select: {
+        id: true,
+        organizationId: true,
+        courseId: true,
+        studentId: true,
+        status: true,
+        score: true,
+        takenAt: true,
+      },
+    });
+    if (!result || result.organizationId !== organizationId) {
+      return null;
+    }
+    return {
+      id: result.id,
+      courseId: result.courseId,
+      studentId: result.studentId,
+      status: result.status,
+      score: result.score,
+      takenAt: result.takenAt,
     };
   }
 
@@ -527,6 +674,7 @@ export class CourseProgressService {
 function toLessonProgress(
   lesson: LessonProgressRow,
   completedAtByLesson: Map<string, Date>,
+  sessions: LinkedTheorySessionDto[],
 ): CourseLessonProgressDto {
   return {
     lessonId: lesson.id,
@@ -536,6 +684,7 @@ function toLessonProgress(
     chapterPosition: lesson.chapter.position,
     completed: completedAtByLesson.has(lesson.id),
     completedAt: completedAtByLesson.get(lesson.id) ?? null,
+    sessions,
   };
 }
 
