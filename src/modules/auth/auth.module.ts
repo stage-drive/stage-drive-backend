@@ -1,4 +1,5 @@
-import { Module } from '@nestjs/common';
+import { Module, OnModuleInit } from '@nestjs/common';
+import { validateAuthSecret } from './auth-secret';
 import { AuthController } from './auth.controller';
 import { AuthGuard } from './auth.guard';
 import { AuthService } from './auth.service';
@@ -25,4 +26,13 @@ import { PasswordResetService } from './password-reset.service';
   ],
   exports: [AuthService, AuthGuard, RolesGuard, RefreshTokenService],
 })
-export class AuthModule {}
+export class AuthModule implements OnModuleInit {
+  /**
+   * Fail fast: without this the API boots normally and every authenticated
+   * request is answered with 401, because AuthGuard turns signing errors into
+   * "Invalid access token".
+   */
+  onModuleInit(): void {
+    validateAuthSecret(process.env.AUTH_SECRET);
+  }
+}

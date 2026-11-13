@@ -39,7 +39,9 @@ services:
       SEED_DEMO_USERS: ${SEED_DEMO_USERS:-}
       PORT: ${PORT:-3000}
       DATABASE_URL: ${DOCKER_DATABASE_URL:-postgresql://postgres:postgres_password@postgres:5432/stage_drive}
-      AUTH_SECRET: ${AUTH_SECRET:-stage-drive-dev-secret}
+      # No fallback on purpose: the backend refuses to start without a strong
+      # AUTH_SECRET in .env (openssl rand -base64 32).
+      AUTH_SECRET: ${AUTH_SECRET:-}
       CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:5173,http://127.0.0.1:5173}
       GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:-}
       GOOGLE_CLIENT_SECRET: ${GOOGLE_CLIENT_SECRET:-}

@@ -1,7 +1,12 @@
 import { UnauthorizedException } from '@nestjs/common';
 import { UserStatus } from '@prisma/client';
+import { createHash } from 'crypto';
 import { PrismaService } from '../../prisma/prisma.service';
 import { RefreshTokenService } from './refresh-token.service';
+
+function sha256Hex(value: string): string {
+  return createHash('sha256').update(value).digest('hex');
+}
 
 type TokenRow = {
   id: string;
@@ -100,13 +105,59 @@ describe('RefreshTokenService', () => {
     service = new RefreshTokenService(prisma as unknown as PrismaService);
   });
 
-  it('issues a token and persists only its hash', async () => {
+  it('issues a token and persists only its SHA-256 hash', async () => {
     const token = await service.issue(activeUser.id);
 
-    expect(token).toBeTruthy();
     expect(tokens).toHaveLength(1);
-    expect(tokens[0].tokenHash).not.toBe(token);
     expect(tokens[0].userId).toBe(activeUser.id);
+    expect(tokens[0].tokenHash).toBe(sha256Hex(token));
+    expect(JSON.stringify(tokens[0])).not.toContain(token);
+    expect(JSON.stringify(prisma.refreshToken.create.mock.calls)).not.toContain(
+      token,
+    );
+  });
+
+  it('issues 48 random bytes per token, so the unsalted hash cannot be brute-forced', async () => {
+    const first = await service.issue(activeUser.id);
+    const second = await service.issue(activeUser.id);
+
+    expect(Buffer.from(first, 'base64url')).toHaveLength(48);
+    expect(first).not.toBe(second);
+  });
+
+  it('never sends a plaintext refresh token to the database across issue, rotate and logout', async () => {
+    const original = await service.issue(activeUser.id);
+    const { refreshToken: rotated } = await service.rotate(original);
+    await service.logout(rotated);
+
+    expect(prisma.refreshToken.findUnique).toHaveBeenCalledWith({
+      where: { tokenHash: sha256Hex(original) },
+    });
+    expect(prisma.refreshToken.findUnique).toHaveBeenCalledWith({
+      where: { tokenHash: sha256Hex(rotated) },
+    });
+    expect(tokens.map((row) => row.tokenHash)).toEqual([
+      sha256Hex(original),
+      sha256Hex(rotated),
+    ]);
+
+    const everythingSentToDb = JSON.stringify([
+      prisma.refreshToken.create.mock.calls,
+      prisma.refreshToken.findUnique.mock.calls,
+      prisma.refreshToken.update.mock.calls,
+      prisma.refreshToken.updateMany.mock.calls,
+      prisma.user.findUnique.mock.calls,
+    ]);
+    expect(everythingSentToDb).not.toContain(original);
+    expect(everythingSentToDb).not.toContain(rotated);
+  });
+
+  it('cannot be redeemed with the stored hash itself (a leaked DB row is not a token)', async () => {
+    await service.issue(activeUser.id);
+
+    await expect(service.rotate(tokens[0].tokenHash)).rejects.toBeInstanceOf(
+      UnauthorizedException,
+    );
   });
 
   it('rotates a valid token exactly once into a new access/refresh pair', async () => {
