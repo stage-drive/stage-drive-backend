@@ -831,7 +831,8 @@ model LessonAttendance {
 /// (studentId, organizationId) і (createdById, organizationId) не дають прив’язати оплату
 /// до людини іншої автошколи.
 /// CHECK у міграції: amount >= 0, для PAID amount > 0; paidAt є тоді й лише тоді, коли
-/// status = PAID; currency — три латинські літери у верхньому регістрі.
+/// status = PAID; currency — три латинські літери у верхньому регістрі; purpose не порожній;
+/// idempotencyKey і requestHash є або обидва, або жодного.
 model Payment {
   id             String           @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   organizationId String           @map("organization_id") @db.Uuid
@@ -844,7 +845,15 @@ model Payment {
   status         PaymentStatus
   /// Дата підтвердженої оплати. Лише для PAID.
   paidAt         DateTime?        @map("paid_at")
+  /// Призначення платежу: за що оплата («Курс теорії», «Практика, 10 годин»). Бачить і студент.
+  purpose        String           @db.VarChar(255)
+  /// Службовий коментар ADMIN. Студенту не повертається.
   comment        String?          @db.VarChar(1000)
+  /// Ключ ідемпотентності з заголовка Idempotency-Key запиту створення. Унікальний в автошколі:
+  /// повтор того самого запиту повертає цю оплату, а не створює другу.
+  idempotencyKey String?          @map("idempotency_key") @db.VarChar(128)
+  /// SHA-256 тіла запиту створення: той самий ключ з іншими даними — 409.
+  requestHash    String?          @map("request_hash") @db.Char(64)
   createdById    String           @map("created_by_id") @db.Uuid
   createdBy      User             @relation("CreatedPayments", fields: [createdById, organizationId], references: [id, organizationId], onDelete: Restrict)
   createdAt      DateTime         @default(now()) @map("created_at")
@@ -856,6 +865,8 @@ model Payment {
   @@unique([id, organizationId])
   /// Ціль складеного FK students.current_payment_id: вказівник лише на оплату свого студента.
   @@unique([id, studentId])
+  /// NULL-ключі (запити без Idempotency-Key) не конфліктують між собою.
+  @@unique([organizationId, idempotencyKey])
   @@index([organizationId, status])
   @@index([organizationId, studentId, createdAt])
   @@index([organizationId, paidAt])

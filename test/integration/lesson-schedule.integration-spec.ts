@@ -196,6 +196,7 @@ describe('Lesson schedule (integration, real Postgres)', () => {
         amount: 5000,
         status: PaymentStatus.PAID,
         paidAt: new Date('2026-01-01T00:00:00.000Z'),
+        purpose: 'Курс теорії і практики',
         createdById,
       },
     });

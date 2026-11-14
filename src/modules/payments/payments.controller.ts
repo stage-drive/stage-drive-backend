@@ -2,6 +2,7 @@ import {
   Body,
   Controller,
   Get,
+  Headers,
   HttpCode,
   HttpStatus,
   Param,
@@ -17,6 +18,7 @@ import {
   ApiConflictResponse,
   ApiCreatedResponse,
   ApiForbiddenResponse,
+  ApiHeader,
   ApiNotFoundResponse,
   ApiOkResponse,
   ApiOperation,
@@ -31,15 +33,18 @@ import { Roles } from '../auth/roles.decorator';
 import { RolesGuard } from '../auth/roles.guard';
 import {
   CreatePaymentDto,
+  ListPaymentRecordsQueryDto,
   ListPaymentsQueryDto,
   PaymentDetailsDto,
   PaymentDto,
   PaymentHistoryListDto,
   PaymentHistoryQueryDto,
   PaymentOverviewListDto,
+  PaymentRecordListDto,
   UpdatePaymentDto,
   UpdatePaymentStatusDto,
 } from './payments.dto';
+import { IDEMPOTENCY_KEY_HEADER } from './payment-idempotency';
 import { PAYMENT_MANAGE_ROLES, PaymentsService } from './payments.service';
 
 const FORBIDDEN_DESCRIPTION =
@@ -80,6 +85,29 @@ export class PaymentsController {
   })
   overview(@CurrentUser() user: User, @Query() query: ListPaymentsQueryDto) {
     return this.paymentsService.overview(user, query);
+  }
+
+  // Оголошено перед GET :id, інакше «records» розбирався б як id.
+  @Get('records')
+  @ApiOperation({
+    summary: 'Список оплат автошколи',
+    description:
+      'Окремі записи оплат (не студенти) від нових до старих. Кожен рядок містить суму, валюту, ' +
+      'статус, дату оплати, призначення, автора і студента; isCurrent — чи саме ця оплата задає ' +
+      'актуальний статус студента. Фільтри: studentId (id користувача), status (статус запису), ' +
+      'groupId, search (студент), [paidFrom, paidTo) за paidAt. sortBy: createdAt, paidAt, amount. ' +
+      'Пагінація page/limit. organizationId береться з access token.',
+  })
+  @ApiOkResponse({ type: PaymentRecordListDto })
+  @ApiBadRequestResponse({ description: BAD_REQUEST_DESCRIPTION })
+  @ApiNotFoundResponse({
+    description: 'Автошколу не знайдено або її видалено.',
+  })
+  records(
+    @CurrentUser() user: User,
+    @Query() query: ListPaymentRecordsQueryDto,
+  ) {
+    return this.paymentsService.records(user, query);
   }
 
   // Оголошено перед GET :id, інакше «history» розбирався б як id.
@@ -123,21 +151,39 @@ export class PaymentsController {
   @ApiOperation({
     summary: 'Додати оплату студенту',
     description:
-      'Студент має належати автошколі ADMIN і не бути архівованим. status за замовчуванням PAID, ' +
+      'Студент має належати автошколі ADMIN і не бути архівованим. purpose (призначення платежу) ' +
+      'обовʼязкове. status за замовчуванням PAID, ' +
       'currency — UAH. Для PAID обовʼязкові paidAt і amount > 0; для NOT_PAID paidAt не передається. ' +
       'paidAt не може бути в майбутньому. createdBy — поточний користувач. Нова оплата стає ' +
       'останньою, тож її статус стає актуальним статусом студента. Подія CREATED пишеться в журнал. ' +
-      'organizationId у тілі не приймається.',
+      'organizationId у тілі не приймається. ' +
+      'Передайте заголовок Idempotency-Key (наприклад, UUID на кожну нову оплату): повтор запиту ' +
+      'з тим самим ключем і тими самими даними повертає ту саму оплату, не створюючи другу.',
+  })
+  @ApiHeader({
+    name: IDEMPOTENCY_KEY_HEADER,
+    required: false,
+    description:
+      'Ключ ідемпотентності: 8–128 символів [A-Za-z0-9_.:-], унікальний для кожної нової оплати. ' +
+      'Повтор з тим самим ключем і даними повертає ту саму оплату (201), з іншими даними — 409.',
+    example: '3f0c2a6e-6b1d-4f7e-9c2a-1b2c3d4e5f60',
   })
   @ApiCreatedResponse({ type: PaymentDto })
   @ApiBadRequestResponse({ description: BAD_REQUEST_DESCRIPTION })
-  @ApiConflictResponse({ description: 'Студента архівовано.' })
+  @ApiConflictResponse({
+    description:
+      'Студента архівовано, або Idempotency-Key уже використано з іншими даними.',
+  })
   @ApiNotFoundResponse({
     description:
       'Студента не знайдено, його видалено, або він належить іншій автошколі.',
   })
-  create(@CurrentUser() user: User, @Body() body: CreatePaymentDto) {
-    return this.paymentsService.create(user, body);
+  create(
+    @CurrentUser() user: User,
+    @Body() body: CreatePaymentDto,
+    @Headers('idempotency-key') idempotencyKey?: string,
+  ) {
+    return this.paymentsService.create(user, body, idempotencyKey);
   }
 
   @Patch(':id/status')
@@ -170,7 +216,7 @@ export class PaymentsController {
   @ApiOperation({
     summary: 'Редагувати дозволені дані оплати',
     description:
-      'Змінюються amount, currency, paidAt і comment. status тут не приймається — ' +
+      'Змінюються amount, currency, paidAt, purpose і comment. status тут не приймається — ' +
       'лише PATCH /payments/{id}/status. paidAt — лише для оплати PAID. Змінені поля ' +
       '(було → стало) пишуться в журнал як подія UPDATED. Запит без змін нічого не пише.',
   })

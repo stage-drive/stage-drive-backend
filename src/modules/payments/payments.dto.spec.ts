@@ -12,8 +12,10 @@ import {
   DATE_FORMAT_MESSAGE,
   ListPaymentsQueryDto,
   PAYMENT_COMMENT_MAX_LENGTH,
+  PAYMENT_PURPOSE_MAX_LENGTH,
   PAYMENT_STATUS_MESSAGE,
   PaymentHistoryQueryDto,
+  PURPOSE_LENGTH_MESSAGE,
   REQUIRED_FIELD_MESSAGE,
   UpdatePaymentDto,
   UpdatePaymentStatusDto,
@@ -57,7 +59,12 @@ function fieldErrors(field: string, message: string) {
 const STUDENT_ID = '88888888-8888-4888-8888-888888888888';
 
 describe('CreatePaymentDto', () => {
-  const valid = { studentId: STUDENT_ID, amount: 5000, paidAt: '2026-08-10' };
+  const valid = {
+    studentId: STUDENT_ID,
+    amount: 5000,
+    paidAt: '2026-08-10',
+    purpose: 'Курс теорії, категорія B',
+  };
 
   it('accepts a minimal PAID payment and uppercases the currency', async () => {
     await expect(
@@ -160,9 +167,34 @@ describe('CreatePaymentDto', () => {
       COMMENT_LENGTH_MESSAGE,
     ],
   ])('rejects %s', async (_case, body, field, message) => {
-    await expect(errorsFor(CreatePaymentDto, body)).resolves.toEqual(
-      fieldErrors(field, message),
-    );
+    await expect(
+      errorsFor(CreatePaymentDto, { purpose: 'Курс теорії', ...body }),
+    ).resolves.toEqual(fieldErrors(field, message));
+  });
+
+  it('trims purpose', async () => {
+    await expect(
+      validate(CreatePaymentDto, {
+        ...valid,
+        purpose: '  Практика, 10 годин  ',
+      }),
+    ).resolves.toEqual({ ...valid, purpose: 'Практика, 10 годин' });
+  });
+
+  it.each([
+    ['missing', undefined, REQUIRED_FIELD_MESSAGE],
+    ['blank', '   ', REQUIRED_FIELD_MESSAGE],
+    ['not a string', 42, 'purpose має бути рядком.'],
+    [
+      'too long',
+      'x'.repeat(PAYMENT_PURPOSE_MAX_LENGTH + 1),
+      PURPOSE_LENGTH_MESSAGE,
+    ],
+    ['with markup', '<script>', UNSAFE_TEXT_MESSAGE],
+  ])('rejects a %s purpose', async (_case, purpose, message) => {
+    await expect(
+      errorsFor(CreatePaymentDto, { ...valid, purpose }),
+    ).resolves.toEqual(fieldErrors('purpose', message));
   });
 
   it.each(['organizationId', 'createdById'])(
@@ -190,9 +222,16 @@ describe('UpdatePaymentDto', () => {
     ).resolves.toEqual({ comment: null });
   });
 
+  it('accepts a new purpose', async () => {
+    await expect(
+      validate(UpdatePaymentDto, { purpose: ' Практика ' }),
+    ).resolves.toEqual({ purpose: 'Практика' });
+  });
+
   it.each([
     ['amount', AMOUNT_NUMBER_MESSAGE],
     ['currency', CURRENCY_MESSAGE],
+    ['purpose', 'purpose має бути рядком.'],
   ])(
     'rejects %s: null with 400 instead of passing it on',
     async (field, message) => {

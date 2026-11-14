@@ -419,6 +419,7 @@ async function upsertPayment(input: {
   amount: number;
   status: PaymentStatus;
   paidAt: Date | null;
+  purpose: string;
   comment: string | null;
 }) {
   const payment = await prisma.payment.upsert({
@@ -431,6 +432,7 @@ async function upsertPayment(input: {
       amount: input.amount,
       status: input.status,
       paidAt: input.paidAt,
+      purpose: input.purpose,
       comment: input.comment,
       createdById: input.createdById,
     },
@@ -905,7 +907,8 @@ async function main() {
     amount: 5000,
     status: PaymentStatus.PAID,
     paidAt: new Date('2026-08-10T00:00:00.000Z'),
-    comment: 'Оплата за курс, готівка',
+    purpose: 'Курс теорії і практики, категорія B',
+    comment: 'Готівка, квитанція №125',
   });
   const notPaidPayment = await upsertPayment({
     id: DEMO_PAYMENT_NOT_PAID_ID,
@@ -916,7 +919,8 @@ async function main() {
     amount: 5000,
     status: PaymentStatus.NOT_PAID,
     paidAt: null,
-    comment: 'Очікується оплата за курс',
+    purpose: 'Курс теорії і практики, категорія B',
+    comment: 'Очікується оплата',
   });
 
   const tokenHash = hashToken(DEMO_INVITE_TOKEN);
@@ -1059,7 +1063,7 @@ async function main() {
     `  NOT_PAID payment of ${DEMO_GROUPED_EMAIL} (practice booking → 422): ${notPaidPayment.id}`,
   );
   console.log(
-    'GET /api/payments, GET /api/payments/history, POST /api/payments, PATCH /api/payments/{id}[/status] — OWNER or ADMIN. GET /api/me/payments — STUDENT.',
+    'GET /api/payments, /api/payments/records, /api/payments/history; POST /api/payments (purpose required, optional Idempotency-Key header); PATCH /api/payments/{id}[/status] — OWNER or ADMIN. GET /api/me/payments — STUDENT.',
   );
   console.log(
     `Invitation token (POST /api/invitations/verify and /activate): ${DEMO_INVITE_TOKEN}`,

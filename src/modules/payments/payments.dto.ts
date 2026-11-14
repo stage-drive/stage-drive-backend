@@ -9,6 +9,7 @@ import {
   IsInt,
   IsISO4217CurrencyCode,
   IsISO8601,
+  IsNotEmpty,
   IsNumber,
   IsOptional,
   IsString,
@@ -37,6 +38,16 @@ export const DEFAULT_CURRENCY = 'UAH';
 /** Межа DECIMAL(12,2). */
 export const PAYMENT_AMOUNT_MAX = 9_999_999_999.99;
 export const PAYMENT_COMMENT_MAX_LENGTH = 1000;
+export const PAYMENT_PURPOSE_MAX_LENGTH = 255;
+
+export const PAYMENT_RECORD_SORT_FIELDS = [
+  'createdAt',
+  'paidAt',
+  'amount',
+] as const;
+
+export type PaymentRecordSortField =
+  (typeof PAYMENT_RECORD_SORT_FIELDS)[number];
 
 const SEARCH_MAX_LENGTH = 100;
 const DEFAULT_PAGE = 1;
@@ -55,6 +66,7 @@ export const PAYMENT_STATUS_MESSAGE = 'status має бути NOT_PAID або PA
 export const DATE_FORMAT_MESSAGE =
   'Дата має бути у форматі ISO 8601, наприклад 2026-08-10 або 2026-08-10T12:00:00Z.';
 export const COMMENT_LENGTH_MESSAGE = `Коментар має містити не більше ${PAYMENT_COMMENT_MAX_LENGTH} символів.`;
+export const PURPOSE_LENGTH_MESSAGE = `Призначення платежу має містити не більше ${PAYMENT_PURPOSE_MAX_LENGTH} символів.`;
 
 function optionalTrimmedString({ value }: { value: unknown }): unknown {
   if (typeof value !== 'string') {
@@ -71,6 +83,10 @@ function nullableTrimmedString({ value }: { value: unknown }): unknown {
   }
   const trimmed = value.trim();
   return trimmed.length > 0 ? trimmed : null;
+}
+
+function trimmedString({ value }: { value: unknown }): unknown {
+  return typeof value === 'string' ? value.trim() : value;
 }
 
 function upperCaseString({ value }: { value: unknown }): unknown {
@@ -97,6 +113,16 @@ function AmountRules() {
     ),
     Min(0, { message: AMOUNT_NEGATIVE_MESSAGE }),
     Max(PAYMENT_AMOUNT_MAX, { message: AMOUNT_MAX_MESSAGE }),
+  );
+}
+
+/** Призначення: непорожній рядок без розмітки. Порожній після trim — «заповніть поле». */
+function PurposeRules() {
+  return applyDecorators(
+    IsString({ message: 'purpose має бути рядком.' }),
+    IsNotEmpty({ message: REQUIRED_FIELD_MESSAGE }),
+    MaxLength(PAYMENT_PURPOSE_MAX_LENGTH, { message: PURPOSE_LENGTH_MESSAGE }),
+    IsPlainText(),
   );
 }
 
@@ -182,6 +208,80 @@ export class ListPaymentsQueryDto extends PaginationQueryDto {
   sortBy?: PaymentSortField;
 
   @ApiPropertyOptional({ enum: PAYMENT_SORT_ORDERS, default: 'asc' })
+  @IsOptional()
+  @IsIn(PAYMENT_SORT_ORDERS, { message: 'sortOrder має бути asc або desc.' })
+  sortOrder?: PaymentSortOrder;
+}
+
+export class ListPaymentRecordsQueryDto extends PaginationQueryDto {
+  @ApiPropertyOptional({
+    format: 'uuid',
+    description: 'Оплати одного студента (id користувача).',
+    example: '88888888-8888-4888-8888-888888888888',
+  })
+  @IsOptional()
+  @IsUUID('4', { message: 'studentId має бути UUID.' })
+  studentId?: string;
+
+  @ApiPropertyOptional({
+    enum: PaymentStatus,
+    description: 'Статус самого запису оплати (не актуальний статус студента).',
+  })
+  @IsOptional()
+  @IsEnum(PaymentStatus, { message: PAYMENT_STATUS_MESSAGE })
+  status?: PaymentStatus;
+
+  @ApiPropertyOptional({
+    format: 'uuid',
+    description: 'Оплати студентів навчальної групи своєї автошколи.',
+  })
+  @IsOptional()
+  @IsUUID('4', { message: 'groupId має бути UUID.' })
+  groupId?: string;
+
+  @ApiPropertyOptional({
+    description: "Пошук студента за ім'ям, прізвищем, email або телефоном.",
+    maxLength: SEARCH_MAX_LENGTH,
+  })
+  @Transform(optionalTrimmedString)
+  @IsOptional()
+  @IsString({ message: 'search має бути рядком.' })
+  @MaxLength(SEARCH_MAX_LENGTH, {
+    message: `search має містити не більше ${SEARCH_MAX_LENGTH} символів.`,
+  })
+  search?: string;
+
+  @ApiPropertyOptional({
+    format: 'date-time',
+    description: 'Підтверджені оплати з цієї дати включно (paidAt).',
+    example: '2026-08-01',
+  })
+  @IsOptional()
+  @IsISO8601({ strict: true }, { message: DATE_FORMAT_MESSAGE })
+  paidFrom?: string;
+
+  @ApiPropertyOptional({
+    format: 'date-time',
+    description: 'Підтверджені оплати до цієї дати (не включно, paidAt).',
+    example: '2026-09-01',
+  })
+  @IsOptional()
+  @IsISO8601({ strict: true }, { message: DATE_FORMAT_MESSAGE })
+  paidTo?: string;
+
+  @ApiPropertyOptional({
+    enum: PAYMENT_RECORD_SORT_FIELDS,
+    default: 'createdAt',
+    description:
+      'Поле сортування. Оплати без paidAt при сортуванні за paidAt — у кінці.',
+  })
+  @IsOptional()
+  @IsIn(PAYMENT_RECORD_SORT_FIELDS, {
+    message: 'sortBy має бути createdAt, paidAt або amount.',
+  })
+  sortBy?: PaymentRecordSortField;
+
+  @ApiPropertyOptional({ enum: PAYMENT_SORT_ORDERS, default: 'desc' })
   @IsOptional()
   @IsIn(PAYMENT_SORT_ORDERS, { message: 'sortOrder має бути asc або desc.' })
   sortOrder?: PaymentSortOrder;
@@ -278,9 +378,20 @@ export class CreatePaymentDto {
   @IsISO8601({ strict: true }, { message: DATE_FORMAT_MESSAGE })
   paidAt?: string;
 
+  @ApiProperty({
+    maxLength: PAYMENT_PURPOSE_MAX_LENGTH,
+    example: 'Курс теорії, категорія B',
+    description: 'Призначення платежу: за що оплата. Бачить і студент.',
+  })
+  @Transform(trimmedString)
+  @PurposeRules()
+  @IsDefined({ message: REQUIRED_FIELD_MESSAGE })
+  purpose: string;
+
   @ApiPropertyOptional({
     maxLength: PAYMENT_COMMENT_MAX_LENGTH,
-    example: 'Оплата за курс, готівка',
+    example: 'Готівка, квитанція №125',
+    description: 'Службовий коментар ADMIN. Студенту не повертається.',
   })
   @Transform(optionalTrimmedString)
   @IsOptional()
@@ -315,6 +426,16 @@ export class UpdatePaymentDto {
   @ValidateIf(isPresent)
   @IsISO8601({ strict: true }, { message: DATE_FORMAT_MESSAGE })
   paidAt?: string;
+
+  @ApiPropertyOptional({
+    maxLength: PAYMENT_PURPOSE_MAX_LENGTH,
+    example: 'Практичне водіння, 10 годин',
+    description: 'Нове призначення платежу. Очистити його не можна.',
+  })
+  @Transform(trimmedString)
+  @ValidateIf(isPresent)
+  @PurposeRules()
+  purpose?: string;
 
   @ApiPropertyOptional({
     nullable: true,
@@ -429,6 +550,12 @@ export class PaymentDto {
   })
   paidAt: Date | null;
 
+  @ApiProperty({
+    example: 'Курс теорії, категорія B',
+    description: 'Призначення платежу.',
+  })
+  purpose: string;
+
   @ApiPropertyOptional({
     type: String,
     nullable: true,
@@ -450,6 +577,7 @@ export const PAYMENT_EDITABLE_FIELDS = [
   'amount',
   'currency',
   'paidAt',
+  'purpose',
   'comment',
 ] as const;
 
@@ -536,6 +664,9 @@ export class CurrentPaymentDto {
 
   @ApiProperty({ type: String, format: 'date-time', nullable: true })
   paidAt: Date | null;
+
+  @ApiProperty({ example: 'Курс теорії, категорія B' })
+  purpose: string;
 }
 
 export class PaymentOverviewItemDto {
@@ -582,6 +713,25 @@ export class PaymentOverviewListDto {
 export class PaymentHistoryListDto {
   @ApiProperty({ type: [PaymentHistoryItemDto] })
   history: PaymentHistoryItemDto[];
+
+  @ApiProperty({ type: PaymentPaginationDto })
+  pagination: PaymentPaginationDto;
+}
+
+export class PaymentRecordDto extends PaymentDto {
+  @ApiProperty({ type: PaymentStudentDto })
+  student: PaymentStudentDto;
+
+  @ApiProperty({
+    description:
+      'true — це остання оплата студента, тобто саме вона задає його актуальний статус.',
+  })
+  isCurrent: boolean;
+}
+
+export class PaymentRecordListDto {
+  @ApiProperty({ type: [PaymentRecordDto] })
+  payments: PaymentRecordDto[];
 
   @ApiProperty({ type: PaymentPaginationDto })
   pagination: PaymentPaginationDto;

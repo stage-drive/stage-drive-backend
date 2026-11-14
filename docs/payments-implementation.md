@@ -16,7 +16,9 @@ ADMIN веде облік оплат студентів своєї автошк�
 | Переходи статусу | лише `NOT_PAID → PAID`; `PAID` фінальний (`409`). Помилку в підтвердженій оплаті виправляють новим записом — він стає актуальним |
 | `Payment.studentId` | id **користувача**-студента, як у `DrivingLesson`, `Enrollment` і `/students/:id` (у PRD — `Student.id`) |
 | Статуси | один enum `PaymentStatus { NOT_PAID, PAID }` — і для `Payment`, і для знімка `DrivingLesson.paymentStatus`. `UNPAID` перейменовано на `NOT_PAID` |
-| Журнал | `PaymentHistory` з `action`: `CREATED`, `STATUS_CHANGED`, `UPDATED` (+ `changes` «було → стало» для суми, валюти, дати, коментаря) |
+| Журнал | `PaymentHistory` з `action`: `CREATED`, `STATUS_CHANGED`, `UPDATED` (+ `changes` «було → стало» для суми, валюти, дати, призначення, коментаря) |
+| Призначення платежу | `purpose` — обовʼязковий текст до 255 символів («Курс теорії», «Практика, 10 годин»); бачить і студент. `comment` — службова примітка ADMIN, студенту не повертається |
+| Повторні запити | `POST /payments` приймає заголовок `Idempotency-Key`: повтор з тим самим ключем і даними повертає ту саму оплату, з іншими даними — `409`. Ключ унікальний у межах автошколи |
 | Сума | `DECIMAL(12,2)`; в API приймається числом (до 2 знаків), повертається рядком `"5000.00"` |
 | Дата оплати | `paidAt` — лише для `PAID`; не в майбутньому за календарем автошколи (`Organization.timezone`) і не раніше 2000-01-01 |
 | Розгортання | перевірка оплати діє одразу: студенти без оплат не записуються на практику, доки ADMIN не внесе оплату |
@@ -24,19 +26,22 @@ ADMIN веде облік оплат студентів своєї автошк�
 ## Модель даних
 
 - **`payments`**: `organization_id`, `student_id`, `amount`, `currency` (ISO 4217, за замовчуванням `UAH`), `status`,
-  `paid_at`, `comment`, `created_by_id`, `created_at`, `updated_at`.
+  `paid_at`, `purpose`, `comment`, `created_by_id`, `idempotency_key`, `request_hash`, `created_at`, `updated_at`.
 - **`payment_history`**: `payment_id`, `action`, `previous_status`, `new_status`, `changes` (JSONB), `changed_by_id`,
   `changed_at`, `comment`.
 - **`students.current_payment_id`** — остання оплата студента.
 
-Цілісність у БД (міграція `20261114180000_add_payments`):
+Цілісність у БД (міграції `20261114180000_add_payments` і `20261114200000_payment_purpose_idempotency`):
 
 - Складені FK `(student_id | created_by_id | changed_by_id, organization_id) → users(id, organization_id)` і
   `(payment_id, organization_id) → payments(id, organization_id)`: запис не прив'язати до іншої автошколи.
 - Складений FK `(current_payment_id, user_id) → payments(id, student_id)`: вказівник веде лише на оплату свого
   студента. Тому код не перевіряє вказівник вручну.
 - CHECK: `amount >= 0`, для `PAID` — `amount > 0`; `paid_at` є тоді й лише тоді, коли `status = PAID`; `currency` —
-  три латинські літери; у журналі `previous_status` порожній лише для `CREATED`, а `STATUS_CHANGED` завжди змінює статус.
+  три латинські літери; `purpose` не з самих пробілів; `idempotency_key` і `request_hash` — разом або жодного; у журналі
+  `previous_status` порожній лише для `CREATED`, а `STATUS_CHANGED` завжди змінює статус.
+- Унікальний індекс `(organization_id, idempotency_key)`; записи без ключа між собою не конфліктують.
+- Друга міграція заповнює `purpose` наявних записів значенням «Оплата навчання» і прибирає default.
 - Люди — `RESTRICT` (студента з оплатами не видалити), автошкола — `CASCADE`.
 
 ## API
@@ -44,10 +49,11 @@ ADMIN веде облік оплат студентів своєї автошк�
 | Метод | Шлях | Ролі | Опис |
 |---|---|---|---|
 | GET | `/api/payments` | OWNER, ADMIN | Студенти з актуальним статусом і останньою оплатою (UC-001). `search`, `status`, `groupId`, `sortBy` (`lastName`, `firstName`, `paidAt`, `createdAt`), `sortOrder`, `page`, `limit` |
+| GET | `/api/payments/records` | OWNER, ADMIN | Окремі записи оплат зі студентом і `isCurrent`. `studentId`, `status` (статус запису), `groupId`, `search`, `[paidFrom, paidTo)`, `sortBy` (`createdAt`, `paidAt`, `amount`), `sortOrder`, `page`, `limit` |
 | GET | `/api/payments/history` | OWNER, ADMIN | Журнал змін: `studentId`, `paymentId`, `action`, `[from, to)` |
 | GET | `/api/payments/{id}` | OWNER, ADMIN | Оплата, студент і журнал цієї оплати |
-| POST | `/api/payments` | OWNER, ADMIN | Нова оплата (за замовчуванням `PAID`, `UAH`) |
-| PATCH | `/api/payments/{id}` | OWNER, ADMIN | Сума, валюта, дата, коментар |
+| POST | `/api/payments` | OWNER, ADMIN | Нова оплата (`purpose` обовʼязкове; за замовчуванням `PAID`, `UAH`); необовʼязковий заголовок `Idempotency-Key` |
+| PATCH | `/api/payments/{id}` | OWNER, ADMIN | Сума, валюта, дата, призначення, коментар |
 | PATCH | `/api/payments/{id}/status` | OWNER, ADMIN | `NOT_PAID → PAID` (`paidAt` за замовчуванням — зараз) |
 | GET | `/api/students/{id}/payments` | OWNER, ADMIN | Статус, остання оплата, суми `PAID` за валютами, історія (UC-006) |
 | GET | `/api/me/payments` | STUDENT | Те саме для себе, без службового коментаря (UC-004) |
@@ -67,9 +73,24 @@ ADMIN веде облік оплат студентів своєї автошк�
 Усі записи оплат беруть ключ `student:<id>` — той самий, що бронювання. Тому статус не зміниться між перевіркою і
 створенням заняття (інтеграційний тест «waits for a booking that holds the student lock»).
 
+## Ідемпотентне створення
+
+Фронтенд генерує новий ключ (UUID) на кожну нову оплату й передає його в `Idempotency-Key`; при повторі (подвійний
+клік, повтор після обриву мережі) — той самий ключ. Сервер зберігає ключ і SHA-256 нормалізованого тіла
+(`5000` і `5000.00`, `2026-08-10` і `2026-08-10T00:00:00Z` — той самий запит):
+
+- ключ уже є і тіло те саме — `201` з уже створеною оплатою, без нового запису й події в журналі;
+- ключ уже є, тіло інше — `409`;
+- ключ некоректний (не 8–128 символів `[A-Za-z0-9_.:-]`) — `400` з `field: "Idempotency-Key"`;
+- без заголовка — звичайне створення.
+
+Паралельні повтори для того самого студента серіалізуються блокуванням студента. Той самий ключ одночасно для різних
+студентів ловить унікальний індекс: один запит створює оплату, другий отримує `409`.
+
 ## Логування
 
-`Payment created | updated | status changed` з paymentId, studentId, статусами, полями, actorId, organizationId.
+`Payment created | updated | status changed | create replayed` з paymentId, studentId, статусами, полями, actorId,
+organizationId; повторне використання ключа з іншими даними — `warn`.
 Невдалі спроби: `RolesGuard` пише `Access denied method= path= userId= role= organizationId=` для всіх модулів,
 сервіс — `Payment access denied reason=role|not_found|student_not_found`.
 
@@ -87,7 +108,7 @@ ADMIN веде облік оплат студентів своєї автошк�
 ## Тести
 
 - Юніт: `payments.dto.spec.ts`, `payments.service.spec.ts`, `payments.controller.spec.ts`,
-  `practice-payment.service.spec.ts`, оновлені специфікації студентів, занять і `RolesGuard`.
+  `payment-idempotency.spec.ts`, `practice-payment.service.spec.ts`, оновлені специфікації студентів, занять і `RolesGuard`.
 - Інтеграційні (`test/integration/payments.integration-spec.ts`, справжній Postgres): CHECK і FK з міграції, журнал,
-  конкурентні записи, фільтри й сортування за останньою оплатою, `422` до оплати й `201` після, серіалізація з
-  бронюванням.
+  конкурентні записи, фільтри й сортування за останньою оплатою, список записів, ідемпотентні повтори (зокрема гонка
+  одного ключа для двох студентів), `422` до оплати й успіх після, серіалізація з бронюванням.

@@ -16,6 +16,11 @@ import {
 } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
 import {
+  IDEMPOTENCY_KEY_FORMAT_MESSAGE,
+  IDEMPOTENCY_KEY_HEADER,
+  IDEMPOTENCY_KEY_REUSED_MESSAGE,
+} from './payment-idempotency';
+import {
   HISTORY_RANGE_MESSAGE,
   NO_PAYMENT_FIELDS_MESSAGE,
   PAID_AMOUNT_POSITIVE_MESSAGE,
@@ -27,6 +32,7 @@ import {
   PAYMENT_NOT_FOUND_MESSAGE,
   PAYMENT_STATUS_UNCHANGED_MESSAGE,
   PAYMENT_STUDENT_NOT_FOUND_MESSAGE,
+  PAID_RANGE_MESSAGE,
   PaymentsService,
   STUDENT_ARCHIVED_MESSAGE,
 } from './payments.service';
@@ -62,6 +68,7 @@ function paymentRow(
     currency: 'UAH',
     status: PaymentStatus.PAID as PaymentStatus,
     paidAt: new Date('2026-08-10T00:00:00.000Z'),
+    purpose: 'Курс теорії',
     comment: 'Готівка' as string | null,
     createdAt: new Date('2026-08-10T09:00:00.000Z'),
     updatedAt: new Date('2026-08-10T09:00:00.000Z'),
@@ -145,6 +152,8 @@ describe('PaymentsService', () => {
     user: { findFirst: jest.fn() },
     payment: {
       findFirst: jest.fn(),
+      findMany: jest.fn(),
+      count: jest.fn(),
       create: jest.fn(),
       update: jest.fn(),
     },
@@ -170,6 +179,8 @@ describe('PaymentsService', () => {
     prisma.student.findMany.mockResolvedValue([]);
     prisma.student.count.mockResolvedValue(0);
     prisma.paymentHistory.findMany.mockResolvedValue([]);
+    prisma.payment.findMany.mockResolvedValue([]);
+    prisma.payment.count.mockResolvedValue(0);
     prisma.paymentHistory.count.mockResolvedValue(0);
     prisma.$executeRaw.mockResolvedValue(0);
     prisma.$transaction.mockImplementation(
@@ -196,9 +207,14 @@ describe('PaymentsService', () => {
     const manage = [
       (user: User) => service.overview(user, {}),
       (user: User) => service.history(user, {}),
+      (user: User) => service.records(user, {}),
       (user: User) => service.getById(user, PAYMENT_ID),
       (user: User) =>
-        service.create(user, { studentId: STUDENT_ID, amount: 1 }),
+        service.create(user, {
+          purpose: 'Курс теорії',
+          studentId: STUDENT_ID,
+          amount: 1,
+        }),
       (user: User) => service.update(user, PAYMENT_ID, { amount: 1 }),
       (user: User) =>
         service.changeStatus(user, PAYMENT_ID, { status: PaymentStatus.PAID }),
@@ -377,6 +393,114 @@ describe('PaymentsService', () => {
     });
   });
 
+  describe('records', () => {
+    it('lists payment rows of the organization with the student and the current flag', async () => {
+      prisma.payment.findMany.mockResolvedValue([
+        {
+          ...paymentRow(),
+          student: {
+            ...paymentStudent(),
+            studentProfile: {
+              ...paymentStudent().studentProfile,
+              currentPaymentId: PAYMENT_ID,
+            },
+          },
+        },
+        {
+          ...notPaidRow({ id: 'payment-old' }),
+          student: {
+            ...paymentStudent(),
+            studentProfile: {
+              ...paymentStudent().studentProfile,
+              currentPaymentId: PAYMENT_ID,
+            },
+          },
+        },
+      ]);
+      prisma.payment.count.mockResolvedValue(2);
+
+      const result = await service.records(actor(UserRole.ADMIN), {});
+
+      expect(prisma.payment.findMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: { organizationId: 'org-1' },
+          orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+          skip: 0,
+          take: 20,
+        }),
+      );
+      expect(result.payments.map((row) => [row.id, row.isCurrent])).toEqual([
+        [PAYMENT_ID, true],
+        ['payment-old', false],
+      ]);
+      expect(result.payments[0]).toMatchObject({
+        amount: '5000.00',
+        purpose: 'Курс теорії',
+        status: PaymentStatus.PAID,
+        student: { id: STUDENT_ID, group: { id: 'group-1' } },
+      });
+      expect(result.pagination).toEqual({
+        page: 1,
+        limit: 20,
+        total: 2,
+        totalPages: 1,
+      });
+    });
+
+    it('filters by student, status, group, search and paid date range', async () => {
+      await service.records(actor(UserRole.ADMIN), {
+        studentId: STUDENT_ID,
+        status: PaymentStatus.PAID,
+        groupId: 'group-1',
+        search: 'Коваль',
+        paidFrom: '2026-08-01',
+        paidTo: '2026-09-01',
+        sortBy: 'paidAt',
+        sortOrder: 'asc',
+      });
+
+      const args = prisma.payment.findMany.mock.calls[0][0] as {
+        where: Record<string, unknown>;
+        orderBy: unknown;
+      };
+      expect(args.where).toMatchObject({
+        organizationId: 'org-1',
+        studentId: STUDENT_ID,
+        status: PaymentStatus.PAID,
+        paidAt: { gte: new Date('2026-08-01'), lt: new Date('2026-09-01') },
+        student: {
+          AND: [
+            {
+              studentProfile: {
+                is: { organizationId: 'org-1', groupId: 'group-1' },
+              },
+            },
+            { OR: expect.any(Array) },
+          ],
+        },
+      });
+      expect(args.orderBy).toEqual([
+        { paidAt: { sort: 'asc', nulls: 'last' } },
+        { createdAt: 'desc' },
+        { id: 'desc' },
+      ]);
+    });
+
+    it('rejects paidTo that is not after paidFrom', async () => {
+      await expect(
+        service.records(actor(UserRole.ADMIN), {
+          paidFrom: '2026-09-01',
+          paidTo: '2026-09-01',
+        }),
+      ).rejects.toMatchObject({
+        response: {
+          errors: [{ field: 'paidTo', message: PAID_RANGE_MESSAGE }],
+        },
+      });
+      expect(prisma.payment.findMany).not.toHaveBeenCalled();
+    });
+  });
+
   describe('history', () => {
     it('rejects a range where to is not after from', async () => {
       await expect(
@@ -486,6 +610,9 @@ describe('PaymentsService', () => {
 
   describe('create', () => {
     beforeEach(() => {
+      // clearAllMocks не скидає mockResolvedValue інших тестів: без оплати з таким ключем.
+      prisma.payment.findFirst.mockReset();
+      prisma.payment.findFirst.mockResolvedValue(null);
       prisma.user.findFirst.mockResolvedValue(studentUserRow());
       prisma.payment.create.mockImplementation(
         ({ data }: { data: Record<string, unknown> }) =>
@@ -495,6 +622,7 @@ describe('PaymentsService', () => {
 
     it('creates a PAID payment, writes CREATED history and moves the current payment', async () => {
       const result = await service.create(actor(UserRole.ADMIN), {
+        purpose: 'Курс теорії',
         studentId: STUDENT_ID,
         amount: 5000.5,
         paidAt: '2026-08-10',
@@ -525,8 +653,11 @@ describe('PaymentsService', () => {
         currency: 'UAH',
         status: PaymentStatus.PAID,
         paidAt: new Date('2026-08-10'),
+        purpose: 'Курс теорії',
         comment: 'Готівка',
         createdById: 'admin-1',
+        idempotencyKey: null,
+        requestHash: null,
       });
       expect(prisma.paymentHistory.create).toHaveBeenCalledWith({
         data: {
@@ -553,6 +684,7 @@ describe('PaymentsService', () => {
 
     it('lets OWNER record a NOT_PAID payment with zero amount and no date', async () => {
       await service.create(actor(UserRole.OWNER), {
+        purpose: 'Курс теорії',
         studentId: STUDENT_ID,
         amount: 0,
         status: PaymentStatus.NOT_PAID,
@@ -609,6 +741,7 @@ describe('PaymentsService', () => {
     ])('rejects %s with 400', async (_case, body, field, message) => {
       await expect(
         service.create(actor(UserRole.ADMIN), {
+          purpose: 'Курс теорії',
           studentId: STUDENT_ID,
           ...body,
         }),
@@ -633,6 +766,7 @@ describe('PaymentsService', () => {
 
           await expect(
             service.create(actor(UserRole.ADMIN), {
+              purpose: 'Курс теорії',
               studentId: STUDENT_ID,
               amount: 100,
               paidAt,
@@ -648,6 +782,7 @@ describe('PaymentsService', () => {
 
           await expect(
             service.create(actor(UserRole.ADMIN), {
+              purpose: 'Курс теорії',
               studentId: STUDENT_ID,
               amount: 100,
               paidAt,
@@ -661,11 +796,119 @@ describe('PaymentsService', () => {
       );
     });
 
+    describe('Idempotency-Key', () => {
+      const KEY = '3f0c2a6e-6b1d-4f7e-9c2a-1b2c3d4e5f60';
+      const body = {
+        purpose: 'Курс теорії',
+        studentId: STUDENT_ID,
+        amount: 5000,
+        paidAt: '2026-08-10',
+      };
+
+      function createdData() {
+        return (
+          prisma.payment.create.mock.calls[0][0] as {
+            data: { idempotencyKey: string; requestHash: string };
+          }
+        ).data;
+      }
+
+      it('stores the key with a hash of the request on the first call', async () => {
+        await service.create(actor(UserRole.ADMIN), body, KEY);
+
+        expect(prisma.payment.findFirst).toHaveBeenCalledWith({
+          where: { organizationId: 'org-1', idempotencyKey: KEY },
+          select: expect.objectContaining({ requestHash: true }),
+        });
+        expect(createdData().idempotencyKey).toBe(KEY);
+        expect(createdData().requestHash).toMatch(/^[0-9a-f]{64}$/);
+      });
+
+      it('returns the existing payment for a repeated request and creates nothing', async () => {
+        await service.create(actor(UserRole.ADMIN), body, KEY);
+        const { requestHash } = createdData();
+        jest.clearAllMocks();
+        prisma.organization.findUnique.mockResolvedValue({
+          deletedAt: null,
+          timezone: 'Europe/Kyiv',
+        });
+        prisma.payment.findFirst.mockResolvedValue({
+          ...paymentRow(),
+          requestHash,
+        });
+
+        // 5000.00 і повна дата — той самий запит, що 5000 і '2026-08-10'.
+        const result = await service.create(
+          actor(UserRole.ADMIN),
+          { ...body, amount: 5000.0, paidAt: '2026-08-10T00:00:00.000Z' },
+          KEY,
+        );
+
+        expect(result.id).toBe(PAYMENT_ID);
+        expect(prisma.payment.create).not.toHaveBeenCalled();
+        expect(prisma.paymentHistory.create).not.toHaveBeenCalled();
+        expect(prisma.student.update).not.toHaveBeenCalled();
+        expect(logSpy).toHaveBeenCalledWith(
+          expect.stringContaining('Payment create replayed'),
+        );
+      });
+
+      it('returns 409 when the key is reused with other data', async () => {
+        prisma.payment.findFirst.mockResolvedValue({
+          ...paymentRow(),
+          requestHash: 'f'.repeat(64),
+        });
+
+        await expect(
+          service.create(actor(UserRole.ADMIN), body, KEY),
+        ).rejects.toThrow(
+          new ConflictException(IDEMPOTENCY_KEY_REUSED_MESSAGE),
+        );
+        expect(prisma.payment.create).not.toHaveBeenCalled();
+      });
+
+      it('rejects a malformed key with 400 before touching the database', async () => {
+        await expect(
+          service.create(actor(UserRole.ADMIN), body, 'short'),
+        ).rejects.toMatchObject({
+          response: {
+            errors: [
+              {
+                field: IDEMPOTENCY_KEY_HEADER,
+                message: IDEMPOTENCY_KEY_FORMAT_MESSAGE,
+              },
+            ],
+          },
+        });
+        expect(prisma.organization.findUnique).not.toHaveBeenCalled();
+      });
+
+      it('answers a concurrent duplicate that lost the unique index race as a replay', async () => {
+        await service.create(actor(UserRole.ADMIN), body, KEY);
+        const { requestHash } = createdData();
+        prisma.payment.findFirst
+          .mockResolvedValueOnce(null)
+          .mockResolvedValueOnce({ ...paymentRow(), requestHash });
+        prisma.payment.create.mockRejectedValueOnce(
+          new Prisma.PrismaClientKnownRequestError('Unique constraint', {
+            code: 'P2002',
+            clientVersion: 'test',
+            meta: { target: ['organizationId', 'idempotencyKey'] },
+          }),
+        );
+
+        await expect(
+          service.create(actor(UserRole.ADMIN), body, KEY),
+        ).resolves.toMatchObject({ id: PAYMENT_ID });
+      });
+    });
+
     it('returns 404 for a student of another organization', async () => {
       prisma.user.findFirst.mockResolvedValue(null);
 
       await expect(
         service.create(actor(UserRole.ADMIN), {
+          purpose: 'Курс теорії',
           studentId: STUDENT_ID,
           amount: 100,
           paidAt: '2026-08-10',
@@ -686,6 +929,7 @@ describe('PaymentsService', () => {
 
         await expect(
           service.create(actor(UserRole.ADMIN), {
+            purpose: 'Курс теорії',
             studentId: STUDENT_ID,
             amount: 100,
             paidAt: '2026-08-10',
@@ -740,6 +984,7 @@ describe('PaymentsService', () => {
             amount: new Prisma.Decimal('5500'),
             currency: 'UAH',
             paidAt: new Date('2026-08-10T00:00:00.000Z'),
+            purpose: 'Курс теорії',
             comment: null,
           },
         }),
@@ -762,6 +1007,24 @@ describe('PaymentsService', () => {
       expect(logSpy).toHaveBeenCalledWith(
         expect.stringContaining('fields=amount,comment'),
       );
+    });
+
+    it('records a purpose change in the UPDATED diff', async () => {
+      await service.update(actor(UserRole.ADMIN), PAYMENT_ID, {
+        purpose: 'Практичне водіння, 10 годин',
+      });
+
+      expect(prisma.paymentHistory.create).toHaveBeenCalledWith({
+        data: expect.objectContaining({
+          action: PaymentHistoryAction.UPDATED,
+          changes: {
+            purpose: {
+              from: 'Курс теорії',
+              to: 'Практичне водіння, 10 годин',
+            },
+          },
+        }),
+      });
     });
 
     it('writes nothing when the values are unchanged', async () => {

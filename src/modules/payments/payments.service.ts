@@ -18,35 +18,48 @@ import {
   lockScheduleResources,
   scheduleLockKey,
 } from '../../common/prisma/schedule-lock';
+import { isUniqueConstraintOn } from '../../common/prisma/unique-constraint';
 import { searchConditions } from '../../common/prisma/user-search';
 import { localDate } from '../../common/time/zoned-time';
 import { fieldBadRequest } from '../../common/validation/field-error';
 import { PrismaService } from '../../prisma/prisma.service';
+import {
+  IDEMPOTENCY_KEY_REUSED_MESSAGE,
+  hashCreateRequest,
+  parseIdempotencyKey,
+} from './payment-idempotency';
 import { PAYMENT_MANAGE_ROLES, PAYMENT_SELF_ROLES } from './payment-roles';
 import {
   currentPaymentSelect,
   currentStatusOf,
   formatAmount,
+  PaymentRow,
   paymentHistorySelect,
+  paymentRecordSelect,
   paymentSelect,
   paymentStudentSelect,
   toCurrentPaymentDto,
   toPaymentDto,
   toPaymentHistoryItemDto,
+  toPaymentRecordDto,
   toPaymentStudentDto,
   toStudentPaymentSummary,
 } from './payment-view';
 import {
   CreatePaymentDto,
   DEFAULT_CURRENCY,
+  ListPaymentRecordsQueryDto,
   ListPaymentsQueryDto,
   PaymentChanges,
   PaymentDetailsDto,
   PaymentDto,
+  PAYMENT_EDITABLE_FIELDS,
   PaymentEditableField,
   PaymentHistoryListDto,
   PaymentHistoryQueryDto,
   PaymentOverviewListDto,
+  PaymentRecordListDto,
+  PaymentRecordSortField,
   PaymentSortField,
   PaymentSortOrder,
   StudentPaymentSummaryDto,
@@ -73,8 +86,10 @@ export const PAID_AT_FUTURE_MESSAGE = 'Дата оплати не може бу�
 export const PAID_AT_TOO_EARLY_MESSAGE =
   'Дата оплати не може бути раніше 01.01.2000.';
 export const NO_PAYMENT_FIELDS_MESSAGE =
-  'Немає полів для оновлення (amount, currency, paidAt, comment).';
+  'Немає полів для оновлення (amount, currency, paidAt, purpose, comment).';
 export const HISTORY_RANGE_MESSAGE = 'to має бути пізніше за from.';
+export const PAID_RANGE_MESSAGE = 'paidTo має бути пізніше за paidFrom.';
+export { IDEMPOTENCY_KEY_REUSED_MESSAGE };
 
 const DEFAULT_PAGE = 1;
 const DEFAULT_LIMIT = 20;
@@ -106,6 +121,7 @@ type PaymentState = {
   amount: Prisma.Decimal;
   currency: string;
   paidAt: Date | null;
+  purpose: string;
   comment: string | null;
 };
 
@@ -171,6 +187,20 @@ function overviewOrderBy(
   }
 }
 
+function recordsOrderBy(
+  sortBy: PaymentRecordSortField,
+  sortOrder: PaymentSortOrder,
+): Prisma.PaymentOrderByWithRelationInput[] {
+  switch (sortBy) {
+    case 'createdAt':
+      return [{ createdAt: sortOrder }, { id: sortOrder }];
+    case 'paidAt':
+      return [{ paidAt: { sort: sortOrder, nulls: 'last' } }, ...paymentOrder];
+    case 'amount':
+      return [{ amount: sortOrder }, ...paymentOrder];
+  }
+}
+
 /**
  * paidAt — день оплати. «У майбутньому» рахується за календарем автошколи
  * (Organization.timezone), а не UTC: о 00:30 за Києвом '2026-11-15' — це вже
@@ -213,6 +243,8 @@ function formatField(
       return state.currency;
     case 'paidAt':
       return state.paidAt ? state.paidAt.toISOString() : null;
+    case 'purpose':
+      return state.purpose;
     case 'comment':
       return state.comment;
   }
@@ -223,13 +255,7 @@ function diffPaymentState(
   after: PaymentState,
 ): PaymentChanges {
   const changes: PaymentChanges = {};
-  const fields: PaymentEditableField[] = [
-    'amount',
-    'currency',
-    'paidAt',
-    'comment',
-  ];
-  for (const field of fields) {
+  for (const field of PAYMENT_EDITABLE_FIELDS) {
     const from = formatField(field, before);
     const to = formatField(field, after);
     if (from !== to) {
@@ -244,6 +270,7 @@ function isEmptyUpdate(payload: UpdatePaymentDto): boolean {
     payload.amount === undefined &&
     payload.currency === undefined &&
     payload.paidAt === undefined &&
+    payload.purpose === undefined &&
     payload.comment === undefined
   );
 }
@@ -322,6 +349,73 @@ export class PaymentsService {
     };
   }
 
+  /**
+   * Плоский список записів оплат автошколи з фільтрами за студентом, статусом запису,
+   * групою, пошуком студента і датою оплати. Кожен рядок — оплата разом зі студентом.
+   */
+  async records(
+    actor: User,
+    query: ListPaymentRecordsQueryDto,
+  ): Promise<PaymentRecordListDto> {
+    this.assertRole(actor, PAYMENT_MANAGE_ROLES, 'records');
+    await this.requireOrganization(actor.organizationId);
+
+    const paidFrom = query.paidFrom ? new Date(query.paidFrom) : undefined;
+    const paidTo = query.paidTo ? new Date(query.paidTo) : undefined;
+    if (paidFrom && paidTo && paidFrom.getTime() >= paidTo.getTime()) {
+      throw fieldBadRequest('paidTo', PAID_RANGE_MESSAGE);
+    }
+
+    const studentFilters: Prisma.UserWhereInput[] = [];
+    if (query.groupId) {
+      studentFilters.push({
+        studentProfile: {
+          is: { organizationId: actor.organizationId, groupId: query.groupId },
+        },
+      });
+    }
+    if (query.search) {
+      studentFilters.push({ OR: searchConditions(query.search) });
+    }
+    const where: Prisma.PaymentWhereInput = {
+      organizationId: actor.organizationId,
+      ...(query.studentId ? { studentId: query.studentId } : {}),
+      ...(query.status ? { status: query.status } : {}),
+      ...(studentFilters.length > 0
+        ? { student: { AND: studentFilters } }
+        : {}),
+      ...(paidFrom || paidTo
+        ? {
+            paidAt: {
+              ...(paidFrom ? { gte: paidFrom } : {}),
+              ...(paidTo ? { lt: paidTo } : {}),
+            },
+          }
+        : {}),
+    };
+
+    const page = query.page ?? DEFAULT_PAGE;
+    const limit = query.limit ?? DEFAULT_LIMIT;
+    const [rows, total] = await Promise.all([
+      this.prisma.payment.findMany({
+        where,
+        select: paymentRecordSelect,
+        orderBy: recordsOrderBy(
+          query.sortBy ?? 'createdAt',
+          query.sortOrder ?? 'desc',
+        ),
+        skip: (page - 1) * limit,
+        take: limit,
+      }),
+      this.prisma.payment.count({ where }),
+    ]);
+
+    return {
+      payments: rows.map(toPaymentRecordDto),
+      pagination: pagination(page, limit, total),
+    };
+  }
+
   /** Журнал змін оплат автошколи, від нових подій до старих. */
   async history(
     actor: User,
@@ -393,9 +487,20 @@ export class PaymentsService {
     };
   }
 
-  /** UC-002. Нова оплата стає останньою, тож її статус — актуальний статус студента. */
-  async create(actor: User, payload: CreatePaymentDto): Promise<PaymentDto> {
+  /**
+   * UC-002. Нова оплата стає останньою, тож її статус — актуальний статус студента.
+   *
+   * idempotencyKeyHeader — заголовок Idempotency-Key. Повтор запиту з тим самим ключем
+   * і тими самими даними повертає вже створену оплату без нового запису (подвійний клік,
+   * повтор після обриву мережі). Той самий ключ з іншими даними — 409.
+   */
+  async create(
+    actor: User,
+    payload: CreatePaymentDto,
+    idempotencyKeyHeader?: string,
+  ): Promise<PaymentDto> {
     this.assertRole(actor, PAYMENT_MANAGE_ROLES, 'create');
+    const idempotencyKey = parseIdempotencyKey(idempotencyKeyHeader);
     const { timezone } = await this.requireOrganization(actor.organizationId);
 
     const now = new Date();
@@ -406,52 +511,147 @@ export class PaymentsService {
       paidAt: payload.paidAt
         ? parsePaidAt(payload.paidAt, now, timezone)
         : null,
+      purpose: payload.purpose,
       comment: payload.comment ?? null,
     };
     assertPaymentState(state);
+    const idempotency = idempotencyKey
+      ? {
+          key: idempotencyKey,
+          hash: hashCreateRequest({
+            studentId: payload.studentId,
+            amount: formatAmount(state.amount),
+            currency: state.currency,
+            status: state.status,
+            paidAt: state.paidAt ? state.paidAt.toISOString() : null,
+            purpose: state.purpose,
+            comment: state.comment,
+          }),
+        }
+      : null;
 
-    const saved = await this.prisma.$transaction(async (tx) => {
-      await this.lockStudent(tx, payload.studentId);
-      const profileId = await this.requirePayableStudent(
-        tx,
+    let result: { payment: PaymentRow; replayed: boolean };
+    try {
+      result = await this.prisma.$transaction(async (tx) => {
+        await this.lockStudent(tx, payload.studentId);
+        if (idempotency) {
+          const replay = await this.findIdempotentPayment(
+            tx,
+            actor,
+            idempotency,
+          );
+          if (replay) {
+            return { payment: replay, replayed: true };
+          }
+        }
+        const payment = await this.insertPayment(
+          tx,
+          actor,
+          payload.studentId,
+          state,
+          idempotency,
+        );
+        return { payment, replayed: false };
+      });
+    } catch (error) {
+      // Той самий ключ паралельно для іншого студента: блокування різні, тож першим
+      // встиг інший запит, а цей упав на унікальному індексі. Відповідаємо як на повтор.
+      if (!idempotency || !isUniqueConstraintOn(error, 'idempotencyKey')) {
+        throw error;
+      }
+      const replay = await this.findIdempotentPayment(
+        this.prisma,
         actor,
-        payload.studentId,
+        idempotency,
       );
+      if (!replay) {
+        throw error;
+      }
+      result = { payment: replay, replayed: true };
+    }
 
-      const payment = await tx.payment.create({
-        data: {
-          organizationId: actor.organizationId,
-          studentId: payload.studentId,
-          amount: state.amount,
-          currency: state.currency,
-          status: state.status,
-          paidAt: state.paidAt,
-          comment: state.comment,
-          createdById: actor.id,
-        },
-        select: paymentSelect,
-      });
-      await tx.paymentHistory.create({
-        data: {
-          organizationId: actor.organizationId,
-          paymentId: payment.id,
-          action: PaymentHistoryAction.CREATED,
-          previousStatus: null,
-          newStatus: payment.status,
-          changedById: actor.id,
-        },
-      });
-      await tx.student.update({
-        where: { id: profileId },
-        data: { currentPaymentId: payment.id },
-      });
-      return payment;
-    });
-
-    this.logger.log(
-      `Payment created paymentId=${saved.id} studentId=${saved.studentId} status=${saved.status} amount=${formatAmount(saved.amount)} currency=${saved.currency} actorId=${actor.id} organizationId=${actor.organizationId}`,
-    );
+    const saved = result.payment;
+    if (result.replayed) {
+      this.logger.log(
+        `Payment create replayed paymentId=${saved.id} studentId=${saved.studentId} actorId=${actor.id} organizationId=${actor.organizationId}`,
+      );
+    } else {
+      this.logger.log(
+        `Payment created paymentId=${saved.id} studentId=${saved.studentId} status=${saved.status} amount=${formatAmount(saved.amount)} currency=${saved.currency} actorId=${actor.id} organizationId=${actor.organizationId}`,
+      );
+    }
     return toPaymentDto(saved);
+  }
+
+  /** Новий запис оплати, подія CREATED і новий вказівник на актуальну оплату. */
+  private async insertPayment(
+    tx: Prisma.TransactionClient,
+    actor: User,
+    studentId: string,
+    state: PaymentState,
+    idempotency: { key: string; hash: string } | null,
+  ): Promise<PaymentRow> {
+    const profileId = await this.requirePayableStudent(tx, actor, studentId);
+
+    const payment = await tx.payment.create({
+      data: {
+        organizationId: actor.organizationId,
+        studentId,
+        amount: state.amount,
+        currency: state.currency,
+        status: state.status,
+        paidAt: state.paidAt,
+        purpose: state.purpose,
+        comment: state.comment,
+        createdById: actor.id,
+        idempotencyKey: idempotency?.key ?? null,
+        requestHash: idempotency?.hash ?? null,
+      },
+      select: paymentSelect,
+    });
+    await tx.paymentHistory.create({
+      data: {
+        organizationId: actor.organizationId,
+        paymentId: payment.id,
+        action: PaymentHistoryAction.CREATED,
+        previousStatus: null,
+        newStatus: payment.status,
+        changedById: actor.id,
+      },
+    });
+    await tx.student.update({
+      where: { id: profileId },
+      data: { currentPaymentId: payment.id },
+    });
+    return payment;
+  }
+
+  /**
+   * Оплата, вже створена з цим ключем в автошколі. Інші дані під тим самим ключем — 409:
+   * це не повтор, а помилка клієнта, і мовчки повертати чужий результат не можна.
+   */
+  private async findIdempotentPayment(
+    tx: Prisma.TransactionClient,
+    actor: User,
+    idempotency: { key: string; hash: string },
+  ): Promise<PaymentRow | null> {
+    const existing = await tx.payment.findFirst({
+      where: {
+        organizationId: actor.organizationId,
+        idempotencyKey: idempotency.key,
+      },
+      select: { ...paymentSelect, requestHash: true },
+    });
+    if (!existing) {
+      return null;
+    }
+    if (existing.requestHash !== idempotency.hash) {
+      this.logger.warn(
+        `Payment idempotency key reused with other data paymentId=${existing.id} actorId=${actor.id} organizationId=${actor.organizationId}`,
+      );
+      throw new ConflictException(IDEMPOTENCY_KEY_REUSED_MESSAGE);
+    }
+    return existing;
   }
 
   /** Сума, валюта, дата оплати й коментар. Статус змінюється лише через changeStatus. */
@@ -478,6 +678,7 @@ export class PaymentsService {
         amount: existing.amount,
         currency: existing.currency,
         paidAt: existing.paidAt,
+        purpose: existing.purpose,
         comment: existing.comment,
       };
       if (paidAt && existing.status !== PaymentStatus.PAID) {
@@ -491,6 +692,7 @@ export class PaymentsService {
             : existing.amount,
         currency: payload.currency ?? existing.currency,
         paidAt: paidAt ?? existing.paidAt,
+        purpose: payload.purpose ?? existing.purpose,
         comment:
           payload.comment !== undefined ? payload.comment : existing.comment,
       };
@@ -507,6 +709,7 @@ export class PaymentsService {
           amount: after.amount,
           currency: after.currency,
           paidAt: after.paidAt,
+          purpose: after.purpose,
           comment: after.comment,
         },
         select: paymentSelect,
