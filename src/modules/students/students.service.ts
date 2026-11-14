@@ -24,6 +24,7 @@ import {
 import { createHash, randomBytes } from 'crypto';
 import { lockGroup } from '../../common/prisma/group-lock';
 import { isUniqueConstraintOn } from '../../common/prisma/unique-constraint';
+import { searchConditions } from '../../common/prisma/user-search';
 import { PrismaService } from '../../prisma/prisma.service';
 import {
   InvitationEmailDelivery,
@@ -33,6 +34,13 @@ import {
   EMAIL_ALREADY_EXISTS_MESSAGE,
   INVITATION_TTL_MS,
 } from '../invitations/invitations.service';
+import { paymentVisibility } from '../payments/payment-roles';
+import {
+  currentStatusOf,
+  paymentSelect,
+  toStudentPaymentSummary,
+} from '../payments/payment-view';
+import { StudentPaymentSummaryDto } from '../payments/payments.dto';
 import {
   AssignStudentGroupDto,
   CreateStudentDto,
@@ -45,8 +53,6 @@ import {
   StudentInstructorSummaryDto,
   StudentListDto,
   StudentListItemDto,
-  StudentPaymentHistoryItemDto,
-  StudentPaymentsDto,
   StudentPracticeDto,
   StudentPracticeLessonDto,
   StudentSortField,
@@ -91,6 +97,8 @@ export const STUDENT_SELF_ROLES = [UserRole.STUDENT] as const;
 
 export const GROUP_NOT_FOUND_MESSAGE = 'Group not found';
 export const STUDENT_NOT_FOUND_MESSAGE = 'Student not found';
+export const PAYMENT_FILTER_FORBIDDEN_MESSAGE =
+  'Фільтр paymentStatus доступний лише ADMIN.';
 export const STUDENT_TRAINING_STATUS_MESSAGE =
   'Студента зі статусом ARCHIVED, DROPPED або GRADUATED не можна призначити до групи.';
 export const GROUP_NOT_ASSIGNABLE_MESSAGE =
@@ -181,14 +189,6 @@ const studentSelect = {
   organizationId: true,
   createdAt: true,
   deletedAt: true,
-  studentDrivingLessons: {
-    where: {
-      status: { not: LessonStatus.CANCELLED },
-      paymentStatus: PaymentStatus.UNPAID,
-    },
-    select: { id: true, organizationId: true },
-    take: 1,
-  },
   studentProfile: {
     select: {
       organizationId: true,
@@ -196,6 +196,8 @@ const studentSelect = {
       transmission: true,
       trainingStatus: true,
       instructorId: true,
+      // Складений FK гарантує, що це оплата саме цього студента.
+      currentPayment: { select: { status: true } },
       group: {
         select: {
           id: true,
@@ -246,6 +248,7 @@ const studentCardSelect = {
       address: true,
       contractNumber: true,
       trainingStatus: true,
+      currentPaymentId: true,
       group: {
         select: {
           id: true,
@@ -374,15 +377,15 @@ const studentCardSelect = {
     },
     orderBy: { takenAt: 'desc' },
   },
+  studentPayments: {
+    select: paymentSelect,
+    orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+  },
 } satisfies Prisma.UserSelect;
 
 type StudentCardRow = Prisma.UserGetPayload<{
   select: typeof studentCardSelect;
 }>;
-
-function contains(value: string): Prisma.StringFilter {
-  return { contains: value, mode: 'insensitive' };
-}
 
 function assertCanListStudents(actor: User): void {
   if (!(STUDENT_LIST_ROLES as readonly UserRole[]).includes(actor.role)) {
@@ -569,31 +572,6 @@ function allowedStudentScope(actor: User): Prisma.UserWhereInput {
   }
 }
 
-function searchConditions(search: string): Prisma.UserWhereInput[] {
-  const conditions: Prisma.UserWhereInput[] = [
-    { firstName: contains(search) },
-    { lastName: contains(search) },
-    { email: contains(search) },
-    { phone: contains(search) },
-  ];
-
-  const parts = search.split(/\s+/).filter(Boolean);
-  if (parts.length >= 2) {
-    const first = parts[0];
-    const rest = parts.slice(1).join(' ');
-    conditions.push(
-      {
-        AND: [{ firstName: contains(first) }, { lastName: contains(rest) }],
-      },
-      {
-        AND: [{ firstName: contains(rest) }, { lastName: contains(first) }],
-      },
-    );
-  }
-
-  return conditions;
-}
-
 function buildStudentWhere(
   actor: User,
   query: ListStudentsQueryDto,
@@ -625,26 +603,20 @@ function buildStudentWhere(
     });
   }
 
-  if (query.paymentStatus === PaymentStatus.UNPAID) {
-    filters.push({
-      studentDrivingLessons: {
-        some: {
-          organizationId: actor.organizationId,
-          paymentStatus: PaymentStatus.UNPAID,
-          status: { not: LessonStatus.CANCELLED },
-        },
+  // Актуальний статус оплати — статус останньої оплати (Student.currentPayment).
+  // NOT_PAID — усе, що не PAID, зокрема студенти без жодної оплати.
+  const paidFilter: Prisma.UserWhereInput = {
+    studentProfile: {
+      is: {
+        organizationId: actor.organizationId,
+        currentPayment: { is: { status: PaymentStatus.PAID } },
       },
-    });
-  } else if (query.paymentStatus === PaymentStatus.PAID) {
-    filters.push({
-      studentDrivingLessons: {
-        none: {
-          organizationId: actor.organizationId,
-          paymentStatus: PaymentStatus.UNPAID,
-          status: { not: LessonStatus.CANCELLED },
-        },
-      },
-    });
+    },
+  };
+  if (query.paymentStatus === PaymentStatus.PAID) {
+    filters.push(paidFilter);
+  } else if (query.paymentStatus === PaymentStatus.NOT_PAID) {
+    filters.push({ NOT: paidFilter });
   }
 
   const search = query.search?.trim();
@@ -684,7 +656,7 @@ function isVisibleStudent(row: StudentRow, organizationId: string): boolean {
   );
 }
 
-function toStudentListItem(row: StudentRow): StudentListItemDto {
+function toStudentListItem(actor: User, row: StudentRow): StudentListItemDto {
   const profile =
     row.studentProfile &&
     row.studentProfile.organizationId === row.organizationId
@@ -705,9 +677,11 @@ function toStudentListItem(row: StudentRow): StudentListItemDto {
           lastName: instructorUser.lastName,
         }
       : null;
-  const hasUnpaid = (row.studentDrivingLessons ?? []).some(
-    (lesson) => lesson.organizationId === row.organizationId,
-  );
+  // TEACHER та INSTRUCTOR оплат не бачать (Модуль 13, RBAC).
+  const paymentStatus =
+    paymentVisibility(actor, row.id) === 'hidden'
+      ? null
+      : currentStatusOf(profile?.currentPayment);
 
   return {
     id: row.id,
@@ -724,7 +698,7 @@ function toStudentListItem(row: StudentRow): StudentListItemDto {
     trainingStatus: profile?.trainingStatus ?? null,
     group,
     instructor,
-    paymentStatus: hasUnpaid ? PaymentStatus.UNPAID : PaymentStatus.PAID,
+    paymentStatus,
     createdAt: row.createdAt,
   };
 }
@@ -1027,27 +1001,35 @@ function toPractice(row: StudentCardRow): StudentPracticeDto {
   };
 }
 
-function toPayments(row: StudentCardRow): StudentPaymentsDto {
-  const lessons = practiceLessonsOf(row);
-  const unpaid = lessons.some(
-    (lesson) =>
-      lesson.status !== LessonStatus.CANCELLED &&
-      lesson.paymentStatus === PaymentStatus.UNPAID,
+/**
+ * Розділ «Оплати» картки (Модуль 13): записи Payment студента, а не заняття.
+ * OWNER і ADMIN бачать усе, студент — свої без службового коментаря,
+ * TEACHER та INSTRUCTOR — null.
+ */
+function toPayments(
+  actor: User,
+  row: StudentCardRow,
+): StudentPaymentSummaryDto | null {
+  const visibility = paymentVisibility(actor, row.id);
+  if (visibility === 'hidden') {
+    return null;
+  }
+  const payments = (row.studentPayments ?? []).filter(
+    (payment) => payment.organizationId === row.organizationId,
   );
-  const history: StudentPaymentHistoryItemDto[] = lessons.map((lesson) => ({
-    id: lesson.id,
-    scheduledAt: lesson.scheduledAt,
-    hours: minutesToHours(lesson.durationMin),
-    lessonStatus: lesson.status,
-    paymentStatus: lesson.paymentStatus,
-  }));
-  return {
-    status: unpaid ? PaymentStatus.UNPAID : PaymentStatus.PAID,
-    history,
-  };
+  const profile =
+    row.studentProfile?.organizationId === row.organizationId
+      ? row.studentProfile
+      : null;
+  return toStudentPaymentSummary(payments, profile?.currentPaymentId ?? null, {
+    forStudent: visibility === 'self',
+  });
 }
 
-function emptyCardSections(): Pick<
+function emptyCardSections(
+  actor: User,
+  row: StudentCardRow,
+): Pick<
   StudentCardDto,
   'theory' | 'tests' | 'attendance' | 'practice' | 'payments'
 > {
@@ -1063,11 +1045,12 @@ function emptyCardSections(): Pick<
       examAvailable: false,
       lessons: [],
     },
-    payments: { status: PaymentStatus.PAID, history: [] },
+    payments: toPayments(actor, row),
   };
 }
 
-function toStudentCard(row: StudentCardRow): StudentCardDto {
+/** actor — хто дивиться картку: від нього залежить розділ payments. */
+function toStudentCard(actor: User, row: StudentCardRow): StudentCardDto {
   const profile = row.studentProfile;
   return {
     id: row.id,
@@ -1109,9 +1092,9 @@ function toStudentCard(row: StudentCardRow): StudentCardDto {
           tests: toTests(row),
           attendance: toAttendance(row),
           practice: toPractice(row),
-          payments: toPayments(row),
+          payments: toPayments(actor, row),
         }
-      : emptyCardSections()),
+      : emptyCardSections(actor, row)),
   };
 }
 
@@ -1216,6 +1199,13 @@ export class StudentsService {
     query: ListStudentsQueryDto,
   ): Promise<StudentListDto> {
     assertCanListStudents(actor);
+    // TEACHER та INSTRUCTOR оплат не бачать, тож і фільтрувати за ними не можуть.
+    if (query.paymentStatus && paymentVisibility(actor, actor.id) !== 'staff') {
+      this.logger.warn(
+        `Payment access denied reason=role operation=students.list.paymentStatus actorId=${actor.id} role=${actor.role} organizationId=${actor.organizationId}`,
+      );
+      throw new ForbiddenException(PAYMENT_FILTER_FORBIDDEN_MESSAGE);
+    }
     await this.requireOrganization(actor.organizationId);
 
     const page = query.page ?? DEFAULT_PAGE;
@@ -1238,7 +1228,7 @@ export class StudentsService {
     return {
       students: rows
         .filter((row) => isVisibleStudent(row, actor.organizationId))
-        .map(toStudentListItem),
+        .map((row) => toStudentListItem(actor, row)),
       pagination: {
         page,
         limit,
@@ -1480,7 +1470,7 @@ export class StudentsService {
     assertCanReadStudent(actor);
     await this.requireOrganization(actor.organizationId);
     const row = await this.findStudentCard(actor, studentId);
-    return toStudentCard(row);
+    return toStudentCard(actor, row);
   }
 
   async getOwn(actor: User): Promise<StudentCardDto> {
@@ -1507,7 +1497,7 @@ export class StudentsService {
       throw new NotFoundException(STUDENT_NOT_FOUND_MESSAGE);
     }
 
-    return toStudentCard(row);
+    return toStudentCard(actor, row);
   }
 
   async update(
@@ -1615,7 +1605,7 @@ export class StudentsService {
       throw new NotFoundException(STUDENT_NOT_FOUND_MESSAGE);
     }
 
-    return toStudentCard(updated);
+    return toStudentCard(actor, updated);
   }
 
   async assignGroup(
@@ -1741,7 +1731,7 @@ export class StudentsService {
         update: { status: EnrollmentStatus.ACTIVE },
       });
 
-      return toStudentCard({
+      return toStudentCard(actor, {
         ...student,
         studentProfile: {
           ...student.studentProfile,
@@ -1893,7 +1883,7 @@ export class StudentsService {
         `Student training status changed studentId=${student.id} from=${current} to=${next} actorId=${actor.id} organizationId=${actor.organizationId}`,
       );
 
-      return toStudentCard({
+      return toStudentCard(actor, {
         ...student,
         studentProfile: {
           ...student.studentProfile,
@@ -1990,7 +1980,7 @@ export class StudentsService {
         `Student practice access granted studentId=${student.id} instructorId=${instructor.id} carId=${car.id} actorId=${actor.id} organizationId=${actor.organizationId}`,
       );
 
-      return toStudentCard({
+      return toStudentCard(actor, {
         ...student,
         studentProfile: {
           ...student.studentProfile,
@@ -2058,7 +2048,7 @@ export class StudentsService {
         `Student archived studentId=${student.id} actorId=${actor.id} organizationId=${actor.organizationId}`,
       );
 
-      return toStudentCard({
+      return toStudentCard(actor, {
         ...student,
         status: UserStatus.ARCHIVED,
         studentProfile: {
@@ -2080,7 +2070,16 @@ export class StudentsService {
         role: UserRole.STUDENT,
         deletedAt: null,
       },
-      select: studentCardSelect,
+      select: {
+        ...studentCardSelect,
+        // TEACHER та INSTRUCTOR оплат не бачать: історію оплат навіть не читаємо.
+        studentPayments: {
+          ...studentCardSelect.studentPayments,
+          ...(paymentVisibility(actor, studentId) === 'hidden'
+            ? { take: 0 }
+            : {}),
+        },
+      },
     });
 
     if (!row || !canStaffViewStudent(actor, row)) {

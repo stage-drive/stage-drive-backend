@@ -522,7 +522,10 @@ export class PracticeLessonDto {
   @ApiProperty({
     enum: PaymentStatus,
     example: PaymentStatus.PAID,
-    description: 'Оплата заняття. Поки оплат немає, завжди PAID.',
+    description:
+      'Знімок статусу оплати студента на момент запису. Практику записують лише з ' +
+      'актуальною оплатою PAID (Модуль 13), тож нові заняття завжди PAID. ' +
+      'Актуальний статус — GET /students/{id}/payments або GET /me/payments.',
   })
   paymentStatus: PaymentStatus;
 
