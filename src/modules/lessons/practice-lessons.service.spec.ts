@@ -5,6 +5,7 @@ import {
   HttpException,
   Logger,
   NotFoundException,
+  UnprocessableEntityException,
 } from '@nestjs/common';
 import {
   BookingConfirmation,
@@ -643,6 +644,27 @@ describe('PracticeLessonsService', () => {
 
       expect(error).toBeInstanceOf(ConflictException);
       expect(error.message).toBe(STUDENT_HAS_ACTIVE_LESSON_MESSAGE);
+      expect(prisma.drivingLesson.create).not.toHaveBeenCalled();
+    });
+
+    it('answers 422 without the current PAID payment before slot and conflict checks', async () => {
+      const paymentRequired = new UnprocessableEntityException(
+        'Немає доступу до практики. Очікується оплата.',
+      );
+      payment.resolveForLesson.mockRejectedValue(paymentRequired);
+      // Навіть з активним заняттям і зайнятим слотом студент бачить саме 422.
+      studentLessons = [
+        {
+          id: 'lesson-9',
+          scheduledAt: at('2026-11-12T08:00:00.000Z'),
+          durationMin: 120,
+        },
+      ];
+
+      const error = await caught(service.book(student, request));
+
+      expect(error).toBe(paymentRequired);
+      expect(advisoryKeys()).toContain('student:student-1');
       expect(prisma.drivingLesson.create).not.toHaveBeenCalled();
     });
 

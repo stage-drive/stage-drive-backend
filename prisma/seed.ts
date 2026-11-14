@@ -11,6 +11,8 @@ import {
   InvitationStatus,
   LicenseCategory,
   OrganizationStatus,
+  PaymentHistoryAction,
+  PaymentStatus,
   PrismaClient,
   TrainingStatus,
   Transmission,
@@ -79,6 +81,10 @@ const DEMO_CAR_OTHER_ORG_ID = '36363636-3636-4363-8363-363636363636';
 const DEMO_CAR_MAINTENANCE_ID = '38383838-3838-4383-8383-383838383838';
 const DEMO_CAR_INACTIVE_ID = '39393939-3939-4393-8393-393939393939';
 const DEMO_CAR_UNASSIGNED_ID = '3a3a3a3a-3a3a-43a3-83a3-3a3a3a3a3a3a';
+const DEMO_PAYMENT_PAID_ID = '81818181-8181-4818-8818-818181818181';
+const DEMO_PAYMENT_NOT_PAID_ID = '82828282-8282-4828-8828-828282828282';
+const DEMO_PAYMENT_PAID_HISTORY_ID = '91919191-9191-4919-8919-919191919191';
+const DEMO_PAYMENT_NOT_PAID_HISTORY_ID = '92929292-9292-4929-8929-929292929292';
 
 const DEMO_EMAIL = 'owner@example.com';
 const DEMO_ADMIN_EMAIL = 'admin@example.com';
@@ -399,6 +405,59 @@ async function upsertCar(input: {
   });
 }
 
+/**
+ * Оплата з подією CREATED у журналі. Повторний seed не дублює записи, а вказівник
+ * Student.currentPaymentId ставить на найновішу оплату студента — так само, як
+ * PaymentsService.create (оплати, додані через API, лишаються актуальними).
+ */
+async function upsertPayment(input: {
+  id: string;
+  historyId: string;
+  organizationId: string;
+  studentId: string;
+  createdById: string;
+  amount: number;
+  status: PaymentStatus;
+  paidAt: Date | null;
+  comment: string | null;
+}) {
+  const payment = await prisma.payment.upsert({
+    where: { id: input.id },
+    update: {},
+    create: {
+      id: input.id,
+      organizationId: input.organizationId,
+      studentId: input.studentId,
+      amount: input.amount,
+      status: input.status,
+      paidAt: input.paidAt,
+      comment: input.comment,
+      createdById: input.createdById,
+    },
+  });
+  await prisma.paymentHistory.upsert({
+    where: { id: input.historyId },
+    update: {},
+    create: {
+      id: input.historyId,
+      organizationId: input.organizationId,
+      paymentId: payment.id,
+      action: PaymentHistoryAction.CREATED,
+      newStatus: payment.status,
+      changedById: input.createdById,
+    },
+  });
+  const newest = await prisma.payment.findFirstOrThrow({
+    where: { studentId: input.studentId },
+    orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+  });
+  await prisma.student.update({
+    where: { userId: input.studentId },
+    data: { currentPaymentId: newest.id },
+  });
+  return payment;
+}
+
 async function upsertEnrollment(
   groupId: string,
   studentId: string,
@@ -425,7 +484,7 @@ async function main() {
     passwordHash,
   });
 
-  await upsertUser(organization.id, {
+  const admin = await upsertUser(organization.id, {
     id: DEMO_ADMIN_ID,
     email: DEMO_ADMIN_EMAIL,
     firstName: 'Maria',
@@ -834,6 +893,32 @@ async function main() {
     status: CarStatus.AVAILABLE,
   });
 
+  // Модуль 13: практику записують лише з актуальною оплатою PAID. Студент, якому
+  // в демо видають допуск до практики, оплатив; студент групи A має лише запис
+  // NOT_PAID; решта — без оплат (теж NOT_PAID).
+  const paidPayment = await upsertPayment({
+    id: DEMO_PAYMENT_PAID_ID,
+    historyId: DEMO_PAYMENT_PAID_HISTORY_ID,
+    organizationId: organization.id,
+    studentId: activeStudent.id,
+    createdById: admin.id,
+    amount: 5000,
+    status: PaymentStatus.PAID,
+    paidAt: new Date('2026-08-10T00:00:00.000Z'),
+    comment: 'Оплата за курс, готівка',
+  });
+  const notPaidPayment = await upsertPayment({
+    id: DEMO_PAYMENT_NOT_PAID_ID,
+    historyId: DEMO_PAYMENT_NOT_PAID_HISTORY_ID,
+    organizationId: organization.id,
+    studentId: groupedStudent.id,
+    createdById: admin.id,
+    amount: 5000,
+    status: PaymentStatus.NOT_PAID,
+    paidAt: null,
+    comment: 'Очікується оплата за курс',
+  });
+
   const tokenHash = hashToken(DEMO_INVITE_TOKEN);
   const expiresAt = new Date(Date.now() + INVITATION_TTL_MS);
 
@@ -966,6 +1051,15 @@ async function main() {
   );
   console.log(
     `  eligible student (ACTIVE, category B, MANUAL): ${DEMO_STUDENT_EMAIL} id=${activeStudent.id}`,
+  );
+  console.log(
+    `  PAID payment of ${DEMO_STUDENT_EMAIL} (practice booking allowed): ${paidPayment.id}`,
+  );
+  console.log(
+    `  NOT_PAID payment of ${DEMO_GROUPED_EMAIL} (practice booking → 422): ${notPaidPayment.id}`,
+  );
+  console.log(
+    'GET /api/payments, GET /api/payments/history, POST /api/payments, PATCH /api/payments/{id}[/status] — OWNER or ADMIN. GET /api/me/payments — STUDENT.',
   );
   console.log(
     `Invitation token (POST /api/invitations/verify and /activate): ${DEMO_INVITE_TOKEN}`,

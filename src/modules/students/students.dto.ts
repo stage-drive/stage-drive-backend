@@ -34,6 +34,7 @@ import {
 } from 'class-validator';
 import { IsPlainText } from '../../common/validators/plain-text.decorator';
 import { InvitationEmailDeliveryDto } from '../invitations/invitations.dto';
+import { StudentPaymentSummaryDto } from '../payments/payments.dto';
 
 export const STUDENT_SORT_FIELDS = [
   'firstName',
@@ -159,13 +160,13 @@ export class ListStudentsQueryDto {
   @ApiPropertyOptional({
     enum: PaymentStatus,
     description:
-      'Фільтр за статусом оплати. UNPAID — є практичне заняття без оплати, яке не скасоване. ' +
-      'PAID — таких занять немає.',
+      'Фільтр за актуальним статусом оплати — статусом останньої оплати студента. ' +
+      'NOT_PAID включає студентів без жодної оплати. Лише для ADMIN: TEACHER та INSTRUCTOR — 403.',
     example: PaymentStatus.PAID,
   })
   @IsOptional()
   @IsEnum(PaymentStatus, {
-    message: 'paymentStatus має бути UNPAID або PAID.',
+    message: 'paymentStatus має бути NOT_PAID або PAID.',
   })
   paymentStatus?: PaymentStatus;
 
@@ -317,11 +318,13 @@ export class StudentListItemDto {
 
   @ApiProperty({
     enum: PaymentStatus,
+    nullable: true,
     example: PaymentStatus.PAID,
     description:
-      'UNPAID, якщо є практичне заняття без оплати, яке не скасоване. Інакше PAID.',
+      'Актуальний статус оплати — статус останньої оплати; без оплат — NOT_PAID. ' +
+      'null для TEACHER та INSTRUCTOR: оплат вони не бачать.',
   })
-  paymentStatus: PaymentStatus;
+  paymentStatus: PaymentStatus | null;
 
   @ApiProperty({ example: '2026-01-02T00:00:00.000Z' })
   createdAt: Date;
@@ -1068,31 +1071,6 @@ export class StudentPracticeDto {
   lessons: StudentPracticeLessonDto[];
 }
 
-export class StudentPaymentHistoryItemDto {
-  @ApiProperty({ example: '81818181-8181-4818-8818-818181818181' })
-  id: string;
-
-  @ApiProperty({ type: String, format: 'date-time' })
-  scheduledAt: Date;
-
-  @ApiProperty({ example: 2 })
-  hours: number;
-
-  @ApiProperty({ enum: LessonStatus, example: LessonStatus.COMPLETED })
-  lessonStatus: LessonStatus;
-
-  @ApiProperty({ enum: PaymentStatus, example: PaymentStatus.PAID })
-  paymentStatus: PaymentStatus;
-}
-
-export class StudentPaymentsDto {
-  @ApiProperty({ enum: PaymentStatus, example: PaymentStatus.PAID })
-  status: PaymentStatus;
-
-  @ApiProperty({ type: [StudentPaymentHistoryItemDto] })
-  history: StudentPaymentHistoryItemDto[];
-}
-
 export class StudentCardDto {
   @ApiProperty({
     example: '88888888-8888-4888-8888-888888888888',
@@ -1158,6 +1136,12 @@ export class StudentCardDto {
   @ApiProperty({ type: StudentPracticeDto })
   practice: StudentPracticeDto;
 
-  @ApiProperty({ type: StudentPaymentsDto })
-  payments: StudentPaymentsDto;
+  @ApiProperty({
+    type: StudentPaymentSummaryDto,
+    nullable: true,
+    description:
+      'Оплати студента (Модуль 13): актуальний статус, остання оплата, суми й історія. ' +
+      'Студент у власній картці не бачить службового коментаря. null для TEACHER та INSTRUCTOR.',
+  })
+  payments: StudentPaymentSummaryDto | null;
 }

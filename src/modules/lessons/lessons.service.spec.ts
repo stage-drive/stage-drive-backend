@@ -5,6 +5,7 @@ import {
   HttpException,
   Logger,
   NotFoundException,
+  UnprocessableEntityException,
 } from '@nestjs/common';
 import {
   BookingConfirmation,
@@ -2112,6 +2113,24 @@ describe('LessonsService', () => {
           car: { id: 'car-1', plateNumber: 'AA1234BB' },
           meetingPlace: 'Автодром, вул. Промислова, 5',
         });
+      });
+
+      it('answers 422 and creates nothing when the student current payment is not PAID', async () => {
+        const paymentRequired = new UnprocessableEntityException(
+          'Немає доступу до практики. Очікується оплата.',
+        );
+        payment.resolveForLesson.mockRejectedValue(paymentRequired);
+
+        await expect(
+          service.createPractice(admin as never, payload),
+        ).rejects.toBe(paymentRequired);
+        expect(prisma.drivingLesson.create).not.toHaveBeenCalled();
+        // Як і в бронюванні студента: 422 раніше за пошук конфліктів, але під блокуваннями.
+        expect(prisma.drivingLesson.findMany).not.toHaveBeenCalled();
+        expect(prisma.$executeRaw).toHaveBeenCalledWith(
+          expect.anything(),
+          'student:student-1',
+        );
       });
 
       it('looks the student up only in the actor organization', async () => {
