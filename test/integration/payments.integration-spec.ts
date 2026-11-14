@@ -137,8 +137,12 @@ describe('Payments (integration, real Postgres)', () => {
     return { organization, admin, instructor, car, student1, student2 };
   }
 
-  function insertPayment(data: Prisma.PaymentUncheckedCreateInput) {
-    return prisma.payment.create({ data });
+  function insertPayment(
+    data: Omit<Prisma.PaymentUncheckedCreateInput, 'purpose'>,
+  ) {
+    return prisma.payment.create({
+      data: { purpose: 'Курс теорії', ...data },
+    });
   }
 
   describe('database constraints', () => {
@@ -236,6 +240,7 @@ describe('Payments (integration, real Postgres)', () => {
     it('keeps a student with payments from being hard-deleted', async () => {
       const school = await createSchool();
       await paymentsService.create(school.admin, {
+        purpose: 'Курс теорії',
         studentId: school.student1.id,
         amount: 100,
         paidAt: '2026-08-10',
@@ -249,6 +254,7 @@ describe('Payments (integration, real Postgres)', () => {
     it('still deletes a whole organization with payments and history', async () => {
       const school = await createSchool();
       const created = await paymentsService.create(school.admin, {
+        purpose: 'Курс теорії',
         studentId: school.student1.id,
         amount: 0,
         status: PaymentStatus.NOT_PAID,
@@ -277,6 +283,7 @@ describe('Payments (integration, real Postgres)', () => {
       const school = await createSchool();
 
       const created = await paymentsService.create(school.admin, {
+        purpose: 'Курс теорії',
         studentId: school.student1.id,
         amount: 3000,
         status: PaymentStatus.NOT_PAID,
@@ -341,6 +348,7 @@ describe('Payments (integration, real Postgres)', () => {
       const results = await Promise.all(
         [100, 200, 300].map((amount) =>
           paymentsService.create(school.admin, {
+            purpose: 'Курс теорії',
             studentId: school.student1.id,
             amount,
             paidAt: '2026-08-10',
@@ -363,6 +371,7 @@ describe('Payments (integration, real Postgres)', () => {
       const school = await createSchool();
       const other = await createSchool();
       const created = await paymentsService.create(school.admin, {
+        purpose: 'Курс теорії',
         studentId: school.student1.id,
         amount: 100,
         paidAt: '2026-08-10',
@@ -376,6 +385,7 @@ describe('Payments (integration, real Postgres)', () => {
       ).rejects.toThrow('Payment not found');
       await expect(
         paymentsService.create(other.admin, {
+          purpose: 'Курс теорії',
           studentId: school.student1.id,
           amount: 1,
           paidAt: '2026-08-10',
@@ -389,6 +399,7 @@ describe('Payments (integration, real Postgres)', () => {
       const school = await createSchool();
       // student1: остання оплата PAID; student2: оплат немає.
       await paymentsService.create(school.admin, {
+        purpose: 'Курс теорії',
         studentId: school.student1.id,
         amount: 5000,
         paidAt: '2026-08-10',
@@ -429,11 +440,13 @@ describe('Payments (integration, real Postgres)', () => {
     it('treats a newer NOT_PAID record as the current status', async () => {
       const school = await createSchool();
       await paymentsService.create(school.admin, {
+        purpose: 'Курс теорії',
         studentId: school.student1.id,
         amount: 5000,
         paidAt: '2026-08-10',
       });
       await paymentsService.create(school.admin, {
+        purpose: 'Курс теорії',
         studentId: school.student1.id,
         amount: 3000,
         status: PaymentStatus.NOT_PAID,
@@ -454,6 +467,7 @@ describe('Payments (integration, real Postgres)', () => {
     it('filters the students list by the current payment status', async () => {
       const school = await createSchool();
       await paymentsService.create(school.admin, {
+        purpose: 'Курс теорії',
         studentId: school.student1.id,
         amount: 5000,
         paidAt: '2026-08-10',
@@ -482,6 +496,180 @@ describe('Payments (integration, real Postgres)', () => {
     });
   });
 
+  describe('purpose, records and idempotent create', () => {
+    it('rejects a blank purpose at the database level', async () => {
+      const school = await createSchool();
+
+      await expect(
+        insertPayment({
+          organizationId: school.organization.id,
+          studentId: school.student1.id,
+          createdById: school.admin.id,
+          status: PaymentStatus.NOT_PAID,
+          amount: 1,
+          purpose: '   ',
+        } as Prisma.PaymentUncheckedCreateInput),
+      ).rejects.toThrow(/check constraint/i);
+    });
+
+    it('shows the purpose to the student but not the admin comment', async () => {
+      const school = await createSchool();
+      await paymentsService.create(school.admin, {
+        studentId: school.student1.id,
+        amount: 5000,
+        paidAt: '2026-08-10',
+        purpose: 'Практичне водіння, 10 годин',
+        comment: 'Готівка',
+      });
+
+      const own = await paymentsService.own({
+        ...school.student1,
+        role: UserRole.STUDENT,
+      });
+
+      expect(own.currentPayment).toMatchObject({
+        purpose: 'Практичне водіння, 10 годин',
+      });
+      expect(own.currentPayment).not.toHaveProperty('comment');
+    });
+
+    it('lists payment records filtered by student and status', async () => {
+      const school = await createSchool();
+      const first = await paymentsService.create(school.admin, {
+        studentId: school.student1.id,
+        amount: 3000,
+        paidAt: '2026-08-01',
+        purpose: 'Перша частина',
+      });
+      const second = await paymentsService.create(school.admin, {
+        studentId: school.student1.id,
+        amount: 2000,
+        status: PaymentStatus.NOT_PAID,
+        purpose: 'Друга частина',
+      });
+      await paymentsService.create(school.admin, {
+        studentId: school.student2.id,
+        amount: 5000,
+        paidAt: '2026-08-05',
+        purpose: 'Курс',
+      });
+
+      const ofStudent = await paymentsService.records(school.admin, {
+        studentId: school.student1.id,
+      });
+      const paidOfStudent = await paymentsService.records(school.admin, {
+        studentId: school.student1.id,
+        status: PaymentStatus.PAID,
+      });
+      const byPaidAt = await paymentsService.records(school.admin, {
+        sortBy: 'paidAt',
+        sortOrder: 'desc',
+      });
+
+      expect(
+        ofStudent.payments.map((row) => [row.id, row.purpose, row.isCurrent]),
+      ).toEqual([
+        [second.id, 'Друга частина', true],
+        [first.id, 'Перша частина', false],
+      ]);
+      expect(paidOfStudent.payments.map((row) => row.id)).toEqual([first.id]);
+      // NOT_PAID без paidAt — у кінці навіть при desc.
+      expect(byPaidAt.payments.map((row) => row.purpose)).toEqual([
+        'Курс',
+        'Перша частина',
+        'Друга частина',
+      ]);
+    });
+
+    it('creates one payment for a repeated request with the same Idempotency-Key', async () => {
+      const school = await createSchool();
+      const body = {
+        studentId: school.student1.id,
+        amount: 5000,
+        paidAt: '2026-08-10',
+        purpose: 'Курс теорії',
+      };
+      const key = '3f0c2a6e-6b1d-4f7e-9c2a-1b2c3d4e5f60';
+
+      const results = await Promise.all([
+        paymentsService.create(school.admin, body, key),
+        paymentsService.create(school.admin, body, key),
+        paymentsService.create(school.admin, { ...body, amount: 5000.0 }, key),
+      ]);
+
+      expect(new Set(results.map((payment) => payment.id)).size).toBe(1);
+      await expect(
+        prisma.payment.count({ where: { studentId: school.student1.id } }),
+      ).resolves.toBe(1);
+      await expect(
+        prisma.paymentHistory.count({ where: { paymentId: results[0].id } }),
+      ).resolves.toBe(1);
+      await expect(
+        paymentsService.create(school.admin, { ...body, amount: 4000 }, key),
+      ).rejects.toBeInstanceOf(ConflictException);
+    });
+
+    it('lets the same key race for two students: one wins, the other gets 409', async () => {
+      const school = await createSchool();
+      const key = 'race-key-for-two-students';
+      const body = (studentId: string) => ({
+        studentId,
+        amount: 5000,
+        paidAt: '2026-08-10',
+        purpose: 'Курс теорії',
+      });
+
+      const outcomes = await Promise.allSettled([
+        paymentsService.create(school.admin, body(school.student1.id), key),
+        paymentsService.create(school.admin, body(school.student2.id), key),
+      ]);
+
+      expect(outcomes.map((outcome) => outcome.status).sort()).toEqual([
+        'fulfilled',
+        'rejected',
+      ]);
+      const rejected = outcomes.find(
+        (outcome): outcome is PromiseRejectedResult =>
+          outcome.status === 'rejected',
+      );
+      expect(rejected?.reason).toBeInstanceOf(ConflictException);
+      await expect(
+        prisma.payment.count({
+          where: { organizationId: school.organization.id },
+        }),
+      ).resolves.toBe(1);
+    });
+
+    it('scopes the key to the school', async () => {
+      const school = await createSchool();
+      const other = await createSchool();
+      const key = 'shared-key-between-schools';
+
+      const mine = await paymentsService.create(
+        school.admin,
+        {
+          studentId: school.student1.id,
+          amount: 100,
+          paidAt: '2026-08-10',
+          purpose: 'Курс',
+        },
+        key,
+      );
+      const theirs = await paymentsService.create(
+        other.admin,
+        {
+          studentId: other.student1.id,
+          amount: 100,
+          paidAt: '2026-08-10',
+          purpose: 'Курс',
+        },
+        key,
+      );
+
+      expect(theirs.id).not.toBe(mine.id);
+    });
+  });
+
   describe('practice gate', () => {
     function createPractice(
       school: Awaited<ReturnType<typeof createSchool>>,
@@ -504,6 +692,7 @@ describe('Payments (integration, real Postgres)', () => {
       );
 
       const pending = await paymentsService.create(school.admin, {
+        purpose: 'Курс теорії',
         studentId: school.student1.id,
         amount: 5000,
         status: PaymentStatus.NOT_PAID,
@@ -529,6 +718,7 @@ describe('Payments (integration, real Postgres)', () => {
     it('waits for a booking that holds the student lock before changing the payment', async () => {
       const school = await createSchool();
       const pending = await paymentsService.create(school.admin, {
+        purpose: 'Курс теорії',
         studentId: school.student1.id,
         amount: 5000,
         status: PaymentStatus.NOT_PAID,

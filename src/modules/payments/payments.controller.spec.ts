@@ -58,6 +58,7 @@ describe('Payments controllers', () => {
   it('declares GET history before GET :id so "history" is not parsed as an id', () => {
     const methods = Object.getOwnPropertyNames(PaymentsController.prototype);
     expect(methods.indexOf('history')).toBeLessThan(methods.indexOf('getById'));
+    expect(methods.indexOf('records')).toBeLessThan(methods.indexOf('getById'));
     expect(
       // eslint-disable-next-line @typescript-eslint/unbound-method -- only reads decorator metadata, never invoked
       Reflect.getMetadata(PATH_METADATA, PaymentsController.prototype.history),
@@ -66,6 +67,7 @@ describe('Payments controllers', () => {
 
   it.each([
     ['overview', RequestMethod.GET, '/'],
+    ['records', RequestMethod.GET, 'records'],
     ['history', RequestMethod.GET, 'history'],
     ['getById', RequestMethod.GET, ':id'],
     ['create', RequestMethod.POST, '/'],
@@ -105,14 +107,20 @@ describe('Payments controllers', () => {
 
     it('passes the current user and input to PaymentsService', async () => {
       const controller = new PaymentsController(paymentsService);
-      const body = { studentId: STUDENT_ID, amount: 1 };
+      const body = {
+        studentId: STUDENT_ID,
+        amount: 1,
+        purpose: 'Курс теорії',
+      };
 
       await expect(controller.overview(user, {})).resolves.toBe(response);
       await expect(controller.history(user, {})).resolves.toBe(response);
       await expect(controller.getById(user, PAYMENT_ID)).resolves.toBe(
         response,
       );
-      await expect(controller.create(user, body)).resolves.toBe(response);
+      await expect(controller.create(user, body, 'key-12345678')).resolves.toBe(
+        response,
+      );
       await expect(
         controller.update(user, PAYMENT_ID, { amount: 2 }),
       ).resolves.toBe(response);
@@ -122,7 +130,7 @@ describe('Payments controllers', () => {
         }),
       ).resolves.toBe(response);
 
-      expect(service.create).toHaveBeenCalledWith(user, body);
+      expect(service.create).toHaveBeenCalledWith(user, body, 'key-12345678');
       expect(service.update).toHaveBeenCalledWith(user, PAYMENT_ID, {
         amount: 2,
       });

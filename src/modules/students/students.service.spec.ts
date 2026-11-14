@@ -112,6 +112,7 @@ function paymentRow(
     currency: 'UAH',
     status: PaymentStatus.PAID as PaymentStatus,
     paidAt: new Date('2026-08-10T00:00:00.000Z'),
+    purpose: 'Курс теорії',
     comment: 'Готівка' as string | null,
     createdAt: new Date('2026-08-10T09:00:00.000Z'),
     updatedAt: new Date('2026-08-10T09:00:00.000Z'),

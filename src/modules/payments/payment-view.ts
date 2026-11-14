@@ -6,6 +6,7 @@ import {
   PaymentDto,
   PaymentFieldChange,
   PaymentHistoryItemDto,
+  PaymentRecordDto,
   PaymentStudentDto,
   PaymentTotalDto,
   StudentPaymentSummaryDto,
@@ -25,6 +26,7 @@ export const paymentSelect = {
   currency: true,
   status: true,
   paidAt: true,
+  purpose: true,
   comment: true,
   createdAt: true,
   updatedAt: true,
@@ -41,6 +43,7 @@ export const currentPaymentSelect = {
   currency: true,
   status: true,
   paidAt: true,
+  purpose: true,
 } satisfies Prisma.PaymentSelect;
 
 type CurrentPaymentRow = Prisma.PaymentGetPayload<{
@@ -83,6 +86,26 @@ export type PaymentStudentRow = Prisma.UserGetPayload<{
   select: typeof paymentStudentSelect;
 }>;
 
+/** Рядок плоского списку оплат: оплата + студент + чи вона зараз актуальна. */
+export const paymentRecordSelect = {
+  ...paymentSelect,
+  student: {
+    select: {
+      ...paymentStudentSelect,
+      studentProfile: {
+        select: {
+          ...paymentStudentSelect.studentProfile.select,
+          currentPaymentId: true,
+        },
+      },
+    },
+  },
+} satisfies Prisma.PaymentSelect;
+
+export type PaymentRecordRow = Prisma.PaymentGetPayload<{
+  select: typeof paymentRecordSelect;
+}>;
+
 export function formatAmount(amount: Prisma.Decimal): string {
   return amount.toFixed(2);
 }
@@ -106,6 +129,7 @@ export function toPaymentDto(
     currency: row.currency,
     status: row.status,
     paidAt: row.paidAt,
+    purpose: row.purpose,
     createdBy: {
       id: row.createdBy.id,
       firstName: row.createdBy.firstName,
@@ -132,6 +156,7 @@ export function toCurrentPaymentDto(
     currency: row.currency,
     status: row.status,
     paidAt: row.paidAt,
+    purpose: row.purpose,
   };
 }
 
@@ -150,6 +175,14 @@ export function toPaymentStudentDto(row: PaymentStudentRow): PaymentStudentDto {
     lastName: row.lastName,
     email: row.email,
     group,
+  };
+}
+
+export function toPaymentRecordDto(row: PaymentRecordRow): PaymentRecordDto {
+  return {
+    ...toPaymentDto(row),
+    student: toPaymentStudentDto(row.student),
+    isCurrent: row.student.studentProfile?.currentPaymentId === row.id,
   };
 }
 
