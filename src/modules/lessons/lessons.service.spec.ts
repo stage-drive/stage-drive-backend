@@ -243,6 +243,7 @@ describe('LessonsService', () => {
       findMany: jest.fn(),
       update: jest.fn(),
       create: jest.fn(),
+      delete: jest.fn(),
     },
     courseLesson: { findFirst: jest.fn() },
     drivingLesson: {
@@ -250,6 +251,7 @@ describe('LessonsService', () => {
       findMany: jest.fn(),
       update: jest.fn(),
       create: jest.fn(),
+      delete: jest.fn(),
     },
     enrollment: { findMany: jest.fn() },
     instructorTimeOff: { findMany: jest.fn() },
@@ -317,6 +319,8 @@ describe('LessonsService', () => {
       { dayOfWeek: DayOfWeek.MONDAY, startMinute: 840, endMinute: 1080 },
     ]);
     prisma.enrollment.findMany.mockResolvedValue([{ groupId: 'group-1' }]);
+    prisma.lesson.delete.mockResolvedValue({ id: 'lesson-t1' });
+    prisma.drivingLesson.delete.mockResolvedValue({ id: 'lesson-1' });
     prisma.lessonAttendance.count.mockResolvedValue(0);
     prisma.user.findUnique.mockResolvedValue(activeInstructor);
     prisma.car.findUnique.mockResolvedValue(availableCar);
@@ -1681,6 +1685,153 @@ describe('LessonsService', () => {
         await service.cancelTheory(admin as never, 'lesson-t1', {});
 
         expect(prisma.lesson.update).toHaveBeenCalledTimes(1);
+      });
+    });
+  });
+
+  describe('delete', () => {
+    describe('theory', () => {
+      it('removes the lesson row and does not change its status', async () => {
+        await service.deleteTheory(admin as never, 'lesson-t1');
+
+        expect(prisma.lesson.delete).toHaveBeenCalledWith({
+          where: { id: 'lesson-t1' },
+        });
+        expect(prisma.lesson.update).not.toHaveBeenCalled();
+        expect(log).toHaveBeenCalledWith(
+          'Lesson deleted type=THEORY lessonId=lesson-t1 ' +
+            'scheduledAt=2026-11-03T16:00:00.000Z actorId=admin-1 organizationId=org-1',
+        );
+      });
+
+      it('lets the group teacher delete their lesson', async () => {
+        await service.deleteTheory(teacherActor as never, 'lesson-t1');
+
+        expect(prisma.lesson.delete).toHaveBeenCalledTimes(1);
+      });
+
+      it.each([LessonStatus.COMPLETED, LessonStatus.CANCELLED])(
+        'deletes a %s lesson',
+        async (status) => {
+          givenTheory(theoryRow({ lesson: { status } }));
+
+          await service.deleteTheory(admin as never, 'lesson-t1');
+
+          expect(prisma.lesson.delete).toHaveBeenCalledTimes(1);
+        },
+      );
+
+      it('forbids a teacher of another group', async () => {
+        givenTheory(theoryRow({ group: { teacherId: 'teacher-2' } }));
+
+        const error = await caught(
+          service.deleteTheory(teacherActor as never, 'lesson-t1'),
+        );
+
+        expect(error).toBeInstanceOf(ForbiddenException);
+        expect(prisma.lesson.delete).not.toHaveBeenCalled();
+      });
+
+      it.each([
+        ['INSTRUCTOR', instructorActor],
+        ['STUDENT', studentActor],
+        ['OWNER', ownerActor],
+      ])('forbids %s without touching the database', async (_, actor) => {
+        const error = await caught(
+          service.deleteTheory(actor as never, 'lesson-t1'),
+        );
+
+        expect(error).toBeInstanceOf(ForbiddenException);
+        expect(prisma.$transaction).not.toHaveBeenCalled();
+      });
+
+      it('returns 404 for a lesson of another organization without locking', async () => {
+        prisma.lesson.findFirst.mockResolvedValue(null);
+
+        const error = await caught(
+          service.deleteTheory(admin as never, 'lesson-t1'),
+        );
+
+        expect(error).toBeInstanceOf(NotFoundException);
+        expect(error.message).toBe(LESSON_NOT_FOUND_MESSAGE);
+        expect(prisma.$queryRaw).not.toHaveBeenCalled();
+        expect(prisma.lesson.delete).not.toHaveBeenCalled();
+      });
+    });
+
+    describe('practice', () => {
+      it('removes the lesson row', async () => {
+        await service.deletePractice(admin as never, 'lesson-1');
+
+        expect(prisma.drivingLesson.delete).toHaveBeenCalledWith({
+          where: { id: 'lesson-1' },
+        });
+        expect(prisma.drivingLesson.update).not.toHaveBeenCalled();
+        expect(log).toHaveBeenCalledWith(
+          'Lesson deleted type=PRACTICE lessonId=lesson-1 ' +
+            'scheduledAt=2026-11-02T08:00:00.000Z actorId=admin-1 organizationId=org-1',
+        );
+      });
+
+      it('lets an instructor delete their own lesson', async () => {
+        await service.deletePractice(instructorActor as never, 'lesson-1');
+
+        expect(prisma.drivingLesson.delete).toHaveBeenCalledWith({
+          where: { id: 'lesson-1' },
+        });
+      });
+
+      it('forbids an instructor from deleting another instructor lesson', async () => {
+        givenPractice(
+          practiceRow({ lesson: { instructorId: 'instructor-2' } }),
+        );
+
+        const error = await caught(
+          service.deletePractice(instructorActor as never, 'lesson-1'),
+        );
+
+        expect(error).toBeInstanceOf(ForbiddenException);
+        expect(prisma.drivingLesson.delete).not.toHaveBeenCalled();
+      });
+
+      it.each([
+        ['TEACHER', teacherActor],
+        ['STUDENT', studentActor],
+        ['OWNER', ownerActor],
+      ])('forbids %s without touching the database', async (_, actor) => {
+        const error = await caught(
+          service.deletePractice(actor as never, 'lesson-1'),
+        );
+
+        expect(error).toBeInstanceOf(ForbiddenException);
+        expect(prisma.$transaction).not.toHaveBeenCalled();
+      });
+
+      it('returns 404 for a lesson of another organization', async () => {
+        prisma.drivingLesson.findFirst.mockResolvedValue(null);
+
+        const error = await caught(
+          service.deletePractice(admin as never, 'lesson-1'),
+        );
+
+        expect(error).toBeInstanceOf(NotFoundException);
+        expect(error.message).toBe(LESSON_NOT_FOUND_MESSAGE);
+        expect(prisma.drivingLesson.delete).not.toHaveBeenCalled();
+      });
+
+      it('deletes a lesson that has already started', async () => {
+        givenPractice(
+          practiceRow({
+            lesson: {
+              status: LessonStatus.COMPLETED,
+              scheduledAt: new Date('2026-10-21T09:00:00.000Z'),
+            },
+          }),
+        );
+
+        await service.deletePractice(admin as never, 'lesson-1');
+
+        expect(prisma.drivingLesson.delete).toHaveBeenCalledTimes(1);
       });
     });
   });

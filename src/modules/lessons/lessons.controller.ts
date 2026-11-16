@@ -1,6 +1,7 @@
 import {
   Body,
   Controller,
+  Delete,
   Get,
   HttpCode,
   HttpStatus,
@@ -17,6 +18,7 @@ import {
   ApiConflictResponse,
   ApiCreatedResponse,
   ApiForbiddenResponse,
+  ApiNoContentResponse,
   ApiNotFoundResponse,
   ApiOkResponse,
   ApiOperation,
@@ -60,6 +62,7 @@ import {
 import {
   LessonsService,
   PRACTICE_LESSON_CANCEL_ROLES,
+  PRACTICE_LESSON_DELETE_ROLES,
   PRACTICE_LESSON_EDIT_ROLES,
   PRACTICE_LESSON_RESCHEDULE_ROLES,
   PRACTICE_LESSON_SCHEDULE_ROLES,
@@ -138,6 +141,11 @@ const CANCEL_CONFLICT_DESCRIPTION =
 const CANCEL_BAD_REQUEST_DESCRIPTION =
   'id не UUID, зайве поле в тілі, або reason порожній, довший за 500 символів, містить < чи >, або null. ' +
   'Тіло містить errors: [{ field, message }].';
+
+const DELETE_RULES =
+  'Заняття видаляється з бази, а не переводиться в CANCELLED. ' +
+  'Можна видалити заняття будь-якого статусу, зокрема те, що вже почалося, завершене чи скасоване. ' +
+  'Відвідування теоретичного заняття видаляється разом із ним.';
 
 @ApiTags('lessons')
 @ApiBearerAuth()
@@ -479,6 +487,67 @@ export class LessonsController {
     @Body() body: CancelLessonDto,
   ): Promise<PracticeLessonDto> {
     return this.lessonsService.cancelPractice(user, id, body);
+  }
+
+  @Delete('theory/:id')
+  @HttpCode(HttpStatus.NO_CONTENT)
+  @Roles(...THEORY_LESSON_EDIT_ROLES)
+  @ApiOperation({
+    summary: 'Видалити теоретичне заняття',
+    description:
+      'ADMIN або викладач групи видаляє заняття своєї автошколи. ' +
+      DELETE_RULES,
+  })
+  @ApiParam({
+    name: 'id',
+    format: 'uuid',
+    description: 'Id теоретичного заняття.',
+  })
+  @ApiNoContentResponse({ description: 'Заняття видалено.' })
+  @ApiBadRequestResponse({ description: 'id не UUID.' })
+  @ApiForbiddenResponse({
+    description:
+      'Роль не ADMIN чи TEACHER, або викладач видаляє заняття чужої групи.',
+  })
+  @ApiNotFoundResponse({
+    description: 'Заняття не знайдено або воно належить іншій автошколі.',
+  })
+  deleteTheory(
+    @CurrentUser() user: User,
+    @Param('id', new ParseUUIDPipe({ version: '4' })) id: string,
+  ): Promise<void> {
+    return this.lessonsService.deleteTheory(user, id);
+  }
+
+  @Delete('practice/:id')
+  @HttpCode(HttpStatus.NO_CONTENT)
+  @Roles(...PRACTICE_LESSON_DELETE_ROLES)
+  @ApiOperation({
+    summary: 'Видалити практичне заняття',
+    description:
+      'ADMIN видаляє будь-яке практичне заняття своєї автошколи, інструктор — лише своє. ' +
+      'Студент заняття не видаляє: щоб звільнити час і зберегти запис, скасуйте його. ' +
+      DELETE_RULES,
+  })
+  @ApiParam({
+    name: 'id',
+    format: 'uuid',
+    description: 'Id практичного заняття.',
+  })
+  @ApiNoContentResponse({ description: 'Заняття видалено.' })
+  @ApiBadRequestResponse({ description: 'id не UUID.' })
+  @ApiForbiddenResponse({
+    description:
+      'Роль не ADMIN чи INSTRUCTOR, або інструктор видаляє чуже заняття.',
+  })
+  @ApiNotFoundResponse({
+    description: 'Заняття не знайдено або воно належить іншій автошколі.',
+  })
+  deletePractice(
+    @CurrentUser() user: User,
+    @Param('id', new ParseUUIDPipe({ version: '4' })) id: string,
+  ): Promise<void> {
+    return this.lessonsService.deletePractice(user, id);
   }
 
   @Get('theory/:id/content')
