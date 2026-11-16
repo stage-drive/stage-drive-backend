@@ -581,6 +581,25 @@ describe('CourseProgressService', () => {
       });
     });
 
+    it('does not save progress if the course was unpublished before the row lock', async () => {
+      prisma.course.findFirst
+        .mockResolvedValueOnce(published)
+        .mockResolvedValueOnce({
+          ...published,
+          publicationStatus: CoursePublicationStatus.DRAFT,
+        });
+      prisma.enrollment.findFirst.mockResolvedValue({ id: 'enrollment-1' });
+
+      const error = await caught(
+        service.completeLesson(student as never, courseId, signs.id),
+      );
+
+      expect(error).toBeInstanceOf(ForbiddenException);
+      expect(error.message).toBe(COURSE_NOT_PUBLISHED_MESSAGE);
+      expect(prisma.courseLessonCompletion.create).not.toHaveBeenCalled();
+      expect(prisma.courseProgress.upsert).not.toHaveBeenCalled();
+    });
+
     it('returns 404 when the lesson is not in this course', async () => {
       allowStudentCourse();
 

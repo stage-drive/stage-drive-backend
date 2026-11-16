@@ -5,11 +5,14 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import {
+  CoursePublicationStatus,
+  CourseStatus,
   EnrollmentStatus,
   GroupStatus,
   CarStatus,
   LicenseCategory,
   Prisma,
+  TheoryTestStatus,
   TrainingStatus,
   Transmission,
   User,
@@ -110,7 +113,15 @@ describe('StudentsService', () => {
       delete: jest.fn(),
     },
     group: { findUnique: jest.fn(), findFirst: jest.fn() },
-    student: { create: jest.fn(), update: jest.fn(), delete: jest.fn() },
+    student: {
+      create: jest.fn(),
+      update: jest.fn(),
+      delete: jest.fn(),
+      findUnique: jest.fn(),
+    },
+    courseLesson: { findMany: jest.fn() },
+    courseLessonCompletion: { count: jest.fn() },
+    theoryTestResult: { findUnique: jest.fn() },
     car: { findUnique: jest.fn() },
     drivingLesson: { findMany: jest.fn() },
     enrollment: {
@@ -944,6 +955,49 @@ describe('StudentsService', () => {
       prisma.user.findFirst.mockResolvedValue(null);
     });
 
+    it('hides lesson titles of an unpublished course from the student', async () => {
+      prisma.user.findFirst.mockResolvedValue({
+        ...ownRow(),
+        studentProfile: {
+          ...profile,
+          group: {
+            id: 'group-1',
+            name: 'Група B',
+            organizationId: 'org-1',
+            teacherId: 'teacher-1',
+            endDate: null,
+            course: {
+              id: 'course-1',
+              name: 'Теорія B',
+              organizationId: 'org-1',
+              status: CourseStatus.ACTIVE,
+              publicationStatus: CoursePublicationStatus.DRAFT,
+              lessons: [
+                {
+                  id: 'lesson-1',
+                  title: 'Прихований урок',
+                  position: 1,
+                  chapter: { position: 1 },
+                  scheduledLessons: [],
+                },
+              ],
+            },
+          },
+        },
+      });
+
+      await expect(service.getOwn(student)).resolves.toMatchObject({
+        theory: {
+          course: {
+            id: 'course-1',
+            name: 'Теорія B',
+            publicationStatus: CoursePublicationStatus.DRAFT,
+          },
+          progress: null,
+        },
+      });
+    });
+
     it('returns only the authenticated student profile', async () => {
       prisma.user.findFirst.mockResolvedValue(ownRow());
 
@@ -1137,6 +1191,44 @@ describe('StudentsService', () => {
       prisma.user.findFirst.mockReset();
       prisma.user.update.mockReset();
       prisma.user.findFirst.mockResolvedValue(null);
+    });
+
+    it('lets ADMIN read the curriculum of a draft course', async () => {
+      prisma.user.findFirst.mockResolvedValue({
+        ...cardRow(),
+        studentProfile: {
+          ...profile,
+          group: {
+            id: 'group-1',
+            name: 'Група B',
+            organizationId: 'org-1',
+            teacherId: 'teacher-1',
+            endDate: null,
+            course: {
+              id: 'course-1',
+              name: 'Теорія B',
+              organizationId: 'org-1',
+              status: CourseStatus.ACTIVE,
+              publicationStatus: CoursePublicationStatus.DRAFT,
+              lessons: [
+                {
+                  id: 'lesson-1',
+                  title: 'Чернетка',
+                  position: 1,
+                  chapter: { position: 1 },
+                  scheduledLessons: [],
+                },
+              ],
+            },
+          },
+        },
+      });
+
+      const result = await service.getById(actor(UserRole.ADMIN), 'student-1');
+
+      expect(result.theory.progress?.lessons).toEqual([
+        expect.objectContaining({ lessonId: 'lesson-1', title: 'Чернетка' }),
+      ]);
     });
 
     it.each([UserRole.OWNER, UserRole.ADMIN] as const)(
@@ -2354,6 +2446,72 @@ describe('StudentsService', () => {
         },
         data: { status: EnrollmentStatus.DROPPED },
       });
+    });
+
+    it('closes theory when ACTIVE starts after the published course is already finished', async () => {
+      prisma.user.findFirst.mockResolvedValue(statusRow(TrainingStatus.NEW));
+      prisma.student.findUnique.mockResolvedValue({
+        id: 'profile-1',
+        organizationId: 'org-1',
+        trainingStatus: TrainingStatus.ACTIVE,
+        group: {
+          course: {
+            id: 'course-1',
+            publicationStatus: CoursePublicationStatus.PUBLISHED,
+            status: CourseStatus.ACTIVE,
+          },
+        },
+      });
+      prisma.courseLesson.findMany.mockResolvedValue([{ id: 'lesson-1' }]);
+      prisma.courseLessonCompletion.count.mockResolvedValue(1);
+      prisma.theoryTestResult.findUnique.mockResolvedValue({
+        status: TheoryTestStatus.PASSED,
+      });
+
+      const result = await service.changeTrainingStatus(
+        actor(UserRole.ADMIN),
+        'student-1',
+        { status: TrainingStatus.ACTIVE },
+      );
+
+      expect(prisma.student.update).toHaveBeenCalledWith({
+        where: { id: 'profile-1' },
+        data: { trainingStatus: TrainingStatus.THEORY_COMPLETED },
+      });
+      expect(prisma.enrollment.updateMany).toHaveBeenCalledWith({
+        where: {
+          studentId: 'student-1',
+          status: EnrollmentStatus.ACTIVE,
+          group: { organizationId: 'org-1' },
+        },
+        data: { status: EnrollmentStatus.COMPLETED },
+      });
+      expect(result.student?.trainingStatus).toBe(
+        TrainingStatus.THEORY_COMPLETED,
+      );
+      expect(log).toHaveBeenCalledWith(
+        'Student training status changed studentId=student-1 from=NEW to=THEORY_COMPLETED actorId=admin-1 organizationId=org-1',
+      );
+    });
+
+    it('keeps ACTIVE when the course is not finished yet', async () => {
+      prisma.user.findFirst.mockResolvedValue(statusRow(TrainingStatus.NEW));
+      prisma.student.findUnique.mockResolvedValue({
+        id: 'profile-1',
+        organizationId: 'org-1',
+        trainingStatus: TrainingStatus.ACTIVE,
+        group: { course: null },
+      });
+
+      const result = await service.changeTrainingStatus(
+        actor(UserRole.ADMIN),
+        'student-1',
+        { status: TrainingStatus.ACTIVE },
+      );
+
+      expect(prisma.student.update).toHaveBeenCalledTimes(1);
+      expect(prisma.enrollment.updateMany).not.toHaveBeenCalled();
+      expect(result.student?.trainingStatus).toBe(TrainingStatus.ACTIVE);
     });
 
     it('does not let an admin set THEORY_COMPLETED by hand', async () => {

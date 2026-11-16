@@ -140,7 +140,7 @@ export class CourseProgressService {
   async getOwn(actor: User, courseId: string): Promise<CourseProgressDto> {
     assertStudent(actor);
     await this.requireOrganization(actor.organizationId);
-    await this.requireAssignedPublishedCourse(actor, courseId);
+    await this.requireAssignedPublishedCourse(this.prisma, actor, courseId);
     return this.loadProgress(
       actor.organizationId,
       courseId,
@@ -170,7 +170,7 @@ export class CourseProgressService {
     if (!courseId) {
       throw new NotFoundException(COURSE_NOT_FOUND_MESSAGE);
     }
-    await this.requireAssignedPublishedCourse(actor, courseId);
+    await this.requireAssignedPublishedCourse(this.prisma, actor, courseId);
     return this.loadProgress(
       actor.organizationId,
       courseId,
@@ -190,10 +190,11 @@ export class CourseProgressService {
   ): Promise<CourseProgressDto> {
     assertStudent(actor);
     await this.requireOrganization(actor.organizationId);
-    await this.requireAssignedPublishedCourse(actor, courseId);
+    await this.requireAssignedPublishedCourse(this.prisma, actor, courseId);
 
     const progress = await this.prisma.$transaction(async (tx) => {
       await lockCourse(tx, courseId, actor.organizationId);
+      await this.requireAssignedPublishedCourse(tx, actor, courseId);
       const lesson = await tx.courseLesson.findFirst({
         where: { id: lessonId, courseId },
         select: { id: true },
@@ -230,10 +231,11 @@ export class CourseProgressService {
   ): Promise<TheoryTestResultDto> {
     assertStudent(actor);
     await this.requireOrganization(actor.organizationId);
-    await this.requireAssignedPublishedCourse(actor, courseId);
+    await this.requireAssignedPublishedCourse(this.prisma, actor, courseId);
 
     const saved = await this.prisma.$transaction(async (tx) => {
       await lockCourse(tx, courseId, actor.organizationId);
+      await this.requireAssignedPublishedCourse(tx, actor, courseId);
       const result = await tx.theoryTestResult.upsert({
         where: { studentId_courseId: { studentId: actor.id, courseId } },
         create: {
@@ -309,11 +311,16 @@ export class CourseProgressService {
     );
   }
 
+  /**
+   * Повторна перевірка після FOR UPDATE: публікацію могли зняти між першим
+   * читанням і блокуванням рядка курсу.
+   */
   private async requireAssignedPublishedCourse(
+    db: Prisma.TransactionClient | PrismaService,
     actor: User,
     courseId: string,
   ): Promise<void> {
-    const access = await this.prisma.course.findFirst({
+    const access = await db.course.findFirst({
       where: { id: courseId, organizationId: actor.organizationId },
       select: { id: true, status: true, publicationStatus: true },
     });
@@ -321,7 +328,7 @@ export class CourseProgressService {
       throw new NotFoundException(COURSE_NOT_FOUND_MESSAGE);
     }
 
-    const enrollment = await this.prisma.enrollment.findFirst({
+    const enrollment = await db.enrollment.findFirst({
       where: {
         studentId: actor.id,
         status: EnrollmentStatus.ACTIVE,
