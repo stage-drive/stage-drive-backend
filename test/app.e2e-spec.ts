@@ -242,6 +242,8 @@ describe('API (e2e)', () => {
     },
     refreshToken: {
       create: jest.fn(),
+      findUnique: jest.fn(),
+      update: jest.fn(),
       updateMany: jest.fn(),
     },
     lesson: {
@@ -412,6 +414,10 @@ describe('API (e2e)', () => {
     prismaMock.enrollment.updateMany.mockResolvedValue({ count: 0 });
     prismaMock.refreshToken.create.mockReset();
     prismaMock.refreshToken.create.mockResolvedValue({});
+    prismaMock.refreshToken.findUnique.mockReset();
+    prismaMock.refreshToken.findUnique.mockResolvedValue(null);
+    prismaMock.refreshToken.update.mockReset();
+    prismaMock.refreshToken.update.mockResolvedValue({});
     prismaMock.refreshToken.updateMany.mockReset();
     prismaMock.$transaction.mockReset();
     prismaMock.organization.findUnique.mockReset();
@@ -666,6 +672,231 @@ describe('API (e2e)', () => {
     });
     expect(response.body.accessToken).toEqual(expect.any(String));
     expect(response.body.refreshToken).toEqual(expect.any(String));
+  });
+
+  describe('AUTH_SECRET startup validation', () => {
+    it.each([
+      ['missing', undefined],
+      ['too short', 'short-secret'],
+      ['the old docker-compose fallback', 'stage-drive-dev-secret'],
+      ['a placeholder', 'change-me-in-production-change-me-in-production'],
+    ])(
+      'the application refuses to start when AUTH_SECRET is %s',
+      async (_label, value) => {
+        const originalSecret = process.env.AUTH_SECRET;
+        if (value === undefined) {
+          delete process.env.AUTH_SECRET;
+        } else {
+          process.env.AUTH_SECRET = value;
+        }
+
+        const moduleFixture = await Test.createTestingModule({
+          imports: [AppModule],
+        })
+          .overrideProvider(PrismaService)
+          .useValue(prismaMock)
+          .overrideProvider(MailService)
+          .useValue(mailServiceMock)
+          .compile();
+        const misconfigured =
+          moduleFixture.createNestApplication<NestExpressApplication>();
+
+        try {
+          await expect(misconfigured.init()).rejects.toThrow(/AUTH_SECRET/);
+        } finally {
+          if (originalSecret === undefined) {
+            delete process.env.AUTH_SECRET;
+          } else {
+            process.env.AUTH_SECRET = originalSecret;
+          }
+          await misconfigured.close();
+        }
+      },
+    );
+  });
+
+  describe('refresh token sessions', () => {
+    type StoredRefreshToken = {
+      id: string;
+      userId: string;
+      familyId: string;
+      tokenHash: string;
+      expiresAt: Date;
+      usedAt: Date | null;
+      revokedAt: Date | null;
+    };
+
+    let storedTokens: StoredRefreshToken[];
+
+    const sha256Hex = (value: string) =>
+      createHash('sha256').update(value).digest('hex');
+
+    beforeEach(() => {
+      storedTokens = [];
+      prismaMock.refreshToken.create.mockImplementation(
+        (args: {
+          data: Omit<StoredRefreshToken, 'id' | 'usedAt' | 'revokedAt'>;
+        }) => {
+          const row: StoredRefreshToken = {
+            id: `refresh-${storedTokens.length + 1}`,
+            usedAt: null,
+            revokedAt: null,
+            ...args.data,
+          };
+          storedTokens.push(row);
+          return Promise.resolve(row);
+        },
+      );
+      prismaMock.refreshToken.findUnique.mockImplementation(
+        (args: { where: { tokenHash: string } }) =>
+          Promise.resolve(
+            storedTokens.find(
+              (row) => row.tokenHash === args.where.tokenHash,
+            ) ?? null,
+          ),
+      );
+      prismaMock.refreshToken.update.mockImplementation(
+        (args: {
+          where: { id: string };
+          data: Partial<StoredRefreshToken>;
+        }) => {
+          const row = storedTokens.find((item) => item.id === args.where.id);
+          if (row) {
+            Object.assign(row, args.data);
+          }
+          return Promise.resolve(row);
+        },
+      );
+      prismaMock.refreshToken.updateMany.mockImplementation(
+        (args: {
+          where: { familyId?: string; userId?: string };
+          data: Partial<StoredRefreshToken>;
+        }) => {
+          const matching = storedTokens.filter(
+            (row) =>
+              (args.where.familyId === undefined ||
+                row.familyId === args.where.familyId) &&
+              (args.where.userId === undefined ||
+                row.userId === args.where.userId) &&
+              !row.revokedAt,
+          );
+          matching.forEach((row) => Object.assign(row, args.data));
+          return Promise.resolve({ count: matching.length });
+        },
+      );
+    });
+
+    async function login(): Promise<{
+      accessToken: string;
+      refreshToken: string;
+    }> {
+      const response = await request(app.getHttpServer())
+        .post('/api/auth/login')
+        .send({ email: owner.email, password: 'SecurePassword123' })
+        .expect(200);
+      return response.body as { accessToken: string; refreshToken: string };
+    }
+
+    function refresh(refreshToken: string) {
+      return request(app.getHttpServer())
+        .post('/api/auth/refresh')
+        .send({ refreshToken });
+    }
+
+    function everythingSentToRefreshTokenTable(): string {
+      return JSON.stringify([
+        prismaMock.refreshToken.create.mock.calls,
+        prismaMock.refreshToken.findUnique.mock.calls,
+        prismaMock.refreshToken.update.mock.calls,
+        prismaMock.refreshToken.updateMany.mock.calls,
+      ]);
+    }
+
+    it('POST /api/auth/login stores only the SHA-256 hash of the issued refresh token', async () => {
+      const { refreshToken } = await login();
+
+      expect(prismaMock.refreshToken.create).toHaveBeenCalledTimes(1);
+      expect(prismaMock.refreshToken.create).toHaveBeenCalledWith({
+        data: {
+          userId: owner.id,
+          familyId: expect.any(String),
+          tokenHash: sha256Hex(refreshToken),
+          expiresAt: expect.any(Date),
+        },
+      });
+      expect(everythingSentToRefreshTokenTable()).not.toContain(refreshToken);
+    });
+
+    it('POST /api/auth/refresh looks the token up by hash and returns a working new pair', async () => {
+      const first = await login();
+
+      const response = await refresh(first.refreshToken).expect(200);
+      const body = response.body as {
+        accessToken: string;
+        refreshToken: string;
+        tokenType: string;
+      };
+
+      expect(body.tokenType).toBe('Bearer');
+      expect(body.refreshToken).not.toBe(first.refreshToken);
+      expect(prismaMock.refreshToken.findUnique).toHaveBeenCalledWith({
+        where: { tokenHash: sha256Hex(first.refreshToken) },
+      });
+      expect(storedTokens.map((row) => row.tokenHash)).toEqual([
+        sha256Hex(first.refreshToken),
+        sha256Hex(body.refreshToken),
+      ]);
+      expect(storedTokens[1].familyId).toBe(storedTokens[0].familyId);
+      expect(storedTokens[0].usedAt).toEqual(expect.any(Date));
+      expect(everythingSentToRefreshTokenTable()).not.toContain(
+        first.refreshToken,
+      );
+      expect(everythingSentToRefreshTokenTable()).not.toContain(
+        body.refreshToken,
+      );
+
+      await request(app.getHttpServer())
+        .get('/api/users/me')
+        .set('Authorization', `Bearer ${body.accessToken}`)
+        .expect(200);
+    });
+
+    it('POST /api/auth/refresh returns 401 when a rotated token is reused and revokes the whole session', async () => {
+      const first = await login();
+      const rotated = (
+        (await refresh(first.refreshToken).expect(200)).body as {
+          refreshToken: string;
+        }
+      ).refreshToken;
+
+      await refresh(first.refreshToken).expect(401);
+
+      expect(storedTokens.every((row) => row.revokedAt)).toBe(true);
+      await refresh(rotated).expect(401);
+    });
+
+    it('POST /api/auth/refresh returns 401 for an unknown token and for the stored hash itself', async () => {
+      await login();
+
+      await refresh('not-a-real-refresh-token').expect(401);
+      await refresh(storedTokens[0].tokenHash).expect(401);
+    });
+
+    it('POST /api/auth/logout revokes the session by hash, so its refresh token stops working', async () => {
+      const { refreshToken } = await login();
+
+      await request(app.getHttpServer())
+        .post('/api/auth/logout')
+        .send({ refreshToken })
+        .expect(200);
+
+      expect(prismaMock.refreshToken.findUnique).toHaveBeenCalledWith({
+        where: { tokenHash: sha256Hex(refreshToken) },
+      });
+      expect(storedTokens[0].revokedAt).toEqual(expect.any(Date));
+      expect(everythingSentToRefreshTokenTable()).not.toContain(refreshToken);
+      await refresh(refreshToken).expect(401);
+    });
   });
 
   it('POST /api/auth/register rejects HTML in name fields', async () => {
@@ -4922,7 +5153,8 @@ describe('API (e2e)', () => {
       errors: [
         {
           field: 'category',
-          message: 'category має бути A1, A, B1, B, BE, C1, C1E, C, CE, D1, D1E, D, DE або T.',
+          message:
+            'category має бути A1, A, B1, B, BE, C1, C1E, C, CE, D1, D1E, D, DE або T.',
         },
       ],
     });
@@ -5068,7 +5300,11 @@ describe('API (e2e)', () => {
     expect(invalid.body).toMatchObject({
       statusCode: 400,
       errors: [
-        { field: 'category', message: 'category має бути A1, A, B1, B, BE, C1, C1E, C, CE, D1, D1E, D, DE або T.' },
+        {
+          field: 'category',
+          message:
+            'category має бути A1, A, B1, B, BE, C1, C1E, C, CE, D1, D1E, D, DE або T.',
+        },
       ],
     });
     expect(prismaMock.car.create).not.toHaveBeenCalled();

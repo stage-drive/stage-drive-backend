@@ -1,4 +1,4 @@
-process.env.AUTH_SECRET ??= 'test-auth-secret';
+process.env.AUTH_SECRET ??= 'unit-test-hmac-key-4f9a2c7e1b8d6035a1c9e7f2';
 process.env.DATABASE_URL ??=
   'postgresql://placeholder:placeholder@localhost:5432/placeholder';
 process.env.GOOGLE_CLIENT_ID ??= 'test-google-client-id';

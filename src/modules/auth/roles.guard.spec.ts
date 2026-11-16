@@ -1,4 +1,4 @@
-import { ExecutionContext, ForbiddenException } from '@nestjs/common';
+import { ExecutionContext, ForbiddenException, Logger } from '@nestjs/common';
 import { Reflector } from '@nestjs/core';
 import { UserRole } from '@prisma/client';
 import { RolesGuard } from './roles.guard';
@@ -47,6 +47,36 @@ describe('RolesGuard', () => {
     expect(() => new RolesGuard(reflector).canActivate(context)).toThrow(
       ForbiddenException,
     );
+  });
+
+  it('logs a denied attempt without the request body or query', () => {
+    const warn = jest.spyOn(Logger.prototype, 'warn').mockImplementation();
+    const reflector = {
+      getAllAndOverride: jest.fn().mockReturnValue([UserRole.ADMIN]),
+    } as unknown as Reflector;
+    const context = {
+      getHandler: () => undefined,
+      getClass: () => undefined,
+      switchToHttp: () => ({
+        getRequest: () => ({
+          method: 'GET',
+          path: '/api/payments',
+          user: {
+            id: 'teacher-1',
+            role: UserRole.TEACHER,
+            organizationId: 'org-1',
+          },
+        }),
+      }),
+    } as unknown as ExecutionContext;
+
+    expect(() => new RolesGuard(reflector).canActivate(context)).toThrow(
+      ForbiddenException,
+    );
+    expect(warn).toHaveBeenCalledWith(
+      'Access denied method=GET path=/api/payments userId=teacher-1 role=TEACHER organizationId=org-1',
+    );
+    warn.mockRestore();
   });
 
   it('rejects a request without a user when roles are required', () => {

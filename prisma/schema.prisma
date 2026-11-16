@@ -184,10 +184,21 @@ enum BookingConfirmation {
   REJECTED
 }
 
-/// Оплата практичного заняття. Поки оплат немає, PracticePaymentService завжди ставить PAID.
+/// Статус оплати. Один enum для запису Payment і знімка DrivingLesson.paymentStatus.
+/// NOT_PAID — оплата відсутня, PAID — оплату підтвердив ADMIN. PAID фінальний.
+/// Актуальний статус студента — status останнього Payment (Student.currentPaymentId);
+/// без жодного Payment — NOT_PAID. Практику бронюють лише з актуальним PAID.
 enum PaymentStatus {
-  UNPAID
+  NOT_PAID
   PAID
+}
+
+/// Подія в журналі оплати. CREATED — запис створено (previousStatus = null),
+/// STATUS_CHANGED — змінено статус, UPDATED — змінено суму, валюту, дату чи коментар.
+enum PaymentHistoryAction {
+  CREATED
+  STATUS_CHANGED
+  UPDATED
 }
 
 /// Причина недоступності інструктора. На розрахунок вільного часу не впливає.
@@ -224,6 +235,8 @@ model Organization {
   theoryTestResults       TheoryTestResult[]
   instructorWorkingHours  InstructorWorkingHours[]
   instructorTimeOffs      InstructorTimeOff[]
+  payments                Payment[]
+  paymentHistory          PaymentHistory[]
 
   @@index([deletedAt])
   @@map("organizations")
@@ -272,9 +285,12 @@ model User {
   workingHours             InstructorWorkingHours[] @relation("InstructorWorkingHours")
   timeOffs                 InstructorTimeOff[]      @relation("InstructorTimeOffs")
   createdTimeOffs          InstructorTimeOff[]      @relation("CreatedInstructorTimeOffs")
+  studentPayments          Payment[]                @relation("StudentPayments")
+  createdPayments          Payment[]                @relation("CreatedPayments")
+  paymentChanges           PaymentHistory[]         @relation("PaymentChanges")
 
-  /// Ціль складених FK з instructor_working_hours і instructor_time_offs:
-  /// запис не прив’язати до інструктора іншої автошколи.
+  /// Ціль складених FK з instructor_working_hours, instructor_time_offs, payments
+  /// і payment_history: запис не прив’язати до людини іншої автошколи.
   @@unique([id, organizationId])
   @@index([deletedAt])
   @@index([organizationId])
@@ -595,9 +611,18 @@ model Student {
   address        String?          @db.VarChar(255)
   contractNumber String?          @map("contract_number") @db.VarChar(64)
   trainingStatus TrainingStatus   @default(NEW) @map("training_status")
+  /// Останній за createdAt Payment студента — джерело актуального статусу оплати.
+  /// null — оплат ще немає (NOT_PAID). Пише лише PaymentsService.create під блокуванням студента.
+  /// Складений FK (currentPaymentId, userId) → payments(id, studentId): вказівник може вести
+  /// лише на оплату цього самого студента (а через FK оплати — і цієї автошколи).
+  /// NoAction: оплати не видаляються, а видалення автошколи перевіряється в кінці запиту.
+  currentPaymentId String?        @unique @map("current_payment_id") @db.Uuid
+  currentPayment   Payment?       @relation("StudentCurrentPayment", fields: [currentPaymentId, userId], references: [id, studentId], onDelete: NoAction, onUpdate: NoAction)
   createdAt      DateTime         @default(now()) @map("created_at")
   updatedAt      DateTime         @updatedAt @map("updated_at")
 
+  /// Потрібен Prisma для зв'язку один-до-одного через складений FK currentPayment.
+  @@unique([currentPaymentId, userId])
   @@index([organizationId])
   @@index([groupId])
   @@index([instructorId])
@@ -799,4 +824,77 @@ model LessonAttendance {
   @@index([studentId])
   @@index([markedById])
   @@map("lesson_attendances")
+}
+
+/// Запис про оплату студента. Кожна фактична оплата — окремий рядок; записи не видаляються.
+/// studentId посилається на User (як DrivingLesson і Enrollment). Складені FK
+/// (studentId, organizationId) і (createdById, organizationId) не дають прив’язати оплату
+/// до людини іншої автошколи.
+/// CHECK у міграції: amount >= 0, для PAID amount > 0; paidAt є тоді й лише тоді, коли
+/// status = PAID; currency — три латинські літери у верхньому регістрі; purpose не порожній;
+/// idempotencyKey і requestHash є або обидва, або жодного.
+model Payment {
+  id             String           @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  organizationId String           @map("organization_id") @db.Uuid
+  organization   Organization     @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  /// Restrict: оплата — фінансова історія, видалення людини не повинно її стирати.
+  studentId      String           @map("student_id") @db.Uuid
+  student        User             @relation("StudentPayments", fields: [studentId, organizationId], references: [id, organizationId], onDelete: Restrict)
+  amount         Decimal          @db.Decimal(12, 2)
+  currency       String           @default("UAH") @db.VarChar(3)
+  status         PaymentStatus
+  /// Дата підтвердженої оплати. Лише для PAID.
+  paidAt         DateTime?        @map("paid_at")
+  /// Призначення платежу: за що оплата («Курс теорії», «Практика, 10 годин»). Бачить і студент.
+  purpose        String           @db.VarChar(255)
+  /// Службовий коментар ADMIN. Студенту не повертається.
+  comment        String?          @db.VarChar(1000)
+  /// Ключ ідемпотентності з заголовка Idempotency-Key запиту створення. Унікальний в автошколі:
+  /// повтор того самого запиту повертає цю оплату, а не створює другу.
+  idempotencyKey String?          @map("idempotency_key") @db.VarChar(128)
+  /// SHA-256 тіла запиту створення: той самий ключ з іншими даними — 409.
+  requestHash    String?          @map("request_hash") @db.Char(64)
+  createdById    String           @map("created_by_id") @db.Uuid
+  createdBy      User             @relation("CreatedPayments", fields: [createdById, organizationId], references: [id, organizationId], onDelete: Restrict)
+  createdAt      DateTime         @default(now()) @map("created_at")
+  updatedAt      DateTime         @default(now()) @updatedAt @map("updated_at")
+  history        PaymentHistory[]
+  currentFor     Student?         @relation("StudentCurrentPayment")
+
+  /// Ціль складеного FK з payment_history: подію не прив’язати до оплати іншої автошколи.
+  @@unique([id, organizationId])
+  /// Ціль складеного FK students.current_payment_id: вказівник лише на оплату свого студента.
+  @@unique([id, studentId])
+  /// NULL-ключі (запити без Idempotency-Key) не конфліктують між собою.
+  @@unique([organizationId, idempotencyKey])
+  @@index([organizationId, status])
+  @@index([organizationId, studentId, createdAt])
+  @@index([organizationId, paidAt])
+  @@index([createdById])
+  @@map("payments")
+}
+
+/// Журнал змін оплати. Лише додається: рядки не змінюються і не видаляються.
+/// CHECK у міграції: previousStatus = null тоді й лише тоді, коли action = CREATED;
+/// STATUS_CHANGED завжди змінює статус.
+model PaymentHistory {
+  id             String               @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  organizationId String               @map("organization_id") @db.Uuid
+  organization   Organization         @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  paymentId      String               @map("payment_id") @db.Uuid
+  payment        Payment              @relation(fields: [paymentId, organizationId], references: [id, organizationId], onDelete: Cascade)
+  action         PaymentHistoryAction
+  previousStatus PaymentStatus?       @map("previous_status")
+  newStatus      PaymentStatus        @map("new_status")
+  /// Для UPDATED: змінені поля, { "amount": { "from": "5000.00", "to": "5500.00" } }.
+  changes        Json?
+  changedById    String               @map("changed_by_id") @db.Uuid
+  changedBy      User                 @relation("PaymentChanges", fields: [changedById, organizationId], references: [id, organizationId], onDelete: Restrict)
+  changedAt      DateTime             @default(now()) @map("changed_at")
+  comment        String?              @db.VarChar(1000)
+
+  @@index([paymentId, changedAt])
+  @@index([organizationId, changedAt])
+  @@index([changedById])
+  @@map("payment_history")
 }

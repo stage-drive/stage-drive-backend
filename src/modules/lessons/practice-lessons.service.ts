@@ -303,8 +303,9 @@ export class PracticeLessonsService {
 
   /**
    * Бронювання слоту студентом. Порядок: advisory-ключі (ті самі, що в
-   * createPractice) → одне активне заняття → інструктор → авто → час у сітці
-   * робочого графіка → конфлікти (заняття, теорія, недоступність) → запис.
+   * createPractice) → оплата (422 без актуального PAID) → одне активне заняття →
+   * інструктор → авто → час у сітці робочого графіка → конфлікти (заняття, теорія,
+   * недоступність) → запис.
    * Заняття створюється з confirmationStatus = PENDING: воно вже займає час,
    * а підтверджує його інструктор чи ADMIN (PracticeLessonWorkflowService).
    */
@@ -333,6 +334,12 @@ export class PracticeLessonsService {
       await lockPracticeResources(tx, {
         instructorId: profile.instructorId,
         carId: profile.carId,
+        studentId: actor.id,
+      });
+
+      // Оплата — передумова практики, тож перевіряється до слоту й конфліктів.
+      const paymentStatus = await this.payment.resolveForLesson(tx, {
+        organizationId: actor.organizationId,
         studentId: actor.id,
       });
 
@@ -378,11 +385,6 @@ export class PracticeLessonsService {
         );
         throw scheduleConflict(conflicts);
       }
-
-      const paymentStatus = await this.payment.resolveForLesson(tx, {
-        organizationId: actor.organizationId,
-        studentId: actor.id,
-      });
 
       return tx.drivingLesson.create({
         data: {

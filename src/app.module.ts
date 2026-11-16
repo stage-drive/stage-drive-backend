@@ -13,6 +13,7 @@ import { CarsModule } from './modules/cars/cars.module';
 import { GroupsModule } from './modules/groups/groups.module';
 import { CoursesModule } from './modules/courses/courses.module';
 import { LessonsModule } from './modules/lessons/lessons.module';
+import { PaymentsModule } from './modules/payments/payments.module';
 
 @Module({
   imports: [
@@ -28,6 +29,7 @@ import { LessonsModule } from './modules/lessons/lessons.module';
     GroupsModule,
     CoursesModule,
     LessonsModule,
+    PaymentsModule,
   ],
   controllers: [AppController],
   providers: [AppService],

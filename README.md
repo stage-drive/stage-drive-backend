@@ -27,11 +27,17 @@ Swagger UI доступний за адресою http://localhost:3000/api/docs
 cp .env.example .env
 ```
 
+Обов'язково згенеруйте `AUTH_SECRET` і впишіть його в `.env`. Без нього (або зі слабким значенням) API не стартує:
+
+```bash
+openssl rand -base64 32
+```
+
 | Змінна                | Призначення                                                                        |
 | --------------------- | ---------------------------------------------------------------------------------- |
 | `PORT`                | Порт HTTP-сервера (за замовчуванням `3000`)                                        |
 | `NODE_ENV`            | `development` або `production`                                                     |
-| `AUTH_SECRET`         | Секрет підпису access/refresh токенів                                              |
+| `AUTH_SECRET`         | Обов'язковий. HMAC-ключ access-токенів, ≥ 32 символи, не плейсхолдер               |
 | `DATABASE_URL`        | Підключення до PostgreSQL для команд на хості (`npm run start:dev`, Prisma CLI)    |
 | `DOCKER_DATABASE_URL` | Підключення для контейнерів `backend` і `migrate` (хост — ім'я сервісу `postgres`) |
 | `POSTGRES_USER`       | Користувач локального контейнера PostgreSQL                                        |
@@ -230,7 +236,7 @@ docker compose run --rm --no-deps \
 ```bash
 docker run --rm \
   -e DATABASE_URL="postgresql://USER:PASSWORD@VM_HOST:5432/stage_drive" \
-  -e AUTH_SECRET="your-secret" \
+  -e AUTH_SECRET="<постійний ключ з openssl rand -base64 32>" \
   -e RUN_MIGRATIONS=true \
   -p 3000:3000 \
   stage-drive-backend

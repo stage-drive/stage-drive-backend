@@ -3,7 +3,7 @@ import { join } from 'path';
 
 config({ path: join(__dirname, '..', '.env') });
 
-process.env.AUTH_SECRET ??= 'test-auth-secret';
+process.env.AUTH_SECRET ??= 'unit-test-hmac-key-4f9a2c7e1b8d6035a1c9e7f2';
 process.env.DATABASE_URL ??=
   'postgresql://placeholder:placeholder@localhost:5432/placeholder';
 process.env.MAIL_HOST ??= 'smtp.example.com';

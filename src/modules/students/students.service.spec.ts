@@ -11,6 +11,7 @@ import {
   GroupStatus,
   CarStatus,
   LicenseCategory,
+  PaymentStatus,
   Prisma,
   TheoryTestStatus,
   TrainingStatus,
@@ -41,6 +42,7 @@ import {
   STUDENT_NOT_FOUND_MESSAGE,
   STUDENT_NOT_IN_GROUP_MESSAGE,
   EXAM_HOURS_MESSAGE,
+  PAYMENT_FILTER_FORBIDDEN_MESSAGE,
   PRACTICE_STATUS_MANUAL_MESSAGE,
   STUDENT_PRACTICE_ACCESS_MESSAGE,
   STUDENT_TRAINING_STATUS_MESSAGE,
@@ -90,6 +92,34 @@ function studentRow(
     createdAt: new Date('2026-01-02T00:00:00.000Z'),
     deletedAt: null,
     studentProfile: null,
+    ...overrides,
+  };
+}
+
+function paymentRow(
+  overrides: Partial<{
+    id: string;
+    organizationId: string;
+    status: PaymentStatus;
+    amount: Prisma.Decimal;
+    paidAt: Date | null;
+    comment: string | null;
+    createdAt: Date;
+  }> = {},
+) {
+  return {
+    id: 'payment-1',
+    organizationId: 'org-1',
+    studentId: 'student-1',
+    amount: new Prisma.Decimal('5000'),
+    currency: 'UAH',
+    status: PaymentStatus.PAID as PaymentStatus,
+    paidAt: new Date('2026-08-10T00:00:00.000Z'),
+    purpose: 'Курс теорії',
+    comment: 'Готівка' as string | null,
+    createdAt: new Date('2026-08-10T09:00:00.000Z'),
+    updatedAt: new Date('2026-08-10T09:00:00.000Z'),
+    createdBy: { id: 'admin-1', firstName: 'Ірина', lastName: 'Адміненко' },
     ...overrides,
   };
 }
@@ -189,7 +219,7 @@ describe('StudentsService', () => {
           trainingStatus: null,
           group: null,
           instructor: null,
-          paymentStatus: 'PAID',
+          paymentStatus: 'NOT_PAID',
           createdAt: row.createdAt,
         },
       ],
@@ -461,6 +491,83 @@ describe('StudentsService', () => {
       service.list(actor(UserRole.ADMIN), {}),
     ).rejects.toBeInstanceOf(NotFoundException);
     expect(prisma.user.findMany).not.toHaveBeenCalled();
+  });
+
+  describe('list payment status', () => {
+    function rowWithCurrentPayment(current: { status: PaymentStatus }) {
+      return {
+        ...studentRow(),
+        studentProfile: {
+          organizationId: 'org-1',
+          category: null,
+          transmission: null,
+          trainingStatus: TrainingStatus.PRACTICE,
+          instructorId: 'instructor-1',
+          group: null,
+          instructor: null,
+          currentPayment: current,
+        },
+      };
+    }
+
+    const paidFilter = {
+      studentProfile: {
+        is: {
+          organizationId: 'org-1',
+          currentPayment: { is: { status: PaymentStatus.PAID } },
+        },
+      },
+    };
+
+    it('shows the status of the latest payment to ADMIN', async () => {
+      prisma.user.findMany.mockResolvedValue([
+        rowWithCurrentPayment({ status: PaymentStatus.PAID }),
+      ]);
+
+      const result = await service.list(actor(UserRole.ADMIN), {});
+
+      expect(result.students[0].paymentStatus).toBe(PaymentStatus.PAID);
+    });
+
+    it.each([UserRole.TEACHER, UserRole.INSTRUCTOR] as const)(
+      'hides the payment status from %s',
+      async (role) => {
+        prisma.user.findMany.mockResolvedValue([
+          rowWithCurrentPayment({ status: PaymentStatus.PAID }),
+        ]);
+
+        const result = await service.list(actor(role), {});
+
+        expect(result.students[0].paymentStatus).toBeNull();
+      },
+    );
+
+    it('filters PAID by the current payment and NOT_PAID by its absence', async () => {
+      await service.list(actor(UserRole.ADMIN), {
+        paymentStatus: PaymentStatus.PAID,
+      });
+      await service.list(actor(UserRole.ADMIN), {
+        paymentStatus: PaymentStatus.NOT_PAID,
+      });
+
+      const [paidCall, notPaidCall] = prisma.user.findMany.mock.calls as [
+        { where: { AND: unknown[] } },
+      ][];
+      expect(paidCall[0].where.AND).toContainEqual(paidFilter);
+      expect(notPaidCall[0].where.AND).toContainEqual({ NOT: paidFilter });
+    });
+
+    it.each([UserRole.TEACHER, UserRole.INSTRUCTOR] as const)(
+      'rejects the paymentStatus filter for %s before reading students',
+      async (role) => {
+        await expect(
+          service.list(actor(role), { paymentStatus: PaymentStatus.PAID }),
+        ).rejects.toThrow(
+          new ForbiddenException(PAYMENT_FILTER_FORBIDDEN_MESSAGE),
+        );
+        expect(prisma.user.findMany).not.toHaveBeenCalled();
+      },
+    );
   });
 
   describe('create', () => {
@@ -945,7 +1052,12 @@ describe('StudentsService', () => {
         examAvailable: false,
         lessons: [],
       },
-      payments: { status: 'PAID', history: [] },
+      payments: {
+        status: 'NOT_PAID',
+        currentPayment: null,
+        totalsPaid: [],
+        payments: [],
+      },
     };
 
     const student = actor(UserRole.STUDENT);
@@ -1021,6 +1133,23 @@ describe('StudentsService', () => {
         },
         select: expect.not.objectContaining({ passwordHash: true }),
       });
+    });
+
+    it('shows the student own payments without the admin comment', async () => {
+      prisma.user.findFirst.mockResolvedValue({
+        ...ownRow(),
+        studentProfile: { ...profile, currentPaymentId: 'payment-1' },
+        studentPayments: [paymentRow()],
+      });
+
+      const result = await service.getOwn(student);
+
+      expect(result.payments).toMatchObject({
+        status: PaymentStatus.PAID,
+        currentPayment: { id: 'payment-1', amount: '5000.00' },
+      });
+      expect(result.payments?.currentPayment).not.toHaveProperty('comment');
+      expect(result.payments?.payments[0]).not.toHaveProperty('comment');
     });
 
     it.each([
@@ -1234,32 +1363,40 @@ describe('StudentsService', () => {
     it.each([UserRole.OWNER, UserRole.ADMIN] as const)(
       'returns the student card for %s',
       async (role) => {
-      prisma.user.findFirst.mockResolvedValue(cardRow());
+        prisma.user.findFirst.mockResolvedValue(cardRow());
 
-      await expect(service.getById(actor(role), 'student-1')).resolves.toMatchObject({
-        id: visibleCard.id,
-        email: visibleCard.email,
-        role: UserRole.STUDENT,
-        organizationId: 'org-1',
-        student: {
-          id: 'profile-1',
-          groupId: 'group-1',
-          trainingStatus: TrainingStatus.ACTIVE,
-          avatar: null,
-        },
-        practice: { requiredHours: 40, examAvailable: false },
-        payments: { status: 'PAID', history: [] },
-      });
-      expect(prisma.user.findFirst).toHaveBeenCalledWith({
-        where: {
-          id: 'student-1',
-          organizationId: 'org-1',
+        await expect(
+          service.getById(actor(role), 'student-1'),
+        ).resolves.toMatchObject({
+          id: visibleCard.id,
+          email: visibleCard.email,
           role: UserRole.STUDENT,
-          deletedAt: null,
-        },
-        select: expect.not.objectContaining({ passwordHash: true }),
-      });
-    });
+          organizationId: 'org-1',
+          student: {
+            id: 'profile-1',
+            groupId: 'group-1',
+            trainingStatus: TrainingStatus.ACTIVE,
+            avatar: null,
+          },
+          practice: { requiredHours: 40, examAvailable: false },
+          payments: {
+            status: 'NOT_PAID',
+            currentPayment: null,
+            totalsPaid: [],
+            payments: [],
+          },
+        });
+        expect(prisma.user.findFirst).toHaveBeenCalledWith({
+          where: {
+            id: 'student-1',
+            organizationId: 'org-1',
+            role: UserRole.STUDENT,
+            deletedAt: null,
+          },
+          select: expect.not.objectContaining({ passwordHash: true }),
+        });
+      },
+    );
 
     it('returns the current practice car and hides a car from another organization', async () => {
       const practiceCar = {
@@ -1310,6 +1447,59 @@ describe('StudentsService', () => {
       );
       expect(hidden.student?.carId).toBe('car-1');
       expect(hidden.student?.car).toBeNull();
+    });
+
+    it('returns payment records with the current status and paid totals to ADMIN', async () => {
+      prisma.user.findFirst.mockResolvedValue({
+        ...cardRow(),
+        studentProfile: { ...profile, currentPaymentId: 'payment-2' },
+        studentPayments: [
+          paymentRow({
+            id: 'payment-2',
+            status: PaymentStatus.NOT_PAID,
+            amount: new Prisma.Decimal('3000'),
+            paidAt: null,
+            comment: null,
+            createdAt: new Date('2026-09-01T09:00:00.000Z'),
+          }),
+          paymentRow(),
+          paymentRow({ id: 'payment-foreign', organizationId: 'org-2' }),
+        ],
+      });
+
+      const card = await service.getById(actor(UserRole.ADMIN), 'student-1');
+
+      expect(card.payments).toMatchObject({
+        status: PaymentStatus.NOT_PAID,
+        currentPayment: { id: 'payment-2', amount: '3000.00' },
+        totalsPaid: [{ currency: 'UAH', amount: '5000.00' }],
+      });
+      expect(card.payments?.payments.map((payment) => payment.id)).toEqual([
+        'payment-2',
+        'payment-1',
+      ]);
+      expect(card.payments?.payments[1].comment).toBe('Готівка');
+    });
+
+    it('hides payments from INSTRUCTOR in the card', async () => {
+      prisma.user.findFirst.mockResolvedValue({
+        ...cardRow({
+          studentProfile: { ...profile, instructorId: 'instructor-1' },
+        }),
+        studentPayments: [paymentRow()],
+      });
+
+      const card = await service.getById(
+        actor(UserRole.INSTRUCTOR),
+        'student-1',
+      );
+
+      expect(card.payments).toBeNull();
+      // Історію оплат для TEACHER та INSTRUCTOR навіть не читаємо.
+      const [{ select }] = prisma.user.findFirst.mock.calls[0] as [
+        { select: { studentPayments: { take?: number } } },
+      ];
+      expect(select.studentPayments.take).toBe(0);
     });
 
     it('returns birthDate, address and contractNumber from the student profile', async () => {
@@ -2526,19 +2716,20 @@ describe('StudentsService', () => {
     it.each([TrainingStatus.DROPPED, TrainingStatus.ARCHIVED])(
       'lets a student leave THEORY_COMPLETED toward %s',
       async (next) => {
-      prisma.user.findFirst.mockResolvedValue(
-        statusRow(TrainingStatus.THEORY_COMPLETED),
-      );
+        prisma.user.findFirst.mockResolvedValue(
+          statusRow(TrainingStatus.THEORY_COMPLETED),
+        );
 
-      await service.changeTrainingStatus(actor(UserRole.ADMIN), 'student-1', {
-        status: next,
-      });
+        await service.changeTrainingStatus(actor(UserRole.ADMIN), 'student-1', {
+          status: next,
+        });
 
-      expect(prisma.student.update).toHaveBeenCalledWith({
-        where: { id: 'profile-1' },
-        data: { trainingStatus: next },
-      });
-    });
+        expect(prisma.student.update).toHaveBeenCalledWith({
+          where: { id: 'profile-1' },
+          data: { trainingStatus: next },
+        });
+      },
+    );
 
     it.each([
       [TrainingStatus.THEORY_COMPLETED, TrainingStatus.ACTIVE],
@@ -2607,7 +2798,9 @@ describe('StudentsService', () => {
       prisma.user.findFirst.mockResolvedValue(
         statusRow(TrainingStatus.PRACTICE),
       );
-      prisma.drivingLesson.findMany.mockResolvedValue([{ durationMin: 38 * 60 }]);
+      prisma.drivingLesson.findMany.mockResolvedValue([
+        { durationMin: 38 * 60 },
+      ]);
 
       await expect(
         service.changeTrainingStatus(actor(UserRole.ADMIN), 'student-1', {

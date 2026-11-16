@@ -183,9 +183,33 @@ describe('Lesson schedule (integration, real Postgres)', () => {
     await container?.stop();
   });
 
+  /** PAID-оплата, яка стає актуальною: без неї практику не записати (422). */
+  async function markPaid(
+    organizationId: string,
+    studentId: string,
+    createdById: string,
+  ) {
+    const payment = await prisma.payment.create({
+      data: {
+        organizationId,
+        studentId,
+        amount: 5000,
+        status: PaymentStatus.PAID,
+        paidAt: new Date('2026-01-01T00:00:00.000Z'),
+        purpose: 'Курс теорії і практики',
+        createdById,
+      },
+    });
+    await prisma.student.update({
+      where: { userId: studentId },
+      data: { currentPaymentId: payment.id },
+    });
+  }
+
   /**
    * One school: instructor with cars 1 and 2, another instructor with car 3,
-   * a teacher's ACTIVE group, and two PRACTICE students enrolled in it.
+   * a teacher's ACTIVE group, and two PRACTICE students enrolled in it,
+   * both with a current PAID payment.
    */
   async function createSchool() {
     sequence += 1;
@@ -258,6 +282,9 @@ describe('Lesson schedule (integration, real Postgres)', () => {
       });
     const student1 = await student(1, car1.id);
     const student2 = await student(2, car2.id);
+    // Модуль 13: практику записують лише з актуальною оплатою PAID.
+    await markPaid(organization.id, student1.id, admin.id);
+    await markPaid(organization.id, student2.id, admin.id);
 
     const practice = (data: {
       instructorId?: string;

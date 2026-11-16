@@ -23,6 +23,7 @@ import {
   ApiParam,
   ApiTags,
   ApiUnauthorizedResponse,
+  ApiUnprocessableEntityResponse,
 } from '@nestjs/swagger';
 import { User } from '@prisma/client';
 import { AuthGuard } from '../auth/auth.guard';
@@ -218,7 +219,12 @@ export class LessonsController {
       'ADMIN створює заняття будь-якому студенту своєї автошколи. Студенти бронюють самі через POST /lessons/practice/book. ' +
       'Без instructorId і carId беруться інструктор і авто, призначені студенту під час допуску до практики. ' +
       "Місце зустрічі (meetingPlace) обов'язкове. " +
+      'Студент має актуальний статус оплати PAID, інакше 422. ' +
       `${CREATE_RULES} ${PRACTICE_CHECKS}`,
+  })
+  @ApiUnprocessableEntityResponse({
+    description:
+      'Актуальний статус оплати студента не PAID: «Немає доступу до практики. Очікується оплата.»',
   })
   @ApiCreatedResponse({ type: PracticeLessonDto })
   @ApiBadRequestResponse({

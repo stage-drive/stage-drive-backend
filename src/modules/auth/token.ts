@@ -1,5 +1,5 @@
 import { createHmac, timingSafeEqual } from 'crypto';
-import { requireEnv } from '../../common/config/env';
+import { validateAuthSecret } from './auth-secret';
 
 const ACCESS_TOKEN_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 export const REFRESH_TOKEN_TTL_MS = 30 * 24 * 60 * 60 * 1000;
@@ -10,8 +10,11 @@ export type TokenPayload = {
   exp: number;
 };
 
+// AuthModule already validates the secret at startup. Checking again here
+// keeps code that signs tokens outside Nest, such as scripts and tests, from
+// silently using a weak key.
 function getSecret(): string {
-  return requireEnv('AUTH_SECRET');
+  return validateAuthSecret(process.env.AUTH_SECRET);
 }
 
 function sign(userId: string, ttlMs: number): string {

@@ -23,6 +23,7 @@ import {
   ApiParam,
   ApiTags,
   ApiUnauthorizedResponse,
+  ApiUnprocessableEntityResponse,
 } from '@nestjs/swagger';
 import { User } from '@prisma/client';
 import { AuthGuard } from '../auth/auth.guard';
@@ -220,8 +221,14 @@ export class PracticeLessonsController {
       `${APPROVAL_RULES} ${SLOT_RULES} ` +
       `Бронювати можна щонайменше за ${BOOKING_MIN_LEAD_HOURS} години до початку. ` +
       'Студент може мати лише одне заплановане заняття, що ще не закінчилося (зокрема таке, що чекає підтвердження). ' +
+      'Бронювати можна лише з актуальним статусом оплати PAID (GET /me/payments), інакше 422 — ' +
+      'ця перевірка йде перед перевірками слоту. ' +
       'Час перевіряється ще раз під тими самими блокуваннями, що й створення заняття адміном: ' +
       'якщо слот щойно зайняли, повертається 409 — оновіть список вільних слотів.',
+  })
+  @ApiUnprocessableEntityResponse({
+    description:
+      'Актуальний статус оплати студента не PAID: «Немає доступу до практики. Очікується оплата.»',
   })
   @ApiCreatedResponse({ type: PracticeLessonDto })
   @ApiBadRequestResponse({

@@ -480,18 +480,23 @@ export class LessonsService {
         transmission: profile.transmission,
       });
 
-      await this.assertPracticeSlotFree(tx, actor, {
+      const resources = {
         lessonId: null,
         instructorId,
         carId,
         studentId: student.id,
         slot: lessonSlot(scheduledAt, durationMin),
-      });
+      };
+      await lockPracticeResources(tx, resources);
 
+      // Оплата — передумова практики: 422 раніше за конфлікти розкладу,
+      // як і в бронюванні студента.
       const paymentStatus = await this.payment.resolveForLesson(tx, {
         organizationId: actor.organizationId,
         studentId: student.id,
       });
+
+      await this.assertNoPracticeConflicts(tx, actor, resources);
 
       // Заняття від ADMIN не чекає підтвердження інструктора.
       return tx.drivingLesson.create({
@@ -994,13 +999,15 @@ export class LessonsService {
           transmission: profile.transmission,
         });
 
-        await this.assertPracticeSlotFree(tx, actor, {
+        const resources = {
           lessonId: lesson.id,
           instructorId: next.instructorId,
           carId: next.carId,
           studentId: lesson.studentId,
           slot: lessonSlot(next.scheduledAt, next.durationMin),
-        });
+        };
+        await lockPracticeResources(tx, resources);
+        await this.assertNoPracticeConflicts(tx, actor, resources);
       }
 
       const saved = await tx.drivingLesson.update({
@@ -1050,11 +1057,11 @@ export class LessonsService {
   }
 
   /**
-   * Advisory-ключі інструктора, авто, студента і його відкритих груп → пошук
-   * конфліктів практики. Спільний ключ group: серіалізує практику студента з
-   * теорією його групи.
+   * Пошук конфліктів практики. Викликати після lockPracticeResources — advisory-ключів
+   * інструктора, авто, студента і його відкритих груп. Спільний ключ group серіалізує
+   * практику студента з теорією його групи.
    */
-  private async assertPracticeSlotFree(
+  private async assertNoPracticeConflicts(
     tx: Prisma.TransactionClient,
     actor: User,
     input: {
@@ -1065,7 +1072,6 @@ export class LessonsService {
       slot: ScheduleSlot;
     },
   ): Promise<void> {
-    await lockPracticeResources(tx, input);
     const conflicts = await findPracticeConflicts(tx, {
       organizationId: actor.organizationId,
       ...input,
