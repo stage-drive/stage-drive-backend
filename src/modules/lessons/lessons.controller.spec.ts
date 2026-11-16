@@ -28,6 +28,8 @@ describe('LessonsController', () => {
     ['reschedulePractice', [UserRole.ADMIN, UserRole.STUDENT]],
     ['cancelTheory', [UserRole.ADMIN, UserRole.TEACHER]],
     ['cancelPractice', [UserRole.ADMIN, UserRole.INSTRUCTOR, UserRole.STUDENT]],
+    ['deleteTheory', [UserRole.ADMIN, UserRole.TEACHER]],
+    ['deletePractice', [UserRole.ADMIN, UserRole.INSTRUCTOR]],
     ['getTheoryContent', [UserRole.ADMIN, UserRole.TEACHER, UserRole.STUDENT]],
     ['getAttendance', [UserRole.ADMIN, UserRole.TEACHER]],
     ['updateAttendance', [UserRole.ADMIN, UserRole.TEACHER]],
@@ -58,6 +60,19 @@ describe('LessonsController', () => {
     },
   );
 
+  it.each(['deleteTheory', 'deletePractice'] as const)(
+    '%s answers 204',
+    (method) => {
+      expect(
+        Reflect.getMetadata(
+          HTTP_CODE_METADATA,
+          // eslint-disable-next-line @typescript-eslint/unbound-method -- only reads decorator metadata, never invoked
+          LessonsController.prototype[method],
+        ),
+      ).toBe(HttpStatus.NO_CONTENT);
+    },
+  );
+
   it.each(['createTheory', 'createPractice'] as const)(
     '%s answers 201',
     (method) => {
@@ -84,6 +99,8 @@ describe('LessonsController', () => {
       reschedulePractice: jest.fn().mockResolvedValue(response),
       cancelTheory: jest.fn().mockResolvedValue(response),
       cancelPractice: jest.fn().mockResolvedValue(response),
+      deleteTheory: jest.fn().mockResolvedValue(undefined),
+      deletePractice: jest.fn().mockResolvedValue(undefined),
     };
     const personalScheduleService = {
       getMySchedule: jest.fn().mockResolvedValue(response),
@@ -139,6 +156,16 @@ describe('LessonsController', () => {
           controller[method](user as never, body as never),
         ).resolves.toBe(response);
         expect(lessonsService[method]).toHaveBeenCalledWith(user, body);
+      },
+    );
+
+    it.each(['deleteTheory', 'deletePractice'] as const)(
+      '%s passes the current user and id to the service',
+      async (method) => {
+        await expect(controller[method](user as never, id)).resolves.toBe(
+          undefined,
+        );
+        expect(lessonsService[method]).toHaveBeenCalledWith(user, id);
       },
     );
 

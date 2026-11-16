@@ -109,6 +109,12 @@ export const PRACTICE_LESSON_CANCEL_ROLES = [
   UserRole.STUDENT,
 ] as const;
 
+/** Фізичне видалення практики. Студент скасовує через cancel, рядок не стирає. */
+export const PRACTICE_LESSON_DELETE_ROLES = [
+  UserRole.ADMIN,
+  UserRole.INSTRUCTOR,
+] as const;
+
 /** Студент скасовує своє заняття не пізніше ніж за стільки годин до початку. */
 export const STUDENT_CANCEL_MIN_HOURS = 2;
 
@@ -805,6 +811,45 @@ export class LessonsService {
       `Lesson cancelled type=PRACTICE lessonId=${saved.id} scheduledAt=${saved.scheduledAt.toISOString()} actorId=${actor.id} organizationId=${actor.organizationId}`,
     );
     return toPracticeLessonDto(saved);
+  }
+
+  /**
+   * Прибирає теоретичне заняття з бази. На відміну від скасування, рядок не
+   * лишається зі статусом CANCELLED. Відвідування зникає разом із заняттям
+   * (ON DELETE CASCADE). Статус і те, чи заняття вже почалося, не перевіряються.
+   */
+  async deleteTheory(actor: User, lessonId: string): Promise<void> {
+    assertCanEditTheory(actor);
+    await this.requireOrganization(actor.organizationId);
+
+    const lesson = await this.prisma.$transaction(async (tx) => {
+      const locked = await this.lockTheoryForChange(tx, actor, lessonId);
+      await tx.lesson.delete({ where: { id: locked.id } });
+      return locked;
+    });
+
+    this.logger.log(
+      `Lesson deleted type=THEORY lessonId=${lesson.id} scheduledAt=${lesson.scheduledAt.toISOString()} actorId=${actor.id} organizationId=${actor.organizationId}`,
+    );
+  }
+
+  /**
+   * Прибирає практичне заняття з бази. Інструктор видаляє лише своє.
+   * Студент цей рядок не стирає: для нього лишається скасування.
+   */
+  async deletePractice(actor: User, lessonId: string): Promise<void> {
+    assertRole(actor, PRACTICE_LESSON_DELETE_ROLES);
+    await this.requireOrganization(actor.organizationId);
+
+    const lesson = await this.prisma.$transaction(async (tx) => {
+      const locked = await lockPracticeLessonForChange(tx, actor, lessonId);
+      await tx.drivingLesson.delete({ where: { id: locked.id } });
+      return locked;
+    });
+
+    this.logger.log(
+      `Lesson deleted type=PRACTICE lessonId=${lesson.id} scheduledAt=${lesson.scheduledAt.toISOString()} actorId=${actor.id} organizationId=${actor.organizationId}`,
+    );
   }
 
   /**
