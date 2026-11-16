@@ -158,6 +158,8 @@ export class StudentsController {
       'userId і organizationId беруться з access token. ' +
       'У відповіді є назва групи, ПІБ інструктора, автомобіль, теорія, тести, ' +
       'відвідуваність, години практики й оплати. ' +
+      'Якщо курс групи ще DRAFT або ARCHIVED, студент бачить лише назву і publicationStatus: ' +
+      'прогрес і назви уроків не віддаються. ' +
       'Чужі картки студент через staff-ендпоінти не читає.',
   })
   @ApiOkResponse({ type: StudentCardDto })
@@ -264,6 +266,8 @@ export class StudentsController {
       'GRADUATED → ARCHIVED; DROPPED → ARCHIVED. ' +
       'THEORY_COMPLETED адмін вручну не ставить: його ставить система, коли всі уроки ' +
       'опублікованого курсу пройдені і тест PASSED. ' +
+      'Перехід NEW → ACTIVE повторно перевіряє цю умову: якщо курс уже пройдено, ' +
+      'відповідь одразу містить THEORY_COMPLETED. ' +
       'PRACTICE цим запитом не призначається, лише допуском (PATCH /students/:id/practice-access). ' +
       'EXAM доступний лише після рівно 40 годин практики: менше або більше — 409. ' +
       'GRADUATED закриває активні зарахування як COMPLETED, DROPPED і ARCHIVED — як DROPPED. ' +

@@ -21,12 +21,13 @@ export function minutesToHours(minutes: number): number {
  * кожен його урок має проходження і тест курсу складено (PASSED).
  * Журнал очної відвідуваності не читається.
  * Порожній курс теорію не закриває.
+ * Повертає true, якщо навчальний статус щойно змінено.
  */
 export async function syncTheoryCompletion(
   tx: Prisma.TransactionClient,
   studentId: string,
   organizationId: string,
-): Promise<void> {
+): Promise<boolean> {
   const profile = await tx.student.findUnique({
     where: { userId: studentId },
     select: {
@@ -55,7 +56,7 @@ export async function syncTheoryCompletion(
     course.publicationStatus !== CoursePublicationStatus.PUBLISHED ||
     course.status !== CourseStatus.ACTIVE
   ) {
-    return;
+    return false;
   }
 
   const lessons = await tx.courseLesson.findMany({
@@ -63,7 +64,7 @@ export async function syncTheoryCompletion(
     select: { id: true },
   });
   if (lessons.length === 0) {
-    return;
+    return false;
   }
 
   const completedLessonCount = await tx.courseLessonCompletion.count({
@@ -75,7 +76,7 @@ export async function syncTheoryCompletion(
     },
   });
   if (completedLessonCount < lessons.length) {
-    return;
+    return false;
   }
 
   const test = await tx.theoryTestResult.findUnique({
@@ -83,7 +84,7 @@ export async function syncTheoryCompletion(
     select: { status: true },
   });
   if (test?.status !== TheoryTestStatus.PASSED) {
-    return;
+    return false;
   }
 
   await tx.student.update({
@@ -98,6 +99,7 @@ export async function syncTheoryCompletion(
     },
     data: { status: EnrollmentStatus.COMPLETED },
   });
+  return true;
 }
 
 export async function completedPracticeMinutes(

@@ -7,6 +7,8 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import {
+  CoursePublicationStatus,
+  CourseStatus,
   EnrollmentStatus,
   GroupStatus,
   InvitationStatus,
@@ -67,6 +69,7 @@ import {
   minutesToHours,
   REQUIRED_PRACTICE_HOURS,
   REQUIRED_PRACTICE_MINUTES,
+  syncTheoryCompletion,
 } from './theory-completion';
 
 export const STUDENT_LIST_ROLES = [
@@ -261,6 +264,7 @@ const studentCardSelect = {
               id: true,
               name: true,
               organizationId: true,
+              status: true,
               publicationStatus: true,
               lessons: {
                 select: {
@@ -854,10 +858,24 @@ function enrolledAtFor(
 function toTheory(
   profile: NonNullable<StudentCardRow['studentProfile']>,
   completions: StudentCardRow['courseLessonCompletions'],
+  options?: { redactUnpublished?: boolean },
 ): StudentTheoryDto {
   const course = profile.group?.course;
   if (!course || course.organizationId !== profile.organizationId) {
     return { course: null, progress: null };
+  }
+  const published =
+    course.publicationStatus === CoursePublicationStatus.PUBLISHED &&
+    course.status === CourseStatus.ACTIVE;
+  if (options?.redactUnpublished && !published) {
+    return {
+      course: {
+        id: course.id,
+        name: course.name,
+        publicationStatus: course.publicationStatus,
+      },
+      progress: null,
+    };
   }
   const completedAtByLesson = new Map(
     (completions ?? [])
@@ -1050,7 +1068,11 @@ function emptyCardSections(
 }
 
 /** actor — хто дивиться картку: від нього залежить розділ payments. */
-function toStudentCard(actor: User, row: StudentCardRow): StudentCardDto {
+function toStudentCard(
+  actor: User,
+  row: StudentCardRow,
+  options?: { redactUnpublished?: boolean },
+): StudentCardDto {
   const profile = row.studentProfile;
   return {
     id: row.id,
@@ -1088,7 +1110,7 @@ function toStudentCard(actor: User, row: StudentCardRow): StudentCardDto {
       : null,
     ...(profile
       ? {
-          theory: toTheory(profile, row.courseLessonCompletions),
+          theory: toTheory(profile, row.courseLessonCompletions, options),
           tests: toTests(row),
           attendance: toAttendance(row),
           practice: toPractice(row),
@@ -1497,7 +1519,7 @@ export class StudentsService {
       throw new NotFoundException(STUDENT_NOT_FOUND_MESSAGE);
     }
 
-    return toStudentCard(actor, row);
+    return toStudentCard(actor, row, { redactUnpublished: true });
   }
 
   async update(
@@ -1867,6 +1889,16 @@ export class StudentsService {
         data: { trainingStatus: next },
       });
 
+      // Курс могли пройти ще в NEW. Перехід у ACTIVE тоді одразу закриває теорію,
+      // інакше студент лишається ACTIVE з уже зданим тестом і без допуску до практики.
+      let trainingStatus = profile.trainingStatus;
+      if (
+        next === TrainingStatus.ACTIVE &&
+        (await syncTheoryCompletion(tx, student.id, actor.organizationId))
+      ) {
+        trainingStatus = TrainingStatus.THEORY_COMPLETED;
+      }
+
       const enrollmentStatus = enrollmentStatusForTraining(next);
       if (enrollmentStatus) {
         await tx.enrollment.updateMany({
@@ -1880,14 +1912,14 @@ export class StudentsService {
       }
 
       this.logger.log(
-        `Student training status changed studentId=${student.id} from=${current} to=${next} actorId=${actor.id} organizationId=${actor.organizationId}`,
+        `Student training status changed studentId=${student.id} from=${current} to=${trainingStatus} actorId=${actor.id} organizationId=${actor.organizationId}`,
       );
 
       return toStudentCard(actor, {
         ...student,
         studentProfile: {
           ...student.studentProfile,
-          trainingStatus: profile.trainingStatus,
+          trainingStatus,
         },
       });
     });
