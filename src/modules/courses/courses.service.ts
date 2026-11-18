@@ -223,6 +223,37 @@ export class CoursesService {
     return toCourse(saved);
   }
 
+  /**
+   * Архівує курс своєї організації. Рядок, структура, прогрес і призначення групам лишаються.
+   * Повтор для вже ARCHIVED нічого не пише. Після архівації курс не можна призначити групі,
+   * а студенти перестають бачити контент, навіть якщо publicationStatus лишається PUBLISHED.
+   */
+  async archive(actor: User, courseId: string): Promise<CourseDto> {
+    assertCanManageCourses(actor);
+    await this.requireOrganization(actor.organizationId);
+
+    let changed = false;
+    const saved = await this.prisma.$transaction(async (tx) => {
+      const existing = await this.requireCourse(tx, actor, courseId);
+      if (existing.status === CourseStatus.ARCHIVED) {
+        return existing;
+      }
+      changed = true;
+      return tx.course.update({
+        where: { id: existing.id },
+        data: { status: CourseStatus.ARCHIVED },
+        select: courseSelect,
+      });
+    });
+
+    if (changed) {
+      this.logger.log(
+        `Course archived courseId=${saved.id} organizationId=${actor.organizationId} actorId=${actor.id}`,
+      );
+    }
+    return toCourse(saved);
+  }
+
   /** Курс іншої організації дає той самий 404, що й неіснуючий. */
   private async requireCourse(
     tx: Prisma.TransactionClient,

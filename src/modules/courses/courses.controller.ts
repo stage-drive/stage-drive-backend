@@ -1,6 +1,7 @@
 import {
   Body,
   Controller,
+  Delete,
   Get,
   HttpCode,
   HttpStatus,
@@ -172,5 +173,40 @@ export class CoursesController {
     @Body() body: UpdateCoursePublicationDto,
   ) {
     return this.coursesService.changePublication(user, id, body);
+  }
+
+  @Delete(':id')
+  @Roles(...COURSE_MANAGE_ROLES)
+  @ApiOperation({
+    summary: 'Видалити теоретичний курс своєї автошколи',
+    description:
+      'ADMIN архівує курс своєї організації: status стає ARCHIVED, рядок з бази не зникає. ' +
+      'Розділи, уроки, матеріали, прогрес студентів і вже призначені групи лишаються. ' +
+      'Архівований курс не можна призначити новій групі. Студенти груп, яким він уже призначений, ' +
+      'перестають бачити контент, навіть якщо publicationStatus лишається PUBLISHED. ' +
+      'Назва знову доступна для нового ACTIVE-курсу. Повтор для вже архівованого курсу повертає його без запису. ' +
+      'Курс іншої автошколи повертає 404.',
+  })
+  @ApiParam({
+    name: 'id',
+    format: 'uuid',
+    description: 'Id курсу своєї автошколи.',
+  })
+  @ApiOkResponse({ type: CourseDto })
+  @ApiBadRequestResponse({
+    description: 'id не UUID.',
+  })
+  @ApiForbiddenResponse({
+    description: 'Видаляти курси може лише ADMIN.',
+  })
+  @ApiNotFoundResponse({
+    description:
+      'Курс не знайдено або він належить іншій автошколі. Також якщо автошколу видалено.',
+  })
+  archive(
+    @CurrentUser() user: User,
+    @Param('id', new ParseUUIDPipe({ version: '4' })) id: string,
+  ) {
+    return this.coursesService.archive(user, id);
   }
 }
