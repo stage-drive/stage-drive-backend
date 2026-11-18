@@ -196,9 +196,81 @@ export class TestDetailDto extends TestDto {
   @ApiProperty({
     type: [QuestionDto],
     description:
-      'Питання за position від 1. У кожному — варіанти і позначка правильної відповіді.',
+      'Питання за position від 1. У кожному — варіанти і позначка правильної відповіді. Це відповідь ADMIN.',
   })
   questions: QuestionDto[];
+}
+
+export class StudentAnswerOptionDto {
+  @ApiProperty({ example: '81818181-8181-4818-8818-818181818181' })
+  id: string;
+
+  @ApiProperty({ example: '71717171-7171-4717-8717-717171717171' })
+  questionId: string;
+
+  @ApiProperty({ example: 'Поступитися дорогою' })
+  text: string;
+
+  @ApiProperty({ example: 1, minimum: 1 })
+  position: number;
+
+  @ApiProperty()
+  createdAt: Date;
+
+  @ApiProperty()
+  updatedAt: Date;
+}
+
+export class StudentQuestionDto {
+  @ApiProperty({ example: '71717171-7171-4717-8717-717171717171' })
+  id: string;
+
+  @ApiProperty({ example: '61616161-6161-4616-8616-616161616161' })
+  testId: string;
+
+  @ApiProperty({ example: 'Що означає цей знак?' })
+  text: string;
+
+  @ApiProperty({ example: 1, minimum: 1 })
+  position: number;
+
+  @ApiProperty()
+  createdAt: Date;
+
+  @ApiProperty()
+  updatedAt: Date;
+
+  @ApiProperty({
+    type: [StudentAnswerOptionDto],
+    description:
+      'Варіанти без isCorrect. Правильну відповідь студент не отримує до завершення спроби.',
+  })
+  options: StudentAnswerOptionDto[];
+}
+
+export class StudentTestDetailDto extends TestDto {
+  @ApiProperty({
+    type: [StudentQuestionDto],
+    description:
+      'Питання опублікованого тесту за position. Позначки правильних відповідей у відповіді немає.',
+  })
+  questions: StudentQuestionDto[];
+}
+
+export class StudentTestListDto {
+  @ApiProperty({
+    example: '41414141-4141-4414-8414-414141414141',
+    description:
+      'Курс групи, у якій у студента активне зарахування. Тести іншого курсу сюди не потрапляють.',
+  })
+  courseId: string;
+
+  @ApiProperty({
+    type: [TestListItemDto],
+    description:
+      'Лише тести зі збереженим publicationStatus PUBLISHED. Чернетки не повертаються.',
+  })
+  tests: TestListItemDto[];
 }
 
 export class AnswerOptionInputDto {

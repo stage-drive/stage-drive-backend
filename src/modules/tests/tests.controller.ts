@@ -35,6 +35,8 @@ import {
   CreateQuestionDto,
   CreateTestDto,
   QuestionDto,
+  StudentTestDetailDto,
+  StudentTestListDto,
   TestDetailDto,
   TestDto,
   TestListDto,
@@ -43,7 +45,11 @@ import {
   UpdateTestDto,
   UpdateTestPublicationDto,
 } from './tests.dto';
-import { TEST_MANAGE_ROLES, TestsService } from './tests.service';
+import {
+  TEST_MANAGE_ROLES,
+  TEST_STUDENT_ROLES,
+  TestsService,
+} from './tests.service';
 
 const testIdParam = {
   name: 'testId',
@@ -120,6 +126,61 @@ export class TestsController {
     return this.testsService.create(user, body);
   }
 
+  @Get('current')
+  @Roles(...TEST_STUDENT_ROLES)
+  @ApiOperation({
+    summary: 'Опубліковані тести курсу поточної групи студента',
+    description:
+      'STUDENT отримує тести курсу групи, у якій у нього Enrollment.status = ACTIVE. ' +
+      'Курс має бути ACTIVE і PUBLISHED, інакше 403. Студент без такої групи отримує 404. ' +
+      'У списку лише тести зі збереженим publicationStatus PUBLISHED цієї автошколи. ' +
+      'Чернетки і тести інших організацій не повертаються. ' +
+      'Кожен елемент містить актуальний publicationStatus і кількість питань, без тексту питань і без isCorrect.',
+  })
+  @ApiOkResponse({ type: StudentTestListDto })
+  @ApiForbiddenResponse({
+    description:
+      'Ендпоінт лише для STUDENT. Також 403, якщо курс групи ще не опубліковано або його архівовано.',
+  })
+  @ApiNotFoundResponse({
+    description:
+      'У студента немає групи з призначеним курсом, або автошколу видалено.',
+  })
+  listCurrent(@CurrentUser() user: User) {
+    return this.testsService.listCurrent(user);
+  }
+
+  @Get(':testId/content')
+  @Roles(...TEST_STUDENT_ROLES)
+  @ApiOperation({
+    summary: 'Опублікований тест для проходження студентом',
+    description:
+      'STUDENT бачить тест лише якщо він його автошколи, publicationStatus = PUBLISHED, ' +
+      'а курс тесту ACTIVE, PUBLISHED і призначений групі з активним зарахуванням цього студента. ' +
+      'Тест іншої автошколи або неіснуючий — 404. ' +
+      'Тест своєї автошколи, курс якого студенту не призначено, — 403. ' +
+      'Призначений, але не опублікований тест або курс — 403, без питань. ' +
+      'Відповідь містить актуальний publicationStatus, питання і варіанти. ' +
+      'Поля isCorrect немає: правильні відповіді не віддаються до завершення спроби.',
+  })
+  @ApiParam(testIdParam)
+  @ApiOkResponse({ type: StudentTestDetailDto })
+  @ApiBadRequestResponse({ description: 'testId не UUID.' })
+  @ApiForbiddenResponse({
+    description:
+      'Ендпоінт лише для STUDENT. 403, якщо тест або його курс не опубліковано, курс архівовано, або студентові не дозволено проходження.',
+  })
+  @ApiNotFoundResponse({
+    description:
+      'Тест не знайдено, він чужої автошколи, або автошколу видалено.',
+  })
+  getContent(
+    @CurrentUser() user: User,
+    @Param('testId', uuidPipe) testId: string,
+  ) {
+    return this.testsService.getContent(user, testId);
+  }
+
   @Get(':testId')
   @Roles(...TEST_MANAGE_ROLES)
   @ApiOperation({
@@ -127,6 +188,7 @@ export class TestsController {
     description:
       'ADMIN отримує тест своєї автошколи разом із питаннями і варіантами за position. ' +
       'isCorrect показує правильну відповідь відповідно до формату. ' +
+      'Студент цей запит не викликає: йому доступні GET /tests/current і GET /tests/{testId}/content, без isCorrect. ' +
       'Тест іншої автошколи повертає 404. Порожній тест має questions: [].',
   })
   @ApiParam(testIdParam)
@@ -180,12 +242,15 @@ export class TestsController {
   @ApiOperation({
     summary: 'Опублікувати або зняти з публікації теоретичний тест',
     description:
+      'ADMIN зберігає publicationStatus тесту своєї автошколи. ' +
       'PUBLISHED перевіряє структуру: є хоча б одне питання, і кожне відповідає format. ' +
       'SINGLE_CHOICE — щонайменше два варіанти і рівно одна правильна відповідь. ' +
       'MULTIPLE_CHOICE — щонайменше два варіанти, хоча б одна правильна і хоча б одна неправильна. ' +
       'TRUE_FALSE — рівно два варіанти і рівно одна правильна відповідь. ' +
-      'Курс тесту має бути ACTIVE. DRAFT знімає публікацію без цієї перевірки. ' +
-      'Повтор того самого статусу нічого не записує.',
+      'Курс тесту має бути ACTIVE. Опублікований тест стає доступний студенту з активним зарахуванням ' +
+      'на цей курс, якщо сам курс теж ACTIVE і PUBLISHED. ' +
+      'DRAFT знімає публікацію без перевірки структури, і студенти знову не бачать тест. ' +
+      'Повтор того самого статусу нічого не записує. Відповідь містить збережений publicationStatus.',
   })
   @ApiParam(testIdParam)
   @ApiOkResponse({ type: TestDto })

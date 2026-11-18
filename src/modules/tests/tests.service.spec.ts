@@ -7,13 +7,17 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import {
+  CoursePublicationStatus,
   CourseStatus,
   TheoryTestFormat,
   TheoryTestPublicationStatus,
   UserRole,
 } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
-import { COURSE_NOT_FOUND_MESSAGE } from '../courses/courses.service';
+import {
+  COURSE_NOT_FOUND_MESSAGE,
+  COURSE_NOT_PUBLISHED_MESSAGE,
+} from '../courses/courses.service';
 import {
   PUBLISH_QUESTIONS_REQUIRED_MESSAGE,
   SINGLE_EXCLUSIVE_MESSAGE,
@@ -24,6 +28,7 @@ import {
   TEST_ARCHIVED_COURSE_MESSAGE,
   TEST_NAME_TAKEN_MESSAGE,
   TEST_NOT_FOUND_MESSAGE,
+  TEST_NOT_PUBLISHED_MESSAGE,
   TestsService,
 } from './tests.service';
 
@@ -40,6 +45,11 @@ describe('TestsService', () => {
   const admin = {
     id: 'admin-1',
     role: UserRole.ADMIN,
+    organizationId: 'org-1',
+  };
+  const student = {
+    id: 'student-1',
+    role: UserRole.STUDENT,
     organizationId: 'org-1',
   };
   const createdAt = new Date('2026-11-18T10:00:00.000Z');
@@ -114,6 +124,7 @@ describe('TestsService', () => {
       updateMany: jest.fn(),
       delete: jest.fn(),
     },
+    enrollment: { findFirst: jest.fn() },
     $transaction: jest.fn(),
     $queryRaw: jest.fn(),
   };
@@ -153,6 +164,10 @@ describe('TestsService', () => {
       options: [],
     });
     prisma.theoryQuestion.delete.mockResolvedValue(questionRow);
+    prisma.enrollment.findFirst.mockResolvedValue({
+      id: 'enrollment-1',
+      group: { courseId: 'course-1' },
+    });
     prisma.theoryAnswerOption.updateMany.mockResolvedValue({ count: 1 });
     prisma.theoryAnswerOption.update.mockImplementation(
       ({ data }: { data: { isCorrect?: boolean; text?: string } }) =>
@@ -364,6 +379,135 @@ describe('TestsService', () => {
       ],
     });
     expect(prisma.theoryQuestion.delete).not.toHaveBeenCalled();
+  });
+
+  it('does not let a student read the admin test with correct answers', async () => {
+    const error = await caught(service.get(student as never, 'test-1'));
+    expect(error).toBeInstanceOf(ForbiddenException);
+    expect(prisma.theoryTest.findFirst).not.toHaveBeenCalled();
+  });
+
+  it('returns only published tests of the student course', async () => {
+    prisma.course.findFirst.mockResolvedValue({
+      id: 'course-1',
+      status: CourseStatus.ACTIVE,
+      publicationStatus: CoursePublicationStatus.PUBLISHED,
+    });
+    prisma.theoryTest.findMany.mockResolvedValue([
+      {
+        ...testRow,
+        publicationStatus: TheoryTestPublicationStatus.PUBLISHED,
+        _count: { questions: 1 },
+      },
+    ]);
+
+    const listed = await service.listCurrent(student as never);
+
+    expect(listed.courseId).toBe('course-1');
+    expect(listed.tests).toEqual([
+      expect.objectContaining({
+        id: 'test-1',
+        publicationStatus: TheoryTestPublicationStatus.PUBLISHED,
+        questionCount: 1,
+      }),
+    ]);
+    expect(prisma.theoryTest.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: {
+          organizationId: 'org-1',
+          courseId: 'course-1',
+          publicationStatus: TheoryTestPublicationStatus.PUBLISHED,
+        },
+      }),
+    );
+  });
+
+  it('hides the current course tests when the student has no group', async () => {
+    prisma.enrollment.findFirst.mockResolvedValue(null);
+    const error = await caught(service.listCurrent(student as never));
+    expect(error).toBeInstanceOf(NotFoundException);
+    expect(error.message).toBe(COURSE_NOT_FOUND_MESSAGE);
+    expect(prisma.theoryTest.findMany).not.toHaveBeenCalled();
+  });
+
+  it('hides tests when the assigned course is not published', async () => {
+    prisma.course.findFirst.mockResolvedValue({
+      id: 'course-1',
+      status: CourseStatus.ACTIVE,
+      publicationStatus: CoursePublicationStatus.DRAFT,
+    });
+    const error = await caught(service.listCurrent(student as never));
+    expect(error).toBeInstanceOf(ForbiddenException);
+    expect(error.message).toBe(COURSE_NOT_PUBLISHED_MESSAGE);
+    expect(prisma.theoryTest.findMany).not.toHaveBeenCalled();
+  });
+
+  it('returns a published test without correct answers', async () => {
+    currentTest = {
+      ...testRow,
+      publicationStatus: TheoryTestPublicationStatus.PUBLISHED,
+      questions: [questionRow],
+    } as typeof testRow;
+    prisma.course.findFirst.mockResolvedValue({
+      id: 'course-1',
+      status: CourseStatus.ACTIVE,
+      publicationStatus: CoursePublicationStatus.PUBLISHED,
+    });
+
+    const content = await service.getContent(student as never, 'test-1');
+
+    expect(content.publicationStatus).toBe(
+      TheoryTestPublicationStatus.PUBLISHED,
+    );
+    expect(content.questions[0]?.options[0]).toMatchObject({
+      id: 'option-1',
+      text: 'Поступитися',
+    });
+    expect(JSON.stringify(content)).not.toContain('"isCorrect"');
+    expect(prisma.theoryTest.findFirst).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { id: 'test-1', organizationId: 'org-1' },
+      }),
+    );
+  });
+
+  it('does not open a draft test to the student', async () => {
+    prisma.course.findFirst.mockResolvedValue({
+      id: 'course-1',
+      status: CourseStatus.ACTIVE,
+      publicationStatus: CoursePublicationStatus.PUBLISHED,
+    });
+    const error = await caught(service.getContent(student as never, 'test-1'));
+    expect(error).toBeInstanceOf(ForbiddenException);
+    expect(error.message).toBe(TEST_NOT_PUBLISHED_MESSAGE);
+  });
+
+  it('does not open a test of another organization', async () => {
+    currentTest = null;
+    const error = await caught(
+      service.getContent(student as never, 'test-foreign'),
+    );
+    expect(error).toBeInstanceOf(NotFoundException);
+    expect(error.message).toBe(TEST_NOT_FOUND_MESSAGE);
+  });
+
+  it('does not open a published test of a course the student is not enrolled in', async () => {
+    currentTest = {
+      ...testRow,
+      publicationStatus: TheoryTestPublicationStatus.PUBLISHED,
+      questions: [questionRow],
+    } as typeof testRow;
+    prisma.course.findFirst.mockResolvedValue({
+      id: 'course-1',
+      status: CourseStatus.ACTIVE,
+      publicationStatus: CoursePublicationStatus.PUBLISHED,
+    });
+    prisma.enrollment.findFirst.mockResolvedValue(null);
+
+    const error = await caught(service.getContent(student as never, 'test-1'));
+
+    expect(error).toBeInstanceOf(ForbiddenException);
+    expect(error.message).toBe('Insufficient permissions');
   });
 
   it('keeps a single correct answer when another option is marked', async () => {
