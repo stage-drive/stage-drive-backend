@@ -14,6 +14,7 @@ import { GroupsModule } from './modules/groups/groups.module';
 import { CoursesModule } from './modules/courses/courses.module';
 import { LessonsModule } from './modules/lessons/lessons.module';
 import { PaymentsModule } from './modules/payments/payments.module';
+import { TestsModule } from './modules/tests/tests.module';
 
 @Module({
   imports: [
@@ -30,6 +31,7 @@ import { PaymentsModule } from './modules/payments/payments.module';
     CoursesModule,
     LessonsModule,
     PaymentsModule,
+    TestsModule,
   ],
   controllers: [AppController],
   providers: [AppService],
