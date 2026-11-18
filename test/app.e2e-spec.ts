@@ -6034,4 +6034,46 @@ describe('API (e2e)', () => {
       },
     });
   });
+
+  it('OpenAPI documents test publication and student access', async () => {
+    const response = await request(app.getHttpServer())
+      .get('/api/docs-json')
+      .expect(200);
+
+    const body = response.body as {
+      paths: Record<
+        string,
+        {
+          get?: { responses?: Record<string, unknown> };
+          patch?: { responses?: Record<string, unknown> };
+        }
+      >;
+      components: {
+        schemas: {
+          StudentTestDetailDto?: {
+            properties?: { questions?: unknown };
+          };
+          StudentAnswerOptionDto?: { properties?: Record<string, unknown> };
+          UpdateTestPublicationDto?: unknown;
+        };
+      };
+    };
+    const publication = (body.paths['/api/tests/{testId}/publication'] ??
+      body.paths['/tests/{testId}/publication'])?.patch;
+    const current = (body.paths['/api/tests/current'] ??
+      body.paths['/tests/current'])?.get;
+    const content = (body.paths['/api/tests/{testId}/content'] ??
+      body.paths['/tests/{testId}/content'])?.get;
+
+    expect(publication).toBeDefined();
+    expect(current).toBeDefined();
+    expect(content).toBeDefined();
+    expect(body.components.schemas.UpdateTestPublicationDto).toBeDefined();
+    expect(
+      body.components.schemas.StudentTestDetailDto?.properties?.questions,
+    ).toBeDefined();
+    expect(
+      body.components.schemas.StudentAnswerOptionDto?.properties,
+    ).not.toHaveProperty('isCorrect');
+  });
 });

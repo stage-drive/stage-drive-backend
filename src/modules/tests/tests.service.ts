@@ -7,7 +7,9 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import {
+  CoursePublicationStatus,
   CourseStatus,
+  EnrollmentStatus,
   Prisma,
   TheoryTestFormat,
   TheoryTestPublicationStatus,
@@ -21,13 +23,20 @@ import {
   shiftForInsert,
   shiftForMove,
 } from '../courses/course-structure.order';
-import { COURSE_NOT_FOUND_MESSAGE } from '../courses/courses.service';
+import {
+  COURSE_NOT_FOUND_MESSAGE,
+  COURSE_NOT_PUBLISHED_MESSAGE,
+} from '../courses/courses.service';
 import {
   AnswerOptionDto,
   CreateAnswerOptionDto,
   CreateQuestionDto,
   CreateTestDto,
   QuestionDto,
+  StudentAnswerOptionDto,
+  StudentQuestionDto,
+  StudentTestDetailDto,
+  StudentTestListDto,
   TestDetailDto,
   TestDto,
   TestListDto,
@@ -45,6 +54,7 @@ import {
 } from './tests.rules';
 
 export const TEST_MANAGE_ROLES = [UserRole.ADMIN] as const;
+export const TEST_STUDENT_ROLES = [UserRole.STUDENT] as const;
 
 export const TEST_NOT_FOUND_MESSAGE = 'Test not found';
 export const QUESTION_NOT_FOUND_MESSAGE = 'Question not found';
@@ -61,6 +71,7 @@ export const TEST_ARCHIVED_COURSE_MESSAGE =
   'Архівований курс не можна використати для опублікованого тесту.';
 export const PUBLISHED_LAST_QUESTION_MESSAGE =
   'Опублікований тест має містити хоча б одне питання.';
+export const TEST_NOT_PUBLISHED_MESSAGE = 'Test is not published';
 
 const optionSelect = {
   id: true,
@@ -129,6 +140,12 @@ function assertCanManage(actor: User): void {
   }
 }
 
+function assertStudent(actor: User): void {
+  if (!(TEST_STUDENT_ROLES as readonly UserRole[]).includes(actor.role)) {
+    throw new ForbiddenException('Insufficient permissions');
+  }
+}
+
 function fieldError(field: string, message: string): BadRequestException {
   return new BadRequestException({
     statusCode: 400,
@@ -184,6 +201,37 @@ function toDetail(test: TestDetailRow): TestDetailDto {
   return {
     ...toTest(test),
     questions: byPosition(test.questions).map(toQuestion),
+  };
+}
+
+function toStudentOption(option: OptionRow): StudentAnswerOptionDto {
+  return {
+    id: option.id,
+    questionId: option.questionId,
+    text: option.text,
+    position: option.position,
+    createdAt: option.createdAt,
+    updatedAt: option.updatedAt,
+  };
+}
+
+function toStudentQuestion(question: QuestionRow): StudentQuestionDto {
+  return {
+    id: question.id,
+    testId: question.testId,
+    text: question.text,
+    position: question.position,
+    createdAt: question.createdAt,
+    updatedAt: question.updatedAt,
+    options: byPosition(question.options).map(toStudentOption),
+  };
+}
+
+/** Студентський перегляд не містить isCorrect: відповіді відкриваються лише після спроби. */
+function toStudentDetail(test: TestDetailRow): StudentTestDetailDto {
+  return {
+    ...toTest(test),
+    questions: byPosition(test.questions).map(toStudentQuestion),
   };
 }
 
@@ -394,6 +442,56 @@ export class TestsService {
       );
     }
     return toTest(saved);
+  }
+
+  /**
+   * Опубліковані тести курсу поточної групи студента.
+   * Чернетки не входять у відповідь. Неопублікований або архівований курс — 403.
+   */
+  async listCurrent(actor: User): Promise<StudentTestListDto> {
+    assertStudent(actor);
+    await this.requireOrganization(actor.organizationId);
+    const courseId = await this.requireCurrentCourseId(actor);
+    await this.requireAssignedPublishedCourse(actor, courseId);
+
+    const tests = await this.prisma.theoryTest.findMany({
+      where: {
+        organizationId: actor.organizationId,
+        courseId,
+        publicationStatus: TheoryTestPublicationStatus.PUBLISHED,
+      },
+      select: listSelect,
+      orderBy: [{ name: 'asc' }, { id: 'asc' }],
+    });
+    return {
+      courseId,
+      tests: tests.map((test) => ({
+        ...toTest(test),
+        questionCount: test._count.questions,
+      })),
+    };
+  }
+
+  /**
+   * Один опублікований тест для проходження.
+   * isCorrect у відповіді немає: студент не бачить правильні відповіді до завершення спроби.
+   */
+  async getContent(actor: User, testId: string): Promise<StudentTestDetailDto> {
+    assertStudent(actor);
+    await this.requireOrganization(actor.organizationId);
+
+    const test = await this.prisma.theoryTest.findFirst({
+      where: { id: testId, organizationId: actor.organizationId },
+      select: detailSelect,
+    });
+    if (!test) {
+      throw new NotFoundException(TEST_NOT_FOUND_MESSAGE);
+    }
+    await this.requireAssignedPublishedCourse(actor, test.courseId);
+    if (test.publicationStatus !== TheoryTestPublicationStatus.PUBLISHED) {
+      throw new ForbiddenException(TEST_NOT_PUBLISHED_MESSAGE);
+    }
+    return toStudentDetail(test);
   }
 
   async createQuestion(
@@ -888,6 +986,64 @@ export class TestsService {
       tx.theoryAnswerOption
         .update({ where: { id }, data: { position } })
         .then(() => undefined);
+  }
+
+  private async requireCurrentCourseId(actor: User): Promise<string> {
+    const enrollment = await this.prisma.enrollment.findFirst({
+      where: {
+        studentId: actor.id,
+        status: EnrollmentStatus.ACTIVE,
+        group: {
+          organizationId: actor.organizationId,
+          courseId: { not: null },
+        },
+      },
+      orderBy: { enrolledAt: 'desc' },
+      select: { group: { select: { courseId: true } } },
+    });
+    const courseId = enrollment?.group.courseId;
+    if (!courseId) {
+      throw new NotFoundException(COURSE_NOT_FOUND_MESSAGE);
+    }
+    return courseId;
+  }
+
+  /**
+   * Тест доступний студенту лише разом із курсом: активне зарахування в групу
+   * цієї автошколи, курс ACTIVE і PUBLISHED. Чужий курс — 403, чужа автошкола — 404.
+   */
+  private async requireAssignedPublishedCourse(
+    actor: User,
+    courseId: string,
+  ): Promise<void> {
+    const course = await this.prisma.course.findFirst({
+      where: { id: courseId, organizationId: actor.organizationId },
+      select: { id: true, status: true, publicationStatus: true },
+    });
+    if (!course) {
+      throw new NotFoundException(COURSE_NOT_FOUND_MESSAGE);
+    }
+
+    const enrollment = await this.prisma.enrollment.findFirst({
+      where: {
+        studentId: actor.id,
+        status: EnrollmentStatus.ACTIVE,
+        group: {
+          organizationId: actor.organizationId,
+          courseId,
+        },
+      },
+      select: { id: true },
+    });
+    if (!enrollment) {
+      throw new ForbiddenException('Insufficient permissions');
+    }
+    if (
+      course.publicationStatus !== CoursePublicationStatus.PUBLISHED ||
+      course.status !== CourseStatus.ACTIVE
+    ) {
+      throw new ForbiddenException(COURSE_NOT_PUBLISHED_MESSAGE);
+    }
   }
 
   private async requireOrganization(organizationId: string) {

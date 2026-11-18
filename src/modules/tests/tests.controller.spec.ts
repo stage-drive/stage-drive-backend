@@ -17,6 +17,10 @@ describe('TestsController', () => {
     create: jest.fn().mockResolvedValue(response),
     update: jest.fn().mockResolvedValue(response),
     changePublication: jest.fn().mockResolvedValue(response),
+    listCurrent: jest
+      .fn()
+      .mockResolvedValue({ courseId: 'course-1', tests: [] }),
+    getContent: jest.fn().mockResolvedValue(response),
     createQuestion: jest.fn().mockResolvedValue(response),
     updateQuestion: jest.fn().mockResolvedValue(response),
     deleteQuestion: jest.fn().mockResolvedValue(response),
@@ -56,6 +60,18 @@ describe('TestsController', () => {
     expect(roles).toEqual([UserRole.ADMIN]);
   });
 
+  it.each(['listCurrent', 'getContent'] as const)(
+    'restricts %s to STUDENT',
+    (method) => {
+      const roles = new Reflector().get<UserRole[]>(
+        ROLES_KEY,
+        // eslint-disable-next-line @typescript-eslint/unbound-method -- only reads decorator metadata, never invoked
+        TestsController.prototype[method],
+      );
+      expect(roles).toEqual([UserRole.STUDENT]);
+    },
+  );
+
   it.each(['create', 'createQuestion', 'createOption'] as const)(
     'answers 201 from %s',
     (method) => {
@@ -75,5 +91,13 @@ describe('TestsController', () => {
       response,
     );
     expect(testsService.create).toHaveBeenCalledWith(user, body);
+  });
+
+  it('passes the current student to the published test', async () => {
+    const student = { id: 'student-1', organizationId: 'org-1' };
+    await expect(
+      controller.getContent(student as never, 'test-1'),
+    ).resolves.toBe(response);
+    expect(testsService.getContent).toHaveBeenCalledWith(student, 'test-1');
   });
 });
