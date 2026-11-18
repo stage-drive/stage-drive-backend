@@ -17,6 +17,10 @@ export function configureSwagger(app: INestApplication) {
       'courses',
       'Теоретичні курси: програма, публікація, прогрес студента та доступ',
     )
+    .addTag(
+      'tests',
+      'Теоретичні тести: створення, питання, варіанти відповідей і публікація',
+    )
     .addBearerAuth()
     .build();
 

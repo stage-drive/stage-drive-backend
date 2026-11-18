@@ -112,6 +112,22 @@ enum TheoryTestStatus {
   FAILED
 }
 
+/// Формат питань теоретичного тесту.
+/// SINGLE_CHOICE — рівно одна правильна відповідь і щонайменше два варіанти.
+/// MULTIPLE_CHOICE — хоча б одна правильна і хоча б одна неправильна відповідь.
+/// TRUE_FALSE — рівно два варіанти і рівно одна правильна відповідь.
+enum TheoryTestFormat {
+  SINGLE_CHOICE
+  MULTIPLE_CHOICE
+  TRUE_FALSE
+}
+
+/// Чернетка не показується як готовий тест. PUBLISHED дозволено лише після перевірки структури.
+enum TheoryTestPublicationStatus {
+  DRAFT
+  PUBLISHED
+}
+
 enum Transmission {
   MANUAL
   AUTOMATIC
@@ -237,6 +253,7 @@ model Organization {
   instructorTimeOffs      InstructorTimeOff[]
   payments                Payment[]
   paymentHistory          PaymentHistory[]
+  theoryTests             TheoryTest[]
 
   @@index([deletedAt])
   @@map("organizations")
@@ -466,7 +483,10 @@ model Course {
   lessonCompletions CourseLessonCompletion[]
   progressRecords   CourseProgress[]
   theoryTestResults TheoryTestResult[]
+  theoryTests       TheoryTest[]
 
+  /// Ціль складеного FK тестів: тест не прив’язати до курсу іншої автошколи.
+  @@unique([id, organizationId])
   @@index([organizationId])
   @@map("courses")
 }
@@ -591,6 +611,70 @@ model TheoryTestResult {
   @@index([organizationId])
   @@index([courseId])
   @@map("theory_test_results")
+}
+
+/// Теоретичний тест курсу автошколи. Це зміст тесту, а не спроба студента (TheoryTestResult).
+/// organizationId збігається з автошколою курсу: складений FK не дає прив’язати тест до чужого курсу.
+/// Новий тест завжди DRAFT. PUBLISHED лише коли кожне питання відповідає format.
+model TheoryTest {
+  id                String                      @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  organizationId    String                      @map("organization_id") @db.Uuid
+  organization      Organization                @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  courseId          String                      @map("course_id") @db.Uuid
+  course            Course                      @relation(fields: [courseId, organizationId], references: [id, organizationId], onDelete: Cascade)
+  name              String                      @db.VarChar(200)
+  description       String?
+  format            TheoryTestFormat
+  /// Поріг складання у відсотках, від 1 до 100.
+  passingScore      Int                         @map("passing_score")
+  /// Ліміт часу в хвилинах. null — без обмеження.
+  timeLimitMinutes  Int?                        @map("time_limit_minutes")
+  shuffleQuestions  Boolean                     @default(false) @map("shuffle_questions")
+  publicationStatus TheoryTestPublicationStatus @default(DRAFT) @map("publication_status")
+  createdAt         DateTime                    @default(now()) @map("created_at")
+  updatedAt         DateTime                    @updatedAt @map("updated_at")
+  questions         TheoryQuestion[]
+
+  @@unique([id, organizationId])
+  @@index([organizationId])
+  @@index([courseId])
+  @@map("theory_tests")
+}
+
+/// Питання тесту. Порядок усередині тесту задає position.
+model TheoryQuestion {
+  id             String               @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  testId         String               @map("test_id") @db.Uuid
+  organizationId String               @map("organization_id") @db.Uuid
+  test           TheoryTest           @relation(fields: [testId, organizationId], references: [id, organizationId], onDelete: Cascade)
+  text           String               @db.VarChar(2000)
+  position       Int
+  createdAt      DateTime             @default(now()) @map("created_at")
+  updatedAt      DateTime             @updatedAt @map("updated_at")
+  options        TheoryAnswerOption[]
+
+  @@unique([id, testId])
+  @@unique([testId, position])
+  @@index([organizationId])
+  @@map("theory_questions")
+}
+
+/// Варіант відповіді. isCorrect зберігає правильну відповідь відповідно до формату тесту.
+/// Для SINGLE_CHOICE і TRUE_FALSE в питанні лишається не більше однієї позначки isCorrect.
+model TheoryAnswerOption {
+  id         String         @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  questionId String         @map("question_id") @db.Uuid
+  testId     String         @map("test_id") @db.Uuid
+  question   TheoryQuestion @relation(fields: [questionId, testId], references: [id, testId], onDelete: Cascade)
+  text       String         @db.VarChar(500)
+  isCorrect  Boolean        @map("is_correct")
+  position   Int
+  createdAt  DateTime       @default(now()) @map("created_at")
+  updatedAt  DateTime       @updatedAt @map("updated_at")
+
+  @@unique([questionId, position])
+  @@index([testId])
+  @@map("theory_answer_options")
 }
 
 model Student {
