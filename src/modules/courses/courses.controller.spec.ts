@@ -38,7 +38,7 @@ describe('CoursesController', () => {
     expect(coursesService.list).toHaveBeenCalledWith(user);
   });
 
-  it.each(['create', 'update', 'changePublication'] as const)(
+  it.each(['create', 'update', 'changePublication', 'archive'] as const)(
     'restricts %s to ADMIN',
     (method) => {
       const roles = new Reflector().get<UserRole[]>(
@@ -68,6 +68,7 @@ describe('CoursesController', () => {
       create: jest.fn().mockResolvedValue(response),
       update: jest.fn().mockResolvedValue(response),
       changePublication: jest.fn().mockResolvedValue(response),
+      archive: jest.fn().mockResolvedValue(response),
     };
     const controller = new CoursesController(
       coursesService as unknown as CoursesService,
@@ -106,6 +107,13 @@ describe('CoursesController', () => {
         'course-1',
         body,
       );
+    });
+
+    it('archive passes the current user and id to the service', async () => {
+      await expect(controller.archive(user as never, 'course-1')).resolves.toBe(
+        response,
+      );
+      expect(coursesService.archive).toHaveBeenCalledWith(user, 'course-1');
     });
   });
 });

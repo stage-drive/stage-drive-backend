@@ -598,4 +598,78 @@ describe('CoursesService', () => {
       expect(prisma.$transaction).not.toHaveBeenCalled();
     });
   });
+
+  describe('archive', () => {
+    beforeEach(() => {
+      mockCourseLookups({ existing: courseRow });
+      prisma.course.update.mockImplementation(
+        ({ data }: { data: { status: CourseStatus } }) =>
+          Promise.resolve({ ...courseRow, ...data }),
+      );
+    });
+
+    it('sets status to ARCHIVED and keeps publication status', async () => {
+      const result = await service.archive(admin as never, 'course-1');
+
+      expect(prisma.course.update).toHaveBeenCalledWith({
+        where: { id: 'course-1' },
+        data: { status: CourseStatus.ARCHIVED },
+        select: expect.objectContaining({ status: true }),
+      });
+      expect(result.status).toBe(CourseStatus.ARCHIVED);
+      expect(result.publicationStatus).toBe(CoursePublicationStatus.DRAFT);
+      expect(log).toHaveBeenCalledWith(
+        'Course archived courseId=course-1 organizationId=org-1 actorId=admin-1',
+      );
+    });
+
+    it('does not write when the course is already archived', async () => {
+      mockCourseLookups({
+        existing: { ...courseRow, status: CourseStatus.ARCHIVED },
+      });
+
+      await expect(
+        service.archive(admin as never, 'course-1'),
+      ).resolves.toEqual({ ...courseRow, status: CourseStatus.ARCHIVED });
+      expect(prisma.course.update).not.toHaveBeenCalled();
+      expect(log).not.toHaveBeenCalled();
+    });
+
+    it('returns 404 for a course of another organization', async () => {
+      mockCourseLookups({ existing: null });
+
+      const error = await caught(
+        service.archive(admin as never, 'course-foreign'),
+      );
+
+      expect(error).toBeInstanceOf(NotFoundException);
+      expect(error.message).toBe(COURSE_NOT_FOUND_MESSAGE);
+      expect(prisma.course.update).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      UserRole.OWNER,
+      UserRole.TEACHER,
+      UserRole.INSTRUCTOR,
+      UserRole.STUDENT,
+    ])('forbids %s before touching the database', async (role) => {
+      await expect(
+        service.archive({ ...admin, role } as never, 'course-1'),
+      ).rejects.toBeInstanceOf(ForbiddenException);
+      expect(prisma.organization.findUnique).not.toHaveBeenCalled();
+      expect(prisma.$transaction).not.toHaveBeenCalled();
+    });
+
+    it('returns 404 when the organization is soft-deleted', async () => {
+      prisma.organization.findUnique.mockResolvedValue({
+        ...organization,
+        deletedAt: new Date(),
+      });
+
+      await expect(
+        service.archive(admin as never, 'course-1'),
+      ).rejects.toBeInstanceOf(NotFoundException);
+      expect(prisma.$transaction).not.toHaveBeenCalled();
+    });
+  });
 });

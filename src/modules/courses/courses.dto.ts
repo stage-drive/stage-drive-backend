@@ -61,7 +61,7 @@ export class CourseListDto {
   courses: CourseListItemDto[];
 }
 
-/** Курс після створення або редагування: те, що збережено в організації актора. */
+/** Курс після створення, редагування або архівації: те, що збережено в організації актора. */
 export class CourseDto {
   @ApiProperty()
   id: string;
@@ -80,7 +80,7 @@ export class CourseDto {
     enum: CourseStatus,
     example: CourseStatus.ACTIVE,
     description:
-      'Новий курс завжди ACTIVE. Статус експлуатації цим ендпоінтом не змінюється.',
+      'ACTIVE можна призначити групі. DELETE /courses/{id} переводить курс в ARCHIVED; створення й редагування статус не змінюють.',
   })
   status: CourseStatus;
 
