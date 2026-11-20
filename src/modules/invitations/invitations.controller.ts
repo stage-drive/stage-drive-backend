@@ -90,11 +90,12 @@ export class InvitationsController {
   @HttpCode(HttpStatus.CREATED)
   @ApiBearerAuth()
   @ApiOperation({
-    summary: 'OWNER запрошує користувача в автошколу',
+    summary: 'OWNER запрошує ADMIN в автошколу',
     description:
-      'Необов’язкове поле role: ADMIN, TEACHER, INSTRUCTOR або STUDENT. ' +
-      'Якщо role не передати, запрошений стає ADMIN. OWNER запросити не можна. ' +
-      'Викликати може лише OWNER. Лист ставиться в чергу; стан доставки — у invitation.emailDelivery. ' +
+      'Викликати може лише OWNER. Запрошений завжди ADMIN: role можна не передавати ' +
+      'або передати лише ADMIN. TEACHER, INSTRUCTOR і STUDENT цим ендпоінтом запросити не можна — ' +
+      'їх запрошує ADMIN через POST /api/invitations/members. ' +
+      'Лист ставиться в чергу; стан доставки — у invitation.emailDelivery. ' +
       'Сирий token не повертається. Якщо для цього email уже є PENDING-запрошення тієї самої школи ' +
       '(навіть прострочене), воно оновлюється і лист ставиться в чергу знову. Дубліката не створюється. ' +
       'Email активного акаунта або іншої школи — 409.',
@@ -102,7 +103,7 @@ export class InvitationsController {
   @ApiUnauthorizedResponse({ description: 'Потрібен access token' })
   @ApiCreatedResponse({ type: InviteResponseDto })
   @ApiForbiddenResponse({
-    description: 'Лише OWNER може запрошувати користувачів цим ендпоінтом.',
+    description: 'Лише OWNER може запрошувати ADMIN цим ендпоінтом.',
   })
   @ApiConflictResponse({
     description:

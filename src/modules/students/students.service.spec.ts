@@ -736,7 +736,7 @@ describe('StudentsService', () => {
         status: GroupStatus.ACTIVE,
       });
 
-      const result = await service.create(actor(UserRole.OWNER), {
+      const result = await service.create(actor(UserRole.ADMIN), {
         ...payload,
         groupId: 'group-1',
         category: LicenseCategory.B,
@@ -946,7 +946,7 @@ describe('StudentsService', () => {
       );
 
       await expect(
-        service.create(actor(UserRole.OWNER), payload),
+        service.create(actor(UserRole.ADMIN), payload),
       ).rejects.toBeInstanceOf(ConflictException);
       expect(emailQueue.enqueue).not.toHaveBeenCalled();
     });
@@ -959,7 +959,12 @@ describe('StudentsService', () => {
       expect(result.invitation.emailDelivery).toEqual(queuedDelivery);
     });
 
-    it.each([UserRole.TEACHER, UserRole.INSTRUCTOR, UserRole.STUDENT] as const)(
+    it.each([
+      UserRole.OWNER,
+      UserRole.TEACHER,
+      UserRole.INSTRUCTOR,
+      UserRole.STUDENT,
+    ] as const)(
       'rejects %s before writing',
       async (role) => {
         await expect(

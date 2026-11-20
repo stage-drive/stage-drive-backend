@@ -119,7 +119,7 @@ export class StudentsController {
   @ApiOperation({
     summary: 'Створити учня і надіслати запрошення',
     description:
-      'OWNER або ADMIN створює користувача з роллю STUDENT і статусом INVITED ' +
+      'ADMIN створює користувача з роллю STUDENT і статусом INVITED ' +
       'у своїй автошколі, профіль учня та запрошення. organizationId береться ' +
       'з авторизованого користувача. groupId записується, лише якщо група ' +
       'належить тій самій автошколі і має статус PLANNED або ACTIVE; разом із ' +
@@ -131,7 +131,8 @@ export class StudentsController {
   })
   @ApiCreatedResponse({ type: CreateStudentResponseDto })
   @ApiForbiddenResponse({
-    description: 'Створювати учнів можуть лише OWNER або ADMIN.',
+    description:
+      'Створювати учнів може лише ADMIN. OWNER запрошує лише ADMIN через POST /api/invitations.',
   })
   @ApiBadRequestResponse({
     description:

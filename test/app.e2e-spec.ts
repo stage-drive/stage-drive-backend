@@ -205,6 +205,7 @@ describe('API (e2e)', () => {
     invitation: {
       create: jest.fn(),
       findUnique: jest.fn(),
+      findUniqueOrThrow: jest.fn(),
       findFirst: jest.fn(),
       update: jest.fn(),
       updateMany: jest.fn(),
@@ -295,6 +296,7 @@ describe('API (e2e)', () => {
     prismaMock.invitation.create.mockReset();
     prismaMock.invitation.findUnique.mockReset();
     prismaMock.invitation.findUnique.mockResolvedValue(null);
+    prismaMock.invitation.findUniqueOrThrow.mockReset();
     prismaMock.invitation.findMany.mockReset();
     prismaMock.invitation.findMany.mockResolvedValue([]);
     prismaMock.invitation.update.mockReset();
@@ -1090,15 +1092,48 @@ describe('API (e2e)', () => {
     ).toBeDefined();
   });
 
-  it('OpenAPI documents POST /api/invitations/members', async () => {
+  it('OpenAPI documents invitation endpoints and invite roles', async () => {
     const response = await request(app.getHttpServer())
       .get('/api/docs-json')
       .expect(200);
 
-    const paths = (response.body as { paths: Record<string, unknown> }).paths;
+    const document = response.body as {
+      paths: Record<string, { post?: { summary?: string } }>;
+      components?: {
+        schemas?: Record<
+          string,
+          { properties?: { role?: { enum?: string[] } } }
+        >;
+      };
+    };
+    const paths = document.paths;
     expect(
       paths['/api/invitations/members'] ?? paths['/invitations/members'],
     ).toBeDefined();
+    expect(paths['/api/invitations']?.post?.summary).toContain('ADMIN');
+
+    const schemas = document.components?.schemas ?? {};
+    const ownerRole = Object.values(schemas).find(
+      (schema) =>
+        schema.properties?.role?.enum?.length === 1 &&
+        schema.properties.role.enum[0] === 'ADMIN',
+    );
+    const memberRole = Object.values(schemas).find((schema) => {
+      const roles = schema.properties?.role?.enum ?? [];
+      return (
+        roles.includes('TEACHER') &&
+        roles.includes('INSTRUCTOR') &&
+        roles.includes('STUDENT') &&
+        !roles.includes('ADMIN') &&
+        !roles.includes('OWNER')
+      );
+    });
+    expect(ownerRole?.properties?.role?.enum).toEqual(['ADMIN']);
+    expect(memberRole?.properties?.role?.enum).toEqual([
+      'TEACHER',
+      'INSTRUCTOR',
+      'STUDENT',
+    ]);
   });
 
   it('POST /api/auth/login with a wrong password returns 401', async () => {
@@ -2304,7 +2339,35 @@ describe('API (e2e)', () => {
     expect(mailServiceMock.sendEmail).not.toHaveBeenCalled();
   });
 
-  it('POST /api/invitations creates an INVITED STUDENT when role is passed', async () => {
+  it.each(['TEACHER', 'INSTRUCTOR', 'STUDENT', 'OWNER'] as const)(
+    'POST /api/invitations rejects role %s',
+    async (role) => {
+      const token = signAccessToken(owner.id);
+      const response = await request(app.getHttpServer())
+        .post('/api/invitations')
+        .set('Authorization', `Bearer ${token}`)
+        .send({
+          firstName: 'Olena',
+          lastName: 'Koval',
+          email: 'member@example.com',
+          role,
+        })
+        .expect(400);
+
+      expect(response.body).toMatchObject({
+        statusCode: 400,
+        errors: [
+          {
+            field: 'role',
+            message: 'OWNER може запросити лише ADMIN.',
+          },
+        ],
+      });
+      expect(mailServiceMock.sendEmail).not.toHaveBeenCalled();
+    },
+  );
+
+  it('POST /api/invitations accepts an explicit ADMIN role', async () => {
     const token = signAccessToken(owner.id);
     const response = await request(app.getHttpServer())
       .post('/api/invitations')
@@ -2312,45 +2375,15 @@ describe('API (e2e)', () => {
       .send({
         firstName: 'Olena',
         lastName: 'Koval',
-        email: 'student@example.com',
-        role: 'STUDENT',
+        email: 'admin@example.com',
+        role: 'ADMIN',
       })
       .expect(201);
 
     expect(response.body).toMatchObject({
-      user: {
-        email: 'student@example.com',
-        role: 'STUDENT',
-        status: 'INVITED',
-      },
-      invitation: { email: 'student@example.com', role: 'STUDENT' },
+      user: { email: 'admin@example.com', role: 'ADMIN', status: 'INVITED' },
+      invitation: { email: 'admin@example.com', role: 'ADMIN' },
     });
-  });
-
-  it('POST /api/invitations rejects role OWNER', async () => {
-    const token = signAccessToken(owner.id);
-    const response = await request(app.getHttpServer())
-      .post('/api/invitations')
-      .set('Authorization', `Bearer ${token}`)
-      .send({
-        firstName: 'Olena',
-        lastName: 'Koval',
-        email: 'owner2@example.com',
-        role: 'OWNER',
-      })
-      .expect(400);
-
-    expect(response.body).toMatchObject({
-      statusCode: 400,
-      errors: [
-        {
-          field: 'role',
-          message:
-            'Можна запросити лише ADMIN, TEACHER, INSTRUCTOR або STUDENT.',
-        },
-      ],
-    });
-    expect(mailServiceMock.sendEmail).not.toHaveBeenCalled();
   });
 
   it('GET /api/invitations returns invitations for the caller role', async () => {
@@ -2430,7 +2463,8 @@ describe('API (e2e)', () => {
       organizationId: organization.id,
       user: { status: 'INVITED', deletedAt: null },
     });
-    prismaMock.invitation.update.mockResolvedValue({
+    prismaMock.invitation.updateMany.mockResolvedValue({ count: 1 });
+    prismaMock.invitation.findUniqueOrThrow.mockResolvedValue({
       id: createdInvitation.id,
       email: 'admin@example.com',
       role: 'ADMIN',
@@ -3359,15 +3393,17 @@ describe('API (e2e)', () => {
     return request(app.getHttpServer()).post('/api/students').expect(401);
   });
 
-  it.each(['TEACHER', 'INSTRUCTOR', 'STUDENT'] as const)(
+  it.each(['OWNER', 'TEACHER', 'INSTRUCTOR', 'STUDENT'] as const)(
     'POST /api/students is forbidden for %s',
     async (role) => {
       const actor =
-        role === 'TEACHER'
-          ? teacher
-          : role === 'INSTRUCTOR'
-            ? instructor
-            : pupil;
+        role === 'OWNER'
+          ? owner
+          : role === 'TEACHER'
+            ? teacher
+            : role === 'INSTRUCTOR'
+              ? instructor
+              : pupil;
       const token = signAccessToken(actor.id);
       const response = await request(app.getHttpServer())
         .post('/api/students')
@@ -3506,7 +3542,7 @@ describe('API (e2e)', () => {
       status: 'ACTIVE',
     });
 
-    const token = signAccessToken(owner.id);
+    const token = signAccessToken(admin.id);
     const response = await request(app.getHttpServer())
       .post('/api/students')
       .set('Authorization', `Bearer ${token}`)
