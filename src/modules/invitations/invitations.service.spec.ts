@@ -252,29 +252,20 @@ describe('InvitationsService', () => {
     expect(JSON.stringify(result)).not.toContain('tokenHash');
   });
 
-  it('creates an INVITED STUDENT when the owner passes role', async () => {
-    const student = { ...createdUser, role: UserRole.STUDENT };
-    tx.user.create.mockResolvedValue(student);
+  it.each([UserRole.TEACHER, UserRole.INSTRUCTOR, UserRole.STUDENT] as const)(
+    'rejects an owner invitation with role %s',
+    async (role) => {
+      await expect(
+        service.inviteAdmin(owner as never, {
+          ...payload,
+          role,
+        }),
+      ).rejects.toBeInstanceOf(BadRequestException);
 
-    const result = await service.inviteAdmin(owner as never, {
-      ...payload,
-      role: UserRole.STUDENT,
-    });
-
-    expect(tx.user.create).toHaveBeenCalledWith({
-      data: expect.objectContaining({ role: UserRole.STUDENT }),
-    });
-    expect(tx.student.create).toHaveBeenCalledWith({
-      data: {
-        userId: 'admin-1',
-        organizationId: 'org-1',
-        instructorId: null,
-        carId: null,
-        trainingStatus: TrainingStatus.NEW,
-      },
-    });
-    expect(result.user.role).toBe(UserRole.STUDENT);
-  });
+      expect(tx.user.create).not.toHaveBeenCalled();
+      expect(emailQueue.enqueue).not.toHaveBeenCalled();
+    },
+  );
 
   it('rejects an invitation with role OWNER', async () => {
     await expect(

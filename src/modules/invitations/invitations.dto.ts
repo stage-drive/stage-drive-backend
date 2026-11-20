@@ -33,16 +33,13 @@ export const ADMIN_INVITABLE_ROLES: UserRole[] = [
   UserRole.STUDENT,
 ];
 
-export const OWNER_INVITABLE_ROLES: UserRole[] = [
-  UserRole.ADMIN,
-  ...ADMIN_INVITABLE_ROLES,
-];
+export const OWNER_INVITABLE_ROLES: UserRole[] = [UserRole.ADMIN];
 
 export const INVALID_INVITE_ROLE_MESSAGE =
   'Можна запрошувати лише TEACHER, INSTRUCTOR або STUDENT.';
 
 export const INVALID_OWNER_INVITE_ROLE_MESSAGE =
-  'Можна запросити лише ADMIN, TEACHER, INSTRUCTOR або STUDENT.';
+  'OWNER може запросити лише ADMIN.';
 
 export class InviteAdminDto {
   @ApiProperty({ example: 'Олена' })
@@ -85,7 +82,9 @@ export class InviteByOwnerDto extends InviteAdminDto {
   @ApiPropertyOptional({
     enum: OWNER_INVITABLE_ROLES,
     default: UserRole.ADMIN,
-    description: 'Роль запрошеного. Якщо поле не передати, буде ADMIN.',
+    description:
+      'Роль запрошеного. Дозволено лише ADMIN. Якщо поле не передати, буде ADMIN. ' +
+      'TEACHER, INSTRUCTOR і STUDENT запрошує ADMIN через POST /api/invitations/members.',
   })
   @IsIn(OWNER_INVITABLE_ROLES, { message: INVALID_OWNER_INVITE_ROLE_MESSAGE })
   @IsOptional()

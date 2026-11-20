@@ -78,7 +78,7 @@ export const STUDENT_LIST_ROLES = [
   UserRole.INSTRUCTOR,
 ] as const;
 
-export const STUDENT_CREATE_ROLES = [UserRole.OWNER, UserRole.ADMIN] as const;
+export const STUDENT_CREATE_ROLES = [UserRole.ADMIN] as const;
 
 export const STUDENT_CARD_ROLES = [
   UserRole.OWNER,
