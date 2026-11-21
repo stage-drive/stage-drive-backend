@@ -253,6 +253,7 @@ export class CourseProgressService {
         select: {
           id: true,
           courseId: true,
+          testId: true,
           studentId: true,
           status: true,
           score: true,
@@ -596,6 +597,7 @@ export class CourseProgressService {
         id: true,
         organizationId: true,
         courseId: true,
+        testId: true,
         studentId: true,
         status: true,
         score: true,
@@ -608,6 +610,7 @@ export class CourseProgressService {
     return {
       id: result.id,
       courseId: result.courseId,
+      testId: result.testId ?? null,
       studentId: result.studentId,
       status: result.status,
       score: result.score,
