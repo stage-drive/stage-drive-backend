@@ -86,6 +86,16 @@ export class TheoryTestResultDto {
   @ApiProperty({ example: '41414141-4141-4414-8414-414141414141' })
   courseId: string;
 
+  @ApiProperty({
+    type: String,
+    format: 'uuid',
+    nullable: true,
+    example: '61616161-6161-4616-8616-616161616161',
+    description:
+      'Тест, з якого пораховано цей результат. null — старий запис без спроби.',
+  })
+  testId: string | null;
+
   @ApiProperty({ example: '13131313-1313-4131-8131-131313131313' })
   studentId: string;
 

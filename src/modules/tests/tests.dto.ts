@@ -31,6 +31,8 @@ export const PASSING_SCORE_MIN = 1;
 export const PASSING_SCORE_MAX = 100;
 export const TIME_LIMIT_MIN = 1;
 export const TIME_LIMIT_MAX = 240;
+export const MAX_ATTEMPTS_MIN = 1;
+export const MAX_ATTEMPTS_MAX = 20;
 
 export const TEST_NAME_LENGTH_MESSAGE = `Назва має містити не більше ${TEST_NAME_MAX_LENGTH} символів.`;
 export const QUESTION_TEXT_LENGTH_MESSAGE = `Текст питання має містити не більше ${QUESTION_TEXT_MAX_LENGTH} символів.`;
@@ -41,6 +43,7 @@ export const TEST_PUBLICATION_MESSAGE =
   'publicationStatus має бути DRAFT або PUBLISHED.';
 export const PASSING_SCORE_MESSAGE = `passingScore має бути цілим числом від ${PASSING_SCORE_MIN} до ${PASSING_SCORE_MAX}.`;
 export const TIME_LIMIT_MESSAGE = `timeLimitMinutes має бути цілим числом від ${TIME_LIMIT_MIN} до ${TIME_LIMIT_MAX} або null.`;
+export const MAX_ATTEMPTS_MESSAGE = `maxAttempts має бути цілим числом від ${MAX_ATTEMPTS_MIN} до ${MAX_ATTEMPTS_MAX} або null.`;
 export const SHUFFLE_MESSAGE = 'shuffleQuestions має бути true або false.';
 export const COURSE_ID_MESSAGE = 'courseId має бути UUID.';
 export const OPTIONS_ARRAY_MESSAGE = 'options має бути масивом варіантів.';
@@ -163,6 +166,17 @@ export class TestDto {
     description: 'Ліміт часу в хвилинах. null — без обмеження.',
   })
   timeLimitMinutes: number | null;
+
+  @ApiProperty({
+    type: Number,
+    nullable: true,
+    example: 3,
+    minimum: MAX_ATTEMPTS_MIN,
+    maximum: MAX_ATTEMPTS_MAX,
+    description:
+      'Скільки спроб можна витратити. null — без обмеження. Після PASSED нова спроба не відкривається.',
+  })
+  maxAttempts: number | null;
 
   @ApiProperty({ example: false })
   shuffleQuestions: boolean;
@@ -361,6 +375,22 @@ export class CreateTestDto {
   @IsInt({ message: TIME_LIMIT_MESSAGE })
   timeLimitMinutes?: number | null;
 
+  @ApiPropertyOptional({
+    type: Number,
+    nullable: true,
+    example: 3,
+    minimum: MAX_ATTEMPTS_MIN,
+    maximum: MAX_ATTEMPTS_MAX,
+    description:
+      'Скільки спроб можна витратити. null або пропуск — без обмеження кількості.',
+  })
+  @Transform(integerValue)
+  @ValidateIf((_, value) => value !== undefined && value !== null)
+  @Min(MAX_ATTEMPTS_MIN, { message: MAX_ATTEMPTS_MESSAGE })
+  @Max(MAX_ATTEMPTS_MAX, { message: MAX_ATTEMPTS_MESSAGE })
+  @IsInt({ message: MAX_ATTEMPTS_MESSAGE })
+  maxAttempts?: number | null;
+
   @ApiPropertyOptional({ example: false, default: false })
   @ValidateIf((_, value) => value !== undefined)
   @IsBoolean({ message: SHUFFLE_MESSAGE })
@@ -420,6 +450,18 @@ export class UpdateTestDto {
   @Max(TIME_LIMIT_MAX, { message: TIME_LIMIT_MESSAGE })
   @IsInt({ message: TIME_LIMIT_MESSAGE })
   timeLimitMinutes?: number | null;
+
+  @ApiPropertyOptional({
+    type: Number,
+    nullable: true,
+    description: 'null знімає обмеження кількості спроб.',
+  })
+  @Transform(integerValue)
+  @ValidateIf((_, value) => value !== undefined && value !== null)
+  @Min(MAX_ATTEMPTS_MIN, { message: MAX_ATTEMPTS_MESSAGE })
+  @Max(MAX_ATTEMPTS_MAX, { message: MAX_ATTEMPTS_MESSAGE })
+  @IsInt({ message: MAX_ATTEMPTS_MESSAGE })
+  maxAttempts?: number | null;
 
   @ApiPropertyOptional({ example: true })
   @ValidateIf((_, value) => value !== undefined)

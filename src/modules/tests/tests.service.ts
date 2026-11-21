@@ -62,7 +62,7 @@ export const OPTION_NOT_FOUND_MESSAGE = 'Answer option not found';
 export const TEST_NAME_TAKEN_MESSAGE =
   'Тест з такою назвою вже є в цій автошколі.';
 export const NO_TEST_FIELDS_MESSAGE =
-  'Немає дозволених полів для оновлення (name, description, courseId, format, passingScore, timeLimitMinutes, shuffleQuestions).';
+  'Немає дозволених полів для оновлення (name, description, courseId, format, passingScore, timeLimitMinutes, maxAttempts, shuffleQuestions).';
 export const NO_QUESTION_FIELDS_MESSAGE =
   'Немає дозволених полів для оновлення (text, position).';
 export const NO_OPTION_FIELDS_MESSAGE =
@@ -104,6 +104,7 @@ const testSelect = {
   format: true,
   passingScore: true,
   timeLimitMinutes: true,
+  maxAttempts: true,
   shuffleQuestions: true,
   publicationStatus: true,
   createdAt: true,
@@ -190,6 +191,7 @@ function toTest(test: TestRow): TestDto {
     format: test.format,
     passingScore: test.passingScore,
     timeLimitMinutes: test.timeLimitMinutes,
+    maxAttempts: test.maxAttempts,
     shuffleQuestions: test.shuffleQuestions,
     publicationStatus: test.publicationStatus,
     createdAt: test.createdAt,
@@ -314,6 +316,7 @@ export class TestsService {
           format: payload.format,
           passingScore: payload.passingScore,
           timeLimitMinutes: payload.timeLimitMinutes ?? null,
+          maxAttempts: payload.maxAttempts ?? null,
           shuffleQuestions: payload.shuffleQuestions ?? false,
           publicationStatus: TheoryTestPublicationStatus.DRAFT,
         },
@@ -386,6 +389,12 @@ export class TestsService {
         payload.timeLimitMinutes !== existing.timeLimitMinutes
       ) {
         data.timeLimitMinutes = payload.timeLimitMinutes;
+      }
+      if (
+        payload.maxAttempts !== undefined &&
+        payload.maxAttempts !== existing.maxAttempts
+      ) {
+        data.maxAttempts = payload.maxAttempts;
       }
       if (
         payload.shuffleQuestions !== undefined &&
@@ -1065,6 +1074,7 @@ function hasTestChanges(payload: UpdateTestDto): boolean {
     payload.format !== undefined ||
     payload.passingScore !== undefined ||
     payload.timeLimitMinutes !== undefined ||
+    payload.maxAttempts !== undefined ||
     payload.shuffleQuestions !== undefined
   );
 }

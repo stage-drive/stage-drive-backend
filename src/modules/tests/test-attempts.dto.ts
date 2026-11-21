@@ -1,8 +1,13 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
-import { TheoryTestAttemptStatus, TheoryTestFormat } from '@prisma/client';
+import {
+  TheoryTestAttemptStatus,
+  TheoryTestFormat,
+  TheoryTestStatus,
+} from '@prisma/client';
 import { Type } from 'class-transformer';
 import { IsArray, IsDefined, IsUUID, ValidateNested } from 'class-validator';
 import { REQUIRED_FIELD_MESSAGE } from '../courses/courses.dto';
+import { NextAttemptBlockReason } from './test-attempts.rules';
 
 export const ANSWERS_ARRAY_MESSAGE = 'answers має бути масивом відповідей.';
 export const QUESTION_ID_MESSAGE = 'questionId має бути UUID.';
@@ -132,11 +137,155 @@ export class AttemptConflictDto {
   message: string;
 
   @ApiProperty({
-    format: 'uuid',
+    enum: NextAttemptBlockReason,
+    example: NextAttemptBlockReason.IN_PROGRESS,
     description:
-      'Id уже відкритої спроби. Її треба продовжити, а не створювати нову.',
+      'IN_PROGRESS — треба продовжити відкриту спробу. ALREADY_PASSED — тест складено. ATTEMPTS_EXHAUSTED — ліміт спроб вичерпано.',
+  })
+  reason: string;
+
+  @ApiPropertyOptional({
+    format: 'uuid',
+    description: 'Id уже відкритої спроби. Є лише коли reason = IN_PROGRESS.',
+  })
+  attemptId?: string;
+}
+
+export class TestScoreDto {
+  @ApiProperty({
+    format: 'uuid',
+    description: 'Спроба, з якої пораховано цей результат.',
   })
   attemptId: string;
+
+  @ApiProperty({ enum: TheoryTestStatus, example: TheoryTestStatus.PASSED })
+  status: TheoryTestStatus;
+
+  @ApiProperty({
+    example: 100,
+    minimum: 0,
+    maximum: 100,
+    description:
+      'Відсоток правильних відповідей. Поріг — passingScore цієї спроби.',
+  })
+  score: number;
+
+  @ApiProperty({
+    example: 90,
+    description: 'Поріг, з яким порівнювали цю спробу.',
+  })
+  passingScore: number;
+
+  @ApiProperty({ type: String, format: 'date-time' })
+  submittedAt: Date;
+}
+
+export class TestOutcomeDto {
+  @ApiProperty({ format: 'uuid' })
+  testId: string;
+
+  @ApiProperty({ format: 'uuid' })
+  courseId: string;
+
+  @ApiProperty({ format: 'uuid' })
+  studentId: string;
+
+  @ApiProperty({
+    example: 90,
+    description: 'Поточний поріг у налаштуваннях тесту.',
+  })
+  passingScore: number;
+
+  @ApiProperty({
+    type: Number,
+    nullable: true,
+    example: 3,
+    description: 'Поточний ліміт спроб. null — без обмеження кількості.',
+  })
+  maxAttempts: number | null;
+
+  @ApiProperty({
+    example: 1,
+    description:
+      'Скільки спроб уже витрачено: PASSED, FAILED і EXPIRED. Відкрита спроба сюди не входить.',
+  })
+  attemptsUsed: number;
+
+  @ApiProperty({
+    type: Number,
+    nullable: true,
+    example: 2,
+    description:
+      'Скільки нових стартів ще можна зробити після поточної відкритої спроби. null — кількості немає.',
+  })
+  attemptsRemaining: number | null;
+
+  @ApiProperty({ example: true })
+  nextAttemptAvailable: boolean;
+
+  @ApiProperty({
+    enum: NextAttemptBlockReason,
+    nullable: true,
+    example: null,
+    description: 'Чому наступну спробу почати не можна. null — можна.',
+  })
+  unavailableReason: NextAttemptBlockReason | null;
+
+  @ApiProperty({
+    type: String,
+    format: 'uuid',
+    nullable: true,
+    description: 'Відкрита спроба, яку треба продовжити. null — такої немає.',
+  })
+  openAttemptId: string | null;
+
+  @ApiProperty({
+    type: TestScoreDto,
+    nullable: true,
+    description:
+      'Останній перевірений результат цього студента і цього тесту. null — ще не було PASSED або FAILED. Правильні відповіді тут не повертаються.',
+  })
+  result: TestScoreDto | null;
+}
+
+export class StaffAttemptSummaryDto {
+  @ApiProperty({ format: 'uuid' })
+  id: string;
+
+  @ApiProperty({ enum: TheoryTestAttemptStatus })
+  status: TheoryTestAttemptStatus;
+
+  @ApiProperty({ type: Number, nullable: true, example: 80 })
+  score: number | null;
+
+  @ApiProperty({ example: 90 })
+  passingScore: number;
+
+  @ApiProperty({ type: String, format: 'date-time' })
+  startedAt: Date;
+
+  @ApiProperty({ type: String, format: 'date-time', nullable: true })
+  submittedAt: Date | null;
+}
+
+export class StaffTestResultDto extends TestOutcomeDto {
+  @ApiProperty({ example: 'Олена' })
+  firstName: string;
+
+  @ApiProperty({ example: 'Коваль' })
+  lastName: string;
+
+  @ApiProperty({
+    type: [StaffAttemptSummaryDto],
+    description:
+      'Усі спроби цього студента і цього тесту, від новішої. Питання і isCorrect не входять.',
+  })
+  attempts: StaffAttemptSummaryDto[];
+}
+
+export class StaffTestResultListDto {
+  @ApiProperty({ type: [StaffTestResultDto] })
+  results: StaffTestResultDto[];
 }
 
 export class SubmitAttemptAnswerDto {
