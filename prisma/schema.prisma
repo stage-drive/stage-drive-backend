@@ -128,6 +128,15 @@ enum TheoryTestPublicationStatus {
   PUBLISHED
 }
 
+/// Спроба проходження тесту. Кожен старт — окремий рядок, не перезапис TheoryTestResult.
+/// IN_PROGRESS ще йде. PASSED і FAILED — перевірені в межах часу. EXPIRED — час вийшов до submit.
+enum TheoryTestAttemptStatus {
+  IN_PROGRESS
+  PASSED
+  FAILED
+  EXPIRED
+}
+
 enum Transmission {
   MANUAL
   AUTOMATIC
@@ -254,6 +263,7 @@ model Organization {
   payments                Payment[]
   paymentHistory          PaymentHistory[]
   theoryTests             TheoryTest[]
+  theoryTestAttempts      TheoryTestAttempt[]
 
   @@index([deletedAt])
   @@map("organizations")
@@ -299,6 +309,7 @@ model User {
   courseLessonCompletions  CourseLessonCompletion[] @relation("StudentCourseLessonCompletions")
   courseProgressRecords    CourseProgress[]         @relation("StudentCourseProgress")
   theoryTestResults        TheoryTestResult[]       @relation("StudentTheoryTestResults")
+  theoryTestAttempts       TheoryTestAttempt[]      @relation("StudentTheoryTestAttempts")
   workingHours             InstructorWorkingHours[] @relation("InstructorWorkingHours")
   timeOffs                 InstructorTimeOff[]      @relation("InstructorTimeOffs")
   createdTimeOffs          InstructorTimeOff[]      @relation("CreatedInstructorTimeOffs")
@@ -467,23 +478,24 @@ model Group {
 
 /// Теоретичний курс автошколи: програма, яку викладач читає групі.
 model Course {
-  id                String                   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  organizationId    String                   @map("organization_id") @db.Uuid
-  organization      Organization             @relation(fields: [organizationId], references: [id], onDelete: Cascade)
-  name              String                   @db.VarChar(120)
-  description       String?
-  status            CourseStatus             @default(ACTIVE)
-  publicationStatus CoursePublicationStatus  @default(DRAFT) @map("publication_status")
-  createdAt         DateTime                 @default(now()) @map("created_at")
-  updatedAt         DateTime                 @updatedAt @map("updated_at")
-  groups            Group[]
-  chapters          CourseChapter[]
-  lessons           CourseLesson[]
-  materials         CourseMaterial[]
-  lessonCompletions CourseLessonCompletion[]
-  progressRecords   CourseProgress[]
-  theoryTestResults TheoryTestResult[]
-  theoryTests       TheoryTest[]
+  id                 String                   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  organizationId     String                   @map("organization_id") @db.Uuid
+  organization       Organization             @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  name               String                   @db.VarChar(120)
+  description        String?
+  status             CourseStatus             @default(ACTIVE)
+  publicationStatus  CoursePublicationStatus  @default(DRAFT) @map("publication_status")
+  createdAt          DateTime                 @default(now()) @map("created_at")
+  updatedAt          DateTime                 @updatedAt @map("updated_at")
+  groups             Group[]
+  chapters           CourseChapter[]
+  lessons            CourseLesson[]
+  materials          CourseMaterial[]
+  lessonCompletions  CourseLessonCompletion[]
+  progressRecords    CourseProgress[]
+  theoryTestResults  TheoryTestResult[]
+  theoryTests        TheoryTest[]
+  theoryTestAttempts TheoryTestAttempt[]
 
   /// Ціль складеного FK тестів: тест не прив’язати до курсу іншої автошколи.
   @@unique([id, organizationId])
@@ -511,14 +523,14 @@ model CourseChapter {
 /// Урок теоретичного курсу. Це не заняття групи (модель Lesson).
 /// courseId збігається з курсом розділу: складений ключ не дає прив’язати урок до чужого розділу.
 model CourseLesson {
-  id          String                   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  courseId    String                   @map("course_id") @db.Uuid
-  course      Course                   @relation(fields: [courseId], references: [id], onDelete: Cascade)
-  chapterId   String                   @map("chapter_id") @db.Uuid
-  chapter     CourseChapter            @relation(fields: [chapterId, courseId], references: [id, courseId], onDelete: Cascade)
-  title       String                   @db.VarChar(200)
-  description String?
-  position    Int
+  id               String                   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  courseId         String                   @map("course_id") @db.Uuid
+  course           Course                   @relation(fields: [courseId], references: [id], onDelete: Cascade)
+  chapterId        String                   @map("chapter_id") @db.Uuid
+  chapter          CourseChapter            @relation(fields: [chapterId, courseId], references: [id, courseId], onDelete: Cascade)
+  title            String                   @db.VarChar(200)
+  description      String?
+  position         Int
   createdAt        DateTime                 @default(now()) @map("created_at")
   updatedAt        DateTime                 @updatedAt @map("updated_at")
   materials        CourseMaterial[]
@@ -634,6 +646,7 @@ model TheoryTest {
   createdAt         DateTime                    @default(now()) @map("created_at")
   updatedAt         DateTime                    @updatedAt @map("updated_at")
   questions         TheoryQuestion[]
+  attempts          TheoryTestAttempt[]
 
   @@unique([id, organizationId])
   @@index([organizationId])
@@ -677,33 +690,130 @@ model TheoryAnswerOption {
   @@map("theory_answer_options")
 }
 
+/// Одна спроба студента пройти конкретний тест.
+/// Питання нижче — знімок на момент старту: правки тесту не змінюють уже почату спробу
+/// і не відкривають isCorrect, доки спроба не перевірена.
+/// Частковий унікальний індекс однієї IN_PROGRESS спроби на пару студент + тест
+/// живе в міграції: у Prisma-схемі частковий індекс не описується.
+model TheoryTestAttempt {
+  id               String                      @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  organizationId   String                      @map("organization_id") @db.Uuid
+  organization     Organization                @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  courseId         String                      @map("course_id") @db.Uuid
+  course           Course                      @relation(fields: [courseId, organizationId], references: [id, organizationId], onDelete: Cascade)
+  testId           String                      @map("test_id") @db.Uuid
+  test             TheoryTest                  @relation(fields: [testId, organizationId], references: [id, organizationId], onDelete: Cascade)
+  studentId        String                      @map("student_id") @db.Uuid
+  student          User                        @relation("StudentTheoryTestAttempts", fields: [studentId, organizationId], references: [id, organizationId], onDelete: Cascade)
+  status           TheoryTestAttemptStatus     @default(IN_PROGRESS)
+  format           TheoryTestFormat
+  startedAt        DateTime                    @map("started_at")
+  /// null — у тесті не було ліміту. Інакше startedAt + timeLimitMinutes. Перевіряє лише сервер.
+  expiresAt        DateTime?                   @map("expires_at")
+  submittedAt      DateTime?                   @map("submitted_at")
+  /// Відсоток після перевірки. null, доки спроба IN_PROGRESS або EXPIRED.
+  score            Int?
+  passingScore     Int                         @map("passing_score")
+  timeLimitMinutes Int?                        @map("time_limit_minutes")
+  createdAt        DateTime                    @default(now()) @map("created_at")
+  updatedAt        DateTime                    @updatedAt @map("updated_at")
+  questions        TheoryTestAttemptQuestion[]
+
+  @@index([organizationId])
+  @@index([studentId, testId, status])
+  @@index([testId])
+  @@index([courseId])
+  @@map("theory_test_attempts")
+}
+
+/// Питання, яке студент бачив у цій спробі. sourceQuestionId — id питання тесту на момент старту.
+model TheoryTestAttemptQuestion {
+  id               String                    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  attemptId        String                    @map("attempt_id") @db.Uuid
+  sourceQuestionId String                    @map("source_question_id") @db.Uuid
+  attempt          TheoryTestAttempt         @relation(fields: [attemptId], references: [id], onDelete: Cascade)
+  text             String                    @db.VarChar(2000)
+  /// Порядок показу в цій спробі, з 1. Якщо тест перемішує питання — порядок фіксується тут.
+  position         Int
+  options          TheoryTestAttemptOption[]
+  answers          TheoryTestAttemptAnswer[]
+
+  @@unique([id, attemptId])
+  @@unique([attemptId, sourceQuestionId])
+  @@unique([attemptId, position])
+  @@map("theory_test_attempt_questions")
+}
+
+/// Варіант зі знімка. isCorrect лишається в базі і не віддається, доки спроба не PASSED і не FAILED.
+model TheoryTestAttemptOption {
+  id             String                       @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  questionId     String                       @map("question_id") @db.Uuid
+  sourceOptionId String                       @map("source_option_id") @db.Uuid
+  question       TheoryTestAttemptQuestion    @relation(fields: [questionId], references: [id], onDelete: Cascade)
+  text           String                       @db.VarChar(500)
+  isCorrect      Boolean                      @map("is_correct")
+  position       Int
+  selections     TheoryTestAttemptSelection[]
+
+  @@unique([id, questionId])
+  @@unique([questionId, sourceOptionId])
+  @@unique([questionId, position])
+  @@map("theory_test_attempt_options")
+}
+
+/// Відповідь на одне питання спроби. Повторний submit не додає другий рядок: унікальність (attemptId, questionId).
+model TheoryTestAttemptAnswer {
+  id         String                       @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  attemptId  String                       @map("attempt_id") @db.Uuid
+  questionId String                       @map("question_id") @db.Uuid
+  question   TheoryTestAttemptQuestion    @relation(fields: [questionId, attemptId], references: [id, attemptId], onDelete: Cascade)
+  selections TheoryTestAttemptSelection[]
+
+  @@unique([id, questionId])
+  @@unique([attemptId, questionId])
+  @@map("theory_test_attempt_answers")
+}
+
+/// Обраний варіант. Складені FK не дають прив’язати варіант з іншого питання цієї ж спроби.
+model TheoryTestAttemptSelection {
+  answerId   String                  @map("answer_id") @db.Uuid
+  questionId String                  @map("question_id") @db.Uuid
+  optionId   String                  @map("option_id") @db.Uuid
+  answer     TheoryTestAttemptAnswer @relation(fields: [answerId, questionId], references: [id, questionId], onDelete: Cascade)
+  option     TheoryTestAttemptOption @relation(fields: [optionId, questionId], references: [id, questionId], onDelete: Cascade)
+
+  @@id([answerId, optionId])
+  @@index([optionId])
+  @@map("theory_test_attempt_selections")
+}
+
 model Student {
-  id             String           @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  userId         String           @unique @map("user_id") @db.Uuid
-  user           User             @relation("StudentProfile", fields: [userId], references: [id], onDelete: Cascade)
-  organizationId String           @map("organization_id") @db.Uuid
-  organization   Organization     @relation(fields: [organizationId], references: [id], onDelete: Cascade)
-  groupId        String?          @map("group_id") @db.Uuid
-  group          Group?           @relation(fields: [groupId], references: [id], onDelete: SetNull)
-  instructorId   String?          @map("instructor_id") @db.Uuid
-  instructor     User?            @relation("StudentInstructor", fields: [instructorId], references: [id], onDelete: SetNull)
-  carId          String?          @map("car_id") @db.Uuid
-  car            Car?             @relation(fields: [carId], references: [id], onDelete: SetNull)
-  category       LicenseCategory?
-  transmission   Transmission?
-  birthDate      DateTime?        @map("birth_date") @db.Date
-  address        String?          @db.VarChar(255)
-  contractNumber String?          @map("contract_number") @db.VarChar(64)
-  trainingStatus TrainingStatus   @default(NEW) @map("training_status")
+  id               String           @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  userId           String           @unique @map("user_id") @db.Uuid
+  user             User             @relation("StudentProfile", fields: [userId], references: [id], onDelete: Cascade)
+  organizationId   String           @map("organization_id") @db.Uuid
+  organization     Organization     @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  groupId          String?          @map("group_id") @db.Uuid
+  group            Group?           @relation(fields: [groupId], references: [id], onDelete: SetNull)
+  instructorId     String?          @map("instructor_id") @db.Uuid
+  instructor       User?            @relation("StudentInstructor", fields: [instructorId], references: [id], onDelete: SetNull)
+  carId            String?          @map("car_id") @db.Uuid
+  car              Car?             @relation(fields: [carId], references: [id], onDelete: SetNull)
+  category         LicenseCategory?
+  transmission     Transmission?
+  birthDate        DateTime?        @map("birth_date") @db.Date
+  address          String?          @db.VarChar(255)
+  contractNumber   String?          @map("contract_number") @db.VarChar(64)
+  trainingStatus   TrainingStatus   @default(NEW) @map("training_status")
   /// Останній за createdAt Payment студента — джерело актуального статусу оплати.
   /// null — оплат ще немає (NOT_PAID). Пише лише PaymentsService.create під блокуванням студента.
   /// Складений FK (currentPaymentId, userId) → payments(id, studentId): вказівник може вести
   /// лише на оплату цього самого студента (а через FK оплати — і цієї автошколи).
   /// NoAction: оплати не видаляються, а видалення автошколи перевіряється в кінці запиту.
-  currentPaymentId String?        @unique @map("current_payment_id") @db.Uuid
-  currentPayment   Payment?       @relation("StudentCurrentPayment", fields: [currentPaymentId, userId], references: [id, studentId], onDelete: NoAction, onUpdate: NoAction)
-  createdAt      DateTime         @default(now()) @map("created_at")
-  updatedAt      DateTime         @updatedAt @map("updated_at")
+  currentPaymentId String?          @unique @map("current_payment_id") @db.Uuid
+  currentPayment   Payment?         @relation("StudentCurrentPayment", fields: [currentPaymentId, userId], references: [id, studentId], onDelete: NoAction, onUpdate: NoAction)
+  createdAt        DateTime         @default(now()) @map("created_at")
+  updatedAt        DateTime         @updatedAt @map("updated_at")
 
   /// Потрібен Prisma для зв'язку один-до-одного через складений FK currentPayment.
   @@unique([currentPaymentId, userId])

@@ -30,6 +30,12 @@ import { CurrentUser } from '../auth/current-user.decorator';
 import { Roles } from '../auth/roles.decorator';
 import { RolesGuard } from '../auth/roles.guard';
 import {
+  AttemptConflictDto,
+  AttemptDetailDto,
+  SubmitAttemptDto,
+} from './test-attempts.dto';
+import { TestAttemptsService } from './test-attempts.service';
+import {
   AnswerOptionDto,
   CreateAnswerOptionDto,
   CreateQuestionDto,
@@ -69,6 +75,12 @@ const optionIdParam = {
   description: 'Id варіанта відповіді цього питання.',
 } as const;
 
+const attemptIdParam = {
+  name: 'attemptId',
+  format: 'uuid',
+  description: 'Id спроби цього студента і цього тесту.',
+} as const;
+
 const uuidPipe = new ParseUUIDPipe({ version: '4' });
 
 @ApiTags('tests')
@@ -77,7 +89,10 @@ const uuidPipe = new ParseUUIDPipe({ version: '4' });
 @Controller('tests')
 @UseGuards(AuthGuard, RolesGuard)
 export class TestsController {
-  constructor(private readonly testsService: TestsService) {}
+  constructor(
+    private readonly testsService: TestsService,
+    private readonly attemptsService: TestAttemptsService,
+  ) {}
 
   @Get()
   @Roles(...TEST_MANAGE_ROLES)
@@ -179,6 +194,121 @@ export class TestsController {
     @Param('testId', uuidPipe) testId: string,
   ) {
     return this.testsService.getContent(user, testId);
+  }
+
+  @Post(':testId/attempts')
+  @Roles(...TEST_STUDENT_ROLES)
+  @HttpCode(HttpStatus.CREATED)
+  @ApiOperation({
+    summary: 'Почати спробу проходження тесту',
+    description:
+      'STUDENT створює окремий запис спроби для опублікованого тесту свого курсу. ' +
+      'Зберігаються студент, тест, час старту за годинником сервера і статус IN_PROGRESS. ' +
+      'Якщо в тесті є ліміт, сервер записує expiresAt = startedAt + timeLimitMinutes. ' +
+      'Питання копіюються в спробу. Якщо тест їх перемішує, порядок фіксується тут і далі не змінюється. ' +
+      'У відповіді немає isCorrect. ' +
+      'Повторний старт, поки попередня спроба ще IN_PROGRESS і час не вийшов, повертає 409 і id тієї спроби. ' +
+      'Прострочена відкрита спроба закривається як EXPIRED, після чого створюється нова. ' +
+      'Тест іншої автошколи або неіснуючий — 404. Курс не призначено, не опубліковано або архівовано — 403. ' +
+      'Неопублікований тест — 403.',
+  })
+  @ApiParam(testIdParam)
+  @ApiCreatedResponse({ type: AttemptDetailDto })
+  @ApiBadRequestResponse({
+    description:
+      'testId не UUID або в тесті немає питань. Тіло містить errors: [{ field, message }].',
+  })
+  @ApiForbiddenResponse({
+    description:
+      'Ендпоінт лише для STUDENT. 403, якщо тест або курс не опубліковано, курс архівовано, або студентові не призначено цей курс.',
+  })
+  @ApiNotFoundResponse({
+    description:
+      'Тест не знайдено, він чужої автошколи, або автошколу видалено.',
+  })
+  @ApiConflictResponse({
+    type: AttemptConflictDto,
+    description:
+      'У студента вже є незавершена спроба цього тесту. Новий рядок не створюється.',
+  })
+  startAttempt(
+    @CurrentUser() user: User,
+    @Param('testId', uuidPipe) testId: string,
+  ) {
+    return this.attemptsService.start(user, testId);
+  }
+
+  @Get(':testId/attempts/:attemptId')
+  @Roles(...TEST_STUDENT_ROLES)
+  @ApiOperation({
+    summary: 'Питання і варіанти поточної спроби',
+    description:
+      'STUDENT отримує лише свою спробу цього тесту. ' +
+      'Поки статус IN_PROGRESS, у варіантах немає isCorrect. ' +
+      'expiresAt — дедлайн сервера. Якщо він уже настав, спроба закривається як EXPIRED, ' +
+      'правильні відповіді при цьому не відкриваються. ' +
+      'Після перевірки (PASSED або FAILED) відповідь містить isCorrect і selected. ' +
+      'Чужа, чужого тесту або неіснуюча спроба — 404. ' +
+      'Поки спроба триває, неопублікований тест або курс і втрачене зарахування дають 403.',
+  })
+  @ApiParam(testIdParam)
+  @ApiParam(attemptIdParam)
+  @ApiOkResponse({ type: AttemptDetailDto })
+  @ApiBadRequestResponse({ description: 'testId або attemptId не UUID.' })
+  @ApiForbiddenResponse({
+    description:
+      'Ендпоінт лише для STUDENT. 403, якщо триваюча спроба більше недоступна: тест або курс знято з публікації, курс архівовано, або зарахування не активне.',
+  })
+  @ApiNotFoundResponse({
+    description:
+      'Спроба не знайдена, вона чужа, від іншого тесту, або автошколу видалено.',
+  })
+  getAttempt(
+    @CurrentUser() user: User,
+    @Param('testId', uuidPipe) testId: string,
+    @Param('attemptId', uuidPipe) attemptId: string,
+  ) {
+    return this.attemptsService.get(user, testId, attemptId);
+  }
+
+  @Post(':testId/attempts/:attemptId/submit')
+  @Roles(...TEST_STUDENT_ROLES)
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({
+    summary: 'Відправити відповіді спроби на перевірку',
+    description:
+      'Сервер сам звіряє відповіді зі знімком спроби і ставить PASSED або FAILED за passingScore. ' +
+      'Пропущене питання вважається неправильним. ' +
+      'Актуальний результат курсу (TheoryTestResult) перезаписується цією перевіркою, другий рядок результату не створюється. ' +
+      'Повторний submit тієї самої спроби повертає вже збережений результат і не додає відповіді. ' +
+      'Якщо expiresAt вже настав, відповіді цього запиту не зберігаються, спроба стає EXPIRED, а результат курсу не змінюється. ' +
+      'Час перевіряється лише на сервері. ' +
+      'Після PASSED або FAILED у відповіді з’являються isCorrect і selected. Після EXPIRED правильні відповіді не відкриваються. ' +
+      'Чужа спроба — 404.',
+  })
+  @ApiParam(testIdParam)
+  @ApiParam(attemptIdParam)
+  @ApiOkResponse({ type: AttemptDetailDto })
+  @ApiBadRequestResponse({
+    description:
+      'id не UUID або відповіді не належать цій спробі. Для SINGLE_CHOICE і TRUE_FALSE можна обрати лише один варіант. ' +
+      'Тіло містить errors: [{ field, message }].',
+  })
+  @ApiForbiddenResponse({
+    description:
+      'Ендпоінт лише для STUDENT. 403, якщо на момент вчасної здачі тест або курс уже недоступні.',
+  })
+  @ApiNotFoundResponse({
+    description:
+      'Спроба не знайдена, вона чужа, від іншого тесту, або автошколу видалено.',
+  })
+  submitAttempt(
+    @CurrentUser() user: User,
+    @Param('testId', uuidPipe) testId: string,
+    @Param('attemptId', uuidPipe) attemptId: string,
+    @Body() body: SubmitAttemptDto,
+  ) {
+    return this.attemptsService.submit(user, testId, attemptId, body);
   }
 
   @Get(':testId')
