@@ -606,22 +606,29 @@ model CourseProgress {
 }
 
 /// Актуальний результат теоретичного тесту курсу.
-/// Повторна спроба перезаписує цей рядок, а не додає історію спроб.
+/// Повторна перевірка перезаписує цей рядок, а не додає другий результат.
+/// testId і attemptId фіксують, який тест і яка спроба дали цей результат.
 model TheoryTestResult {
-  id             String           @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  organizationId String           @map("organization_id") @db.Uuid
-  organization   Organization     @relation(fields: [organizationId], references: [id], onDelete: Cascade)
-  courseId       String           @map("course_id") @db.Uuid
-  course         Course           @relation(fields: [courseId], references: [id], onDelete: Cascade)
-  studentId      String           @map("student_id") @db.Uuid
-  student        User             @relation("StudentTheoryTestResults", fields: [studentId], references: [id], onDelete: Cascade)
+  id             String             @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  organizationId String             @map("organization_id") @db.Uuid
+  organization   Organization       @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  courseId       String             @map("course_id") @db.Uuid
+  course         Course             @relation(fields: [courseId], references: [id], onDelete: Cascade)
+  studentId      String             @map("student_id") @db.Uuid
+  student        User               @relation("StudentTheoryTestResults", fields: [studentId], references: [id], onDelete: Cascade)
+  /// null лишається в старих рядках, записаних вручну без спроби.
+  testId         String?            @map("test_id") @db.Uuid
+  test           TheoryTest?        @relation(fields: [testId], references: [id], onDelete: SetNull)
+  attemptId      String?            @unique @map("attempt_id") @db.Uuid
+  attempt        TheoryTestAttempt? @relation(fields: [attemptId], references: [id], onDelete: SetNull)
   status         TheoryTestStatus
   score          Int?
-  takenAt        DateTime         @default(now()) @map("taken_at")
+  takenAt        DateTime           @default(now()) @map("taken_at")
 
   @@unique([studentId, courseId])
   @@index([organizationId])
   @@index([courseId])
+  @@index([testId])
   @@map("theory_test_results")
 }
 
@@ -641,12 +648,16 @@ model TheoryTest {
   passingScore      Int                         @map("passing_score")
   /// Ліміт часу в хвилинах. null — без обмеження.
   timeLimitMinutes  Int?                        @map("time_limit_minutes")
+  /// Скільки спроб можна витратити. null — без обмеження.
+  /// Витрачена спроба: PASSED, FAILED або EXPIRED. Після PASSED нова спроба не відкривається.
+  maxAttempts       Int?                        @map("max_attempts")
   shuffleQuestions  Boolean                     @default(false) @map("shuffle_questions")
   publicationStatus TheoryTestPublicationStatus @default(DRAFT) @map("publication_status")
   createdAt         DateTime                    @default(now()) @map("created_at")
   updatedAt         DateTime                    @updatedAt @map("updated_at")
   questions         TheoryQuestion[]
   attempts          TheoryTestAttempt[]
+  results           TheoryTestResult[]
 
   @@unique([id, organizationId])
   @@index([organizationId])
@@ -718,6 +729,7 @@ model TheoryTestAttempt {
   createdAt        DateTime                    @default(now()) @map("created_at")
   updatedAt        DateTime                    @updatedAt @map("updated_at")
   questions        TheoryTestAttemptQuestion[]
+  result           TheoryTestResult?
 
   @@index([organizationId])
   @@index([studentId, testId, status])

@@ -364,6 +364,7 @@ describe('CourseProgressService', () => {
       expect(progress.test).toEqual({
         id: 'test-1',
         courseId,
+        testId: null,
         studentId: 'student-1',
         status: 'PASSED',
         score: 86,

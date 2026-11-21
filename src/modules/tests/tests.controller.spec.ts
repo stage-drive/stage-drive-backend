@@ -5,7 +5,10 @@ import { UserRole } from '@prisma/client';
 import { AuthGuard } from '../auth/auth.guard';
 import { ROLES_KEY } from '../auth/roles.decorator';
 import { RolesGuard } from '../auth/roles.guard';
-import { TestAttemptsService } from './test-attempts.service';
+import {
+  TEST_RESULT_STAFF_ROLES,
+  TestAttemptsService,
+} from './test-attempts.service';
 import { TestsController } from './tests.controller';
 import { TestsService } from './tests.service';
 
@@ -33,6 +36,9 @@ describe('TestsController', () => {
     start: jest.fn().mockResolvedValue(response),
     get: jest.fn().mockResolvedValue(response),
     submit: jest.fn().mockResolvedValue(response),
+    getOwnResult: jest.fn().mockResolvedValue(response),
+    listResults: jest.fn().mockResolvedValue({ results: [] }),
+    getStudentResult: jest.fn().mockResolvedValue(response),
   };
   const controller = new TestsController(
     testsService as unknown as TestsService,
@@ -73,6 +79,7 @@ describe('TestsController', () => {
     'startAttempt',
     'getAttempt',
     'submitAttempt',
+    'getOwnResult',
   ] as const)('restricts %s to STUDENT', (method) => {
     const roles = new Reflector().get<UserRole[]>(
       ROLES_KEY,
@@ -141,6 +148,45 @@ describe('TestsController', () => {
       'test-1',
       'attempt-1',
       body,
+    );
+    await expect(
+      controller.getOwnResult(student as never, 'test-1'),
+    ).resolves.toBe(response);
+    expect(attemptsService.getOwnResult).toHaveBeenCalledWith(
+      student,
+      'test-1',
+    );
+  });
+
+  it('lets ADMIN and TEACHER read results', async () => {
+    expect(
+      new Reflector().get<UserRole[]>(
+        ROLES_KEY,
+        // eslint-disable-next-line @typescript-eslint/unbound-method -- only reads decorator metadata, never invoked
+        TestsController.prototype.listResults,
+      ),
+    ).toEqual([...TEST_RESULT_STAFF_ROLES]);
+    expect(
+      new Reflector().get<UserRole[]>(
+        ROLES_KEY,
+        // eslint-disable-next-line @typescript-eslint/unbound-method -- only reads decorator metadata, never invoked
+        TestsController.prototype.getStudentResult,
+      ),
+    ).toEqual([UserRole.ADMIN, UserRole.TEACHER]);
+    const teacher = { id: 'teacher-1', role: UserRole.TEACHER };
+    await expect(
+      controller.listResults(teacher as never, 'test-1'),
+    ).resolves.toEqual({
+      results: [],
+    });
+    await expect(
+      controller.getStudentResult(teacher as never, 'test-1', 'student-1'),
+    ).resolves.toBe(response);
+    expect(attemptsService.listResults).toHaveBeenCalledWith(teacher, 'test-1');
+    expect(attemptsService.getStudentResult).toHaveBeenCalledWith(
+      teacher,
+      'test-1',
+      'student-1',
     );
     expect(
       Reflect.getMetadata(

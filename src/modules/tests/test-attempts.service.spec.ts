@@ -16,10 +16,14 @@ import {
 } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
 import { COURSE_NOT_PUBLISHED_MESSAGE } from '../courses/courses.service';
+import { NextAttemptBlockReason } from './test-attempts.rules';
 import {
+  ALREADY_PASSED_MESSAGE,
   ATTEMPT_IN_PROGRESS_MESSAGE,
   ATTEMPT_NOT_FOUND_MESSAGE,
   ATTEMPT_NO_QUESTIONS_MESSAGE,
+  ATTEMPTS_EXHAUSTED_MESSAGE,
+  TEST_RESULT_NOT_FOUND_MESSAGE,
   TestAttemptsService,
 } from './test-attempts.service';
 import {
@@ -56,6 +60,7 @@ describe('TestAttemptsService', () => {
       format: TheoryTestFormat.SINGLE_CHOICE,
       passingScore: 90,
       timeLimitMinutes: 20 as number | null,
+      maxAttempts: null as number | null,
       shuffleQuestions: false,
       publicationStatus: TheoryTestPublicationStatus.PUBLISHED,
       questions: [
@@ -137,14 +142,17 @@ describe('TestAttemptsService', () => {
   const prisma = {
     organization: { findUnique: jest.fn() },
     course: { findFirst: jest.fn() },
-    enrollment: { findFirst: jest.fn() },
+    enrollment: { findFirst: jest.fn(), findMany: jest.fn() },
     theoryTest: { findFirst: jest.fn() },
     theoryTestAttempt: {
       findFirst: jest.fn(),
+      findMany: jest.fn(),
       create: jest.fn(),
       update: jest.fn(),
+      updateMany: jest.fn(),
     },
-    theoryTestAttemptAnswer: { create: jest.fn() },
+    theoryTestAttemptAnswer: { create: jest.fn(), deleteMany: jest.fn() },
+    user: { findFirst: jest.fn() },
     theoryTestResult: { upsert: jest.fn() },
     student: { findUnique: jest.fn() },
     $transaction: jest.fn(),
@@ -171,6 +179,8 @@ describe('TestAttemptsService', () => {
     prisma.theoryTest.findFirst.mockImplementation(() =>
       Promise.resolve(testRow),
     );
+    prisma.theoryTestAttempt.findMany.mockResolvedValue([]);
+    prisma.theoryTestAttempt.updateMany.mockResolvedValue({ count: 0 });
     prisma.theoryTestAttempt.findFirst.mockImplementation(
       (args: { where?: { status?: TheoryTestAttemptStatus } }) =>
         Promise.resolve(
@@ -211,6 +221,7 @@ describe('TestAttemptsService', () => {
       },
     );
     prisma.theoryTestAttemptAnswer.create.mockResolvedValue({ id: 'answer-1' });
+    prisma.theoryTestAttemptAnswer.deleteMany.mockResolvedValue({ count: 0 });
     prisma.theoryTestResult.upsert.mockResolvedValue({ id: 'result-1' });
     prisma.student.findUnique.mockResolvedValue(null);
     prisma.$queryRaw.mockResolvedValue([{ id: 'attempt-1' }]);
@@ -329,6 +340,7 @@ describe('TestAttemptsService', () => {
     expect(error.getResponse()).toEqual({
       statusCode: 409,
       message: ATTEMPT_IN_PROGRESS_MESSAGE,
+      reason: NextAttemptBlockReason.IN_PROGRESS,
       attemptId: 'attempt-open',
     });
     expect(prisma.theoryTestAttempt.create).not.toHaveBeenCalled();
@@ -482,6 +494,8 @@ describe('TestAttemptsService', () => {
           status: TheoryTestStatus.PASSED,
           score: 100,
           studentId: 'student-1',
+          testId: 'test-1',
+          attemptId: 'attempt-1',
         }),
       }),
     );
@@ -554,5 +568,183 @@ describe('TestAttemptsService', () => {
       ],
     });
     expect(prisma.theoryTestAttempt.update).not.toHaveBeenCalled();
+  });
+
+  it('does not start another attempt after the test is passed', async () => {
+    prisma.theoryTestAttempt.findMany.mockResolvedValue([
+      {
+        id: 'attempt-passed',
+        studentId: 'student-1',
+        status: TheoryTestAttemptStatus.PASSED,
+        score: 100,
+        passingScore: 90,
+        startedAt: now,
+        submittedAt: now,
+        expiresAt: null,
+      },
+    ]);
+    const error = await caught(service.start(student as never, 'test-1'));
+    expect(error).toBeInstanceOf(ConflictException);
+    expect(error.getResponse()).toEqual({
+      statusCode: 409,
+      message: ALREADY_PASSED_MESSAGE,
+      reason: NextAttemptBlockReason.ALREADY_PASSED,
+    });
+    expect(prisma.theoryTestAttempt.create).not.toHaveBeenCalled();
+  });
+
+  it('does not start another attempt when the limit is spent', async () => {
+    testRow = catalog({ maxAttempts: 1 });
+    prisma.theoryTestAttempt.findMany.mockResolvedValue([
+      {
+        id: 'attempt-failed',
+        studentId: 'student-1',
+        status: TheoryTestAttemptStatus.FAILED,
+        score: 0,
+        passingScore: 90,
+        startedAt: now,
+        submittedAt: now,
+        expiresAt: null,
+      },
+    ]);
+    const error = await caught(service.start(student as never, 'test-1'));
+    expect(error.getResponse()).toEqual({
+      statusCode: 409,
+      message: ATTEMPTS_EXHAUSTED_MESSAGE,
+      reason: NextAttemptBlockReason.ATTEMPTS_EXHAUSTED,
+    });
+  });
+
+  it('returns the student score without correct answers and the next attempt', async () => {
+    prisma.theoryTestAttempt.findMany.mockResolvedValue([
+      {
+        id: 'attempt-failed',
+        studentId: 'student-1',
+        status: TheoryTestAttemptStatus.FAILED,
+        score: 0,
+        passingScore: 90,
+        startedAt: now,
+        submittedAt: now,
+        expiresAt: null,
+      },
+    ]);
+    const view = await service.getOwnResult(student as never, 'test-1');
+    expect(view).toMatchObject({
+      testId: 'test-1',
+      studentId: 'student-1',
+      passingScore: 90,
+      attemptsUsed: 1,
+      nextAttemptAvailable: true,
+      result: {
+        attemptId: 'attempt-failed',
+        status: TheoryTestStatus.FAILED,
+        score: 0,
+      },
+    });
+    expect(JSON.stringify(view)).not.toContain('isCorrect');
+    expect(prisma.theoryTest.findFirst).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { id: 'test-1', organizationId: 'org-1' },
+      }),
+    );
+  });
+
+  it('hides a result of a test from another organization', async () => {
+    testRow = null;
+    const error = await caught(
+      service.getOwnResult(student as never, 'test-1'),
+    );
+    expect(error).toBeInstanceOf(NotFoundException);
+    expect(error.message).toBe(TEST_NOT_FOUND_MESSAGE);
+  });
+
+  it('shows an admin only attempts of enrolled students in this organization', async () => {
+    const admin = {
+      id: 'admin-1',
+      role: UserRole.ADMIN,
+      organizationId: 'org-1',
+    };
+    prisma.enrollment.findMany.mockResolvedValue([
+      {
+        studentId: 'student-1',
+        status: 'ACTIVE',
+        student: { firstName: 'Олена', lastName: 'Коваль' },
+      },
+    ]);
+    prisma.theoryTestAttempt.findMany.mockResolvedValue([
+      {
+        id: 'attempt-passed',
+        studentId: 'student-1',
+        status: TheoryTestAttemptStatus.PASSED,
+        score: 100,
+        passingScore: 90,
+        startedAt: now,
+        submittedAt: now,
+        expiresAt: null,
+      },
+      {
+        id: 'attempt-foreign',
+        studentId: 'student-2',
+        status: TheoryTestAttemptStatus.FAILED,
+        score: 10,
+        passingScore: 90,
+        startedAt: now,
+        submittedAt: now,
+        expiresAt: null,
+      },
+    ]);
+    const listed = await service.listResults(admin as never, 'test-1');
+    expect(listed.results).toHaveLength(1);
+    expect(listed.results[0]).toMatchObject({
+      studentId: 'student-1',
+      firstName: 'Олена',
+      result: { status: TheoryTestStatus.PASSED, score: 100 },
+    });
+    expect(prisma.theoryTestAttempt.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          testId: 'test-1',
+          organizationId: 'org-1',
+          studentId: { in: ['student-1'] },
+        }),
+      }),
+    );
+  });
+
+  it('forbids a teacher to read a student of another group', async () => {
+    const teacher = {
+      id: 'teacher-1',
+      role: UserRole.TEACHER,
+      organizationId: 'org-1',
+    };
+    prisma.user.findFirst.mockResolvedValue({
+      firstName: 'Ігор',
+      lastName: 'Мельник',
+    });
+    prisma.enrollment.findFirst
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce({ status: 'ACTIVE' });
+    const error = await caught(
+      service.getStudentResult(teacher as never, 'test-1', 'student-1'),
+    );
+    expect(error).toBeInstanceOf(ForbiddenException);
+  });
+
+  it('returns 404 when the student is not enrolled on the test course', async () => {
+    const admin = {
+      id: 'admin-1',
+      role: UserRole.ADMIN,
+      organizationId: 'org-1',
+    };
+    prisma.user.findFirst.mockResolvedValue({
+      firstName: 'Ігор',
+      lastName: 'Мельник',
+    });
+    prisma.enrollment.findFirst.mockResolvedValue(null);
+    const error = await caught(
+      service.getStudentResult(admin as never, 'test-1', 'student-1'),
+    );
+    expect(error).toBeInstanceOf(NotFoundException);
+    expect(error.message).toBe(TEST_RESULT_NOT_FOUND_MESSAGE);
   });
 });

@@ -62,6 +62,7 @@ describe('TestsService', () => {
     format: TheoryTestFormat.SINGLE_CHOICE,
     passingScore: 90,
     timeLimitMinutes: 20,
+    maxAttempts: null as number | null,
     shuffleQuestions: false,
     publicationStatus:
       TheoryTestPublicationStatus.DRAFT as TheoryTestPublicationStatus,

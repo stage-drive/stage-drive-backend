@@ -32,9 +32,15 @@ import { RolesGuard } from '../auth/roles.guard';
 import {
   AttemptConflictDto,
   AttemptDetailDto,
+  StaffTestResultDto,
+  StaffTestResultListDto,
   SubmitAttemptDto,
+  TestOutcomeDto,
 } from './test-attempts.dto';
-import { TestAttemptsService } from './test-attempts.service';
+import {
+  TEST_RESULT_STAFF_ROLES,
+  TestAttemptsService,
+} from './test-attempts.service';
 import {
   AnswerOptionDto,
   CreateAnswerOptionDto,
@@ -81,6 +87,12 @@ const attemptIdParam = {
   description: 'Id спроби цього студента і цього тесту.',
 } as const;
 
+const resultStudentIdParam = {
+  name: 'studentId',
+  format: 'uuid',
+  description: 'Id студента своєї автошколи.',
+} as const;
+
 const uuidPipe = new ParseUUIDPipe({ version: '4' });
 
 @ApiTags('tests')
@@ -120,7 +132,7 @@ export class TestsController {
       'ADMIN створює тест у своїй організації. organizationId береться з access token і не приймається в тілі. ' +
       'courseId має належати цій автошколі. Новий тест завжди DRAFT. ' +
       'Зберігаються назва, опис, формат (SINGLE_CHOICE, MULTIPLE_CHOICE, TRUE_FALSE), ' +
-      'поріг складання у відсотках, ліміт часу і прапорець перемішування питань. ' +
+      'поріг складання у відсотках, ліміт часу, ліміт спроб і прапорець перемішування питань. ' +
       'Назва унікальна в автошколі без урахування регістру.',
   })
   @ApiCreatedResponse({ type: TestDto })
@@ -208,7 +220,8 @@ export class TestsController {
       'Питання копіюються в спробу. Якщо тест їх перемішує, порядок фіксується тут і далі не змінюється. ' +
       'У відповіді немає isCorrect. ' +
       'Повторний старт, поки попередня спроба ще IN_PROGRESS і час не вийшов, повертає 409 і id тієї спроби. ' +
-      'Прострочена відкрита спроба закривається як EXPIRED, після чого створюється нова. ' +
+      'Прострочена відкрита спроба закривається як EXPIRED і вже рахується витраченою. ' +
+      'Нова спроба недоступна, якщо тест уже PASSED або витрачено maxAttempts. null у maxAttempts ліміту кількості не ставить. ' +
       'Тест іншої автошколи або неіснуючий — 404. Курс не призначено, не опубліковано або архівовано — 403. ' +
       'Неопублікований тест — 403.',
   })
@@ -229,7 +242,7 @@ export class TestsController {
   @ApiConflictResponse({
     type: AttemptConflictDto,
     description:
-      'У студента вже є незавершена спроба цього тесту. Новий рядок не створюється.',
+      'Нову спробу не створено. reason пояснює причину: IN_PROGRESS, ALREADY_PASSED або ATTEMPTS_EXHAUSTED.',
   })
   startAttempt(
     @CurrentUser() user: User,
@@ -279,7 +292,8 @@ export class TestsController {
     description:
       'Сервер сам звіряє відповіді зі знімком спроби і ставить PASSED або FAILED за passingScore. ' +
       'Пропущене питання вважається неправильним. ' +
-      'Актуальний результат курсу (TheoryTestResult) перезаписується цією перевіркою, другий рядок результату не створюється. ' +
+      'Сервер порівнює відсоток із passingScore спроби: бал не нижчий за поріг дає PASSED, інакше FAILED. ' +
+      'Актуальний результат курсу перезаписується і вказує на цього студента, цей тест і цю спробу. Другий рядок результату не створюється. ' +
       'Повторний submit тієї самої спроби повертає вже збережений результат і не додає відповіді. ' +
       'Якщо expiresAt вже настав, відповіді цього запиту не зберігаються, спроба стає EXPIRED, а результат курсу не змінюється. ' +
       'Час перевіряється лише на сервері. ' +
@@ -311,6 +325,95 @@ export class TestsController {
     return this.attemptsService.submit(user, testId, attemptId, body);
   }
 
+  @Get(':testId/result')
+  @Roles(...TEST_STUDENT_ROLES)
+  @ApiOperation({
+    summary: 'Результат студента і доступність наступної спроби',
+    description:
+      'STUDENT бачить свій результат цього тесту: останній перевірений бал, статус PASSED або FAILED і поріг, з яким його порівнювали. ' +
+      'Поки не було перевірки, result = null. ' +
+      'attemptsUsed рахує витрачені спроби (PASSED, FAILED, EXPIRED). ' +
+      'nextAttemptAvailable і unavailableReason кажуть, чи можна почати наступну. ' +
+      'Після PASSED або після вичерпання maxAttempts нова спроба недоступна. ' +
+      'Правильні відповіді цей запит не повертає. Їх видно в уже перевіреній спробі. ' +
+      'Якщо спроб ще не було, доступ той самий, що й для старту: чужий тест — 404, не призначений або не опублікований курс чи тест — 403. ' +
+      'Уже збережений результат своєї автошколи лишається видимим.',
+  })
+  @ApiParam(testIdParam)
+  @ApiOkResponse({ type: TestOutcomeDto })
+  @ApiBadRequestResponse({ description: 'testId не UUID.' })
+  @ApiForbiddenResponse({
+    description:
+      'Ендпоінт лише для STUDENT. 403, якщо спроб ще немає, а тест або курс зараз недоступні.',
+  })
+  @ApiNotFoundResponse({
+    description:
+      'Тест не знайдено, він чужої автошколи, або автошколу видалено.',
+  })
+  getOwnResult(
+    @CurrentUser() user: User,
+    @Param('testId', uuidPipe) testId: string,
+  ) {
+    return this.attemptsService.getOwnResult(user, testId);
+  }
+
+  @Get(':testId/results')
+  @Roles(...TEST_RESULT_STAFF_ROLES)
+  @ApiOperation({
+    summary: 'Результати тесту для викладача і адміністратора',
+    description:
+      'ADMIN бачить студентів своєї автошколи з зарахуванням ACTIVE або COMPLETED на курс цього тесту, у яких уже є спроба. ' +
+      'TEACHER бачить лише студентів групи, яку він веде. ' +
+      'Кожен рядок містить бал, passed/failed, витрачені спроби і чи студентові доступна наступна. ' +
+      'Студенти і тести інших автошкіл не повертаються. Питання і isCorrect не входять.',
+  })
+  @ApiParam(testIdParam)
+  @ApiOkResponse({ type: StaffTestResultListDto })
+  @ApiBadRequestResponse({ description: 'testId не UUID.' })
+  @ApiForbiddenResponse({
+    description: 'Список результатів доступний ADMIN і TEACHER.',
+  })
+  @ApiNotFoundResponse({
+    description:
+      'Тест не знайдено, він чужої автошколи, або автошколу видалено.',
+  })
+  listResults(
+    @CurrentUser() user: User,
+    @Param('testId', uuidPipe) testId: string,
+  ) {
+    return this.attemptsService.listResults(user, testId);
+  }
+
+  @Get(':testId/results/:studentId')
+  @Roles(...TEST_RESULT_STAFF_ROLES)
+  @ApiOperation({
+    summary: 'Результат одного студента по тесту',
+    description:
+      'ADMIN читає результат студента своєї автошколи, якщо той зарахований на курс тесту. ' +
+      'TEACHER — лише якщо студент у його групі на цьому курсі. Інакше 403, коли студент навчається в чужій групі, або 404, коли такого зарахування немає. ' +
+      'Студент іншої автошколи, видалений користувач і не-студент — 404. ' +
+      'Відповідь містить актуальний бал, статуси спроб і доступність наступної спроби.',
+  })
+  @ApiParam(testIdParam)
+  @ApiParam(resultStudentIdParam)
+  @ApiOkResponse({ type: StaffTestResultDto })
+  @ApiBadRequestResponse({ description: 'testId або studentId не UUID.' })
+  @ApiForbiddenResponse({
+    description:
+      'Ендпоінт доступний ADMIN і TEACHER. TEACHER отримує 403, якщо студент на цьому курсі в чужій групі.',
+  })
+  @ApiNotFoundResponse({
+    description:
+      'Тест або студента не знайдено в цій автошколі, студент не зарахований на курс, або автошколу видалено.',
+  })
+  getStudentResult(
+    @CurrentUser() user: User,
+    @Param('testId', uuidPipe) testId: string,
+    @Param('studentId', uuidPipe) studentId: string,
+  ) {
+    return this.attemptsService.getStudentResult(user, testId, studentId);
+  }
+
   @Get(':testId')
   @Roles(...TEST_MANAGE_ROLES)
   @ApiOperation({
@@ -337,7 +440,7 @@ export class TestsController {
   @ApiOperation({
     summary: 'Редагувати назву і параметри тесту',
     description:
-      'ADMIN змінює name, description, courseId, format, passingScore, timeLimitMinutes або shuffleQuestions. ' +
+      'ADMIN змінює name, description, courseId, format, passingScore, timeLimitMinutes, maxAttempts або shuffleQuestions. ' +
       'null у description очищає опис, null у timeLimitMinutes знімає ліміт часу. ' +
       'Зміна format у чернетці відхиляється, якщо в питанні вже кілька правильних відповідей, а новий формат дозволяє лише одну. ' +
       'В опублікованого тесту новий format має одразу проходити перевірку структури. ' +

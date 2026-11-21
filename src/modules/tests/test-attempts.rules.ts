@@ -1,4 +1,4 @@
-import { TheoryTestFormat } from '@prisma/client';
+import { TheoryTestAttemptStatus, TheoryTestFormat } from '@prisma/client';
 import { FieldError, isExclusiveFormat } from './tests.rules';
 
 export const DUPLICATE_QUESTION_MESSAGE = 'Це питання вже є у відповідях.';
@@ -142,4 +142,114 @@ export function gradeAttempt(
   const score =
     questions.length === 0 ? 0 : Math.round((correct / questions.length) * 100);
   return { score, passed: score >= passingScore };
+}
+
+/**
+ * Чому наступну спробу почати не можна.
+ * IN_PROGRESS — уже є відкрита і ще не прострочена.
+ * ALREADY_PASSED — цей тест уже складено.
+ * ATTEMPTS_EXHAUSTED — витрачено maxAttempts.
+ * TEST_UNAVAILABLE — тест або курс зараз не можна проходити.
+ */
+export const NextAttemptBlockReason = {
+  IN_PROGRESS: 'IN_PROGRESS',
+  ALREADY_PASSED: 'ALREADY_PASSED',
+  ATTEMPTS_EXHAUSTED: 'ATTEMPTS_EXHAUSTED',
+  TEST_UNAVAILABLE: 'TEST_UNAVAILABLE',
+} as const;
+
+export type NextAttemptBlockReason =
+  (typeof NextAttemptBlockReason)[keyof typeof NextAttemptBlockReason];
+
+export type AttemptHistoryItem = {
+  id: string;
+  status: TheoryTestAttemptStatus;
+  expiresAt: Date | null;
+};
+
+export type NextAttemptDecision = {
+  attemptsUsed: number;
+  attemptsRemaining: number | null;
+  nextAttemptAvailable: boolean;
+  unavailableReason: NextAttemptBlockReason | null;
+  openAttemptId: string | null;
+};
+
+function isSpent(status: TheoryTestAttemptStatus): boolean {
+  return (
+    status === TheoryTestAttemptStatus.PASSED ||
+    status === TheoryTestAttemptStatus.FAILED ||
+    status === TheoryTestAttemptStatus.EXPIRED
+  );
+}
+
+/**
+ * Погоджені правила повторних спроб (DF-14).
+ * Витрачена спроба — PASSED, FAILED або EXPIRED.
+ * Прострочена IN_PROGRESS на момент перевірки теж витрачена: старт її закриє.
+ * Відкрита і ще жива спроба займає слот і не дає почати другу.
+ * Після PASSED нова спроба цього тесту недоступна, навіть якщо ліміт ще не вичерпано.
+ * maxAttempts null — кількості немає, лишаються лише правила статусу.
+ */
+export function nextAttemptAvailability(
+  maxAttempts: number | null,
+  attempts: AttemptHistoryItem[],
+  now: Date,
+): NextAttemptDecision {
+  let open: AttemptHistoryItem | null = null;
+  let passed = false;
+  let used = 0;
+  for (const attempt of attempts) {
+    if (attempt.status === TheoryTestAttemptStatus.IN_PROGRESS) {
+      if (isAttemptExpired(attempt.expiresAt, now)) {
+        used += 1;
+      } else if (!open) {
+        open = attempt;
+      }
+      continue;
+    }
+    if (attempt.status === TheoryTestAttemptStatus.PASSED) {
+      passed = true;
+    }
+    if (isSpent(attempt.status)) {
+      used += 1;
+    }
+  }
+  const openSlot = open ? 1 : 0;
+  const attemptsRemaining =
+    maxAttempts === null ? null : Math.max(0, maxAttempts - used - openSlot);
+  if (open) {
+    return {
+      attemptsUsed: used,
+      attemptsRemaining,
+      nextAttemptAvailable: false,
+      unavailableReason: NextAttemptBlockReason.IN_PROGRESS,
+      openAttemptId: open.id,
+    };
+  }
+  if (passed) {
+    return {
+      attemptsUsed: used,
+      attemptsRemaining,
+      nextAttemptAvailable: false,
+      unavailableReason: NextAttemptBlockReason.ALREADY_PASSED,
+      openAttemptId: null,
+    };
+  }
+  if (maxAttempts !== null && used >= maxAttempts) {
+    return {
+      attemptsUsed: used,
+      attemptsRemaining,
+      nextAttemptAvailable: false,
+      unavailableReason: NextAttemptBlockReason.ATTEMPTS_EXHAUSTED,
+      openAttemptId: null,
+    };
+  }
+  return {
+    attemptsUsed: used,
+    attemptsRemaining,
+    nextAttemptAvailable: true,
+    unavailableReason: null,
+    openAttemptId: null,
+  };
 }

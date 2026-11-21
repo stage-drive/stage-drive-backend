@@ -1,12 +1,14 @@
-import { TheoryTestFormat } from '@prisma/client';
+import { TheoryTestAttemptStatus, TheoryTestFormat } from '@prisma/client';
 import {
   DUPLICATE_QUESTION_MESSAGE,
+  NextAttemptBlockReason,
   SINGLE_OPTION_MESSAGE,
   UNKNOWN_OPTION_MESSAGE,
   UNKNOWN_QUESTION_MESSAGE,
   attemptDeadline,
   gradeAttempt,
   isAttemptExpired,
+  nextAttemptAvailability,
   selectionErrors,
   shuffleInPlace,
 } from './test-attempts.rules';
@@ -156,5 +158,120 @@ describe('gradeAttempt', () => {
     expect(
       gradeAttempt(questions, [{ questionId: 'q1', optionIds: ['b'] }], 50),
     ).toEqual({ score: 33, passed: false });
+  });
+
+  it('passes when the score is equal to the threshold', () => {
+    expect(
+      gradeAttempt(questions, [{ questionId: 'q1', optionIds: ['b'] }], 33),
+    ).toEqual({ score: 33, passed: true });
+  });
+});
+
+describe('nextAttemptAvailability', () => {
+  const now = new Date('2026-11-21T12:00:00.000Z');
+
+  it('allows another attempt when the limit is not set and the test is not passed', () => {
+    expect(
+      nextAttemptAvailability(
+        null,
+        [
+          {
+            id: 'failed',
+            status: TheoryTestAttemptStatus.FAILED,
+            expiresAt: null,
+          },
+        ],
+        now,
+      ),
+    ).toMatchObject({
+      attemptsUsed: 1,
+      attemptsRemaining: null,
+      nextAttemptAvailable: true,
+      unavailableReason: null,
+    });
+  });
+
+  it('blocks a second start while one attempt is still open', () => {
+    expect(
+      nextAttemptAvailability(
+        3,
+        [
+          {
+            id: 'open',
+            status: TheoryTestAttemptStatus.IN_PROGRESS,
+            expiresAt: new Date('2026-11-21T12:20:00.000Z'),
+          },
+        ],
+        now,
+      ),
+    ).toEqual({
+      attemptsUsed: 0,
+      attemptsRemaining: 2,
+      nextAttemptAvailable: false,
+      unavailableReason: NextAttemptBlockReason.IN_PROGRESS,
+      openAttemptId: 'open',
+    });
+  });
+
+  it('counts an overdue open attempt as spent', () => {
+    expect(
+      nextAttemptAvailability(
+        1,
+        [
+          {
+            id: 'late',
+            status: TheoryTestAttemptStatus.IN_PROGRESS,
+            expiresAt: new Date('2026-11-21T11:00:00.000Z'),
+          },
+        ],
+        now,
+      ),
+    ).toMatchObject({
+      attemptsUsed: 1,
+      attemptsRemaining: 0,
+      nextAttemptAvailable: false,
+      unavailableReason: NextAttemptBlockReason.ATTEMPTS_EXHAUSTED,
+    });
+  });
+
+  it('stops retries after a pass even if attempts remain', () => {
+    expect(
+      nextAttemptAvailability(
+        3,
+        [
+          {
+            id: 'passed',
+            status: TheoryTestAttemptStatus.PASSED,
+            expiresAt: null,
+          },
+        ],
+        now,
+      ).unavailableReason,
+    ).toBe(NextAttemptBlockReason.ALREADY_PASSED);
+  });
+
+  it('stops retries when every allowed attempt is spent', () => {
+    expect(
+      nextAttemptAvailability(
+        2,
+        [
+          {
+            id: 'one',
+            status: TheoryTestAttemptStatus.FAILED,
+            expiresAt: null,
+          },
+          {
+            id: 'two',
+            status: TheoryTestAttemptStatus.EXPIRED,
+            expiresAt: null,
+          },
+        ],
+        now,
+      ),
+    ).toMatchObject({
+      attemptsUsed: 2,
+      nextAttemptAvailable: false,
+      unavailableReason: NextAttemptBlockReason.ATTEMPTS_EXHAUSTED,
+    });
   });
 });
