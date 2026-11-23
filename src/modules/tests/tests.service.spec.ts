@@ -126,6 +126,7 @@ describe('TestsService', () => {
       delete: jest.fn(),
     },
     enrollment: { findFirst: jest.fn() },
+    courseLesson: { findFirst: jest.fn() },
     $transaction: jest.fn(),
     $queryRaw: jest.fn(),
   };
@@ -147,9 +148,16 @@ describe('TestsService', () => {
     });
     prisma.theoryTest.findMany.mockResolvedValue([]);
     prisma.theoryTest.findFirst.mockImplementation(
-      (args: { where?: { name?: unknown } }) =>
-        Promise.resolve(args.where?.name ? nameDuplicate : currentTest),
+      (args: { where?: { name?: unknown; courseLessonId?: unknown } }) =>
+        Promise.resolve(
+          args.where?.courseLessonId
+            ? null
+            : args.where?.name
+              ? nameDuplicate
+              : currentTest,
+        ),
     );
+    prisma.courseLesson.findFirst.mockResolvedValue(null);
     prisma.theoryTest.create.mockImplementation(
       ({ data }: { data: typeof testRow }) =>
         Promise.resolve({ ...testRow, ...data, id: 'test-1' }),
@@ -232,6 +240,35 @@ describe('TestsService', () => {
           name: 'ПДР, категорія B',
           format: TheoryTestFormat.SINGLE_CHOICE,
           passingScore: 90,
+          publicationStatus: TheoryTestPublicationStatus.DRAFT,
+        }),
+      }),
+    );
+  });
+
+  it('creates a lesson test with exactly 3 attempts', async () => {
+    prisma.courseLesson.findFirst.mockResolvedValue({ id: 'lesson-1' });
+
+    const created = await service.createForLesson(
+      admin as never,
+      'course-1',
+      'chapter-1',
+      'lesson-1',
+      {
+        name: 'Тест знаків',
+        format: TheoryTestFormat.SINGLE_CHOICE,
+        passingScore: 80,
+      },
+    );
+
+    expect(created.courseLessonId).toBe('lesson-1');
+    expect(created.maxAttempts).toBe(3);
+    expect(prisma.theoryTest.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          courseId: 'course-1',
+          courseLessonId: 'lesson-1',
+          maxAttempts: 3,
           publicationStatus: TheoryTestPublicationStatus.DRAFT,
         }),
       }),

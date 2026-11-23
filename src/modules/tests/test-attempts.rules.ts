@@ -156,6 +156,7 @@ export const NextAttemptBlockReason = {
   ALREADY_PASSED: 'ALREADY_PASSED',
   ATTEMPTS_EXHAUSTED: 'ATTEMPTS_EXHAUSTED',
   TEST_UNAVAILABLE: 'TEST_UNAVAILABLE',
+  LESSON_NOT_COMPLETED: 'LESSON_NOT_COMPLETED',
 } as const;
 
 export type NextAttemptBlockReason =

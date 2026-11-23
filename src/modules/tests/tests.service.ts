@@ -23,6 +23,12 @@ import {
   shiftForInsert,
   shiftForMove,
 } from '../courses/course-structure.order';
+import { LESSON_NOT_FOUND_MESSAGE } from '../courses/course-structure.service';
+import {
+  LESSON_LOCKED_MESSAGE,
+  LESSON_TEST_ATTEMPTS,
+  loadLessonGate,
+} from '../courses/lesson-gate';
 import {
   COURSE_NOT_FOUND_MESSAGE,
   COURSE_NOT_PUBLISHED_MESSAGE,
@@ -30,6 +36,7 @@ import {
 import {
   AnswerOptionDto,
   CreateAnswerOptionDto,
+  CreateLessonTestDto,
   CreateQuestionDto,
   CreateTestDto,
   QuestionDto,
@@ -72,6 +79,10 @@ export const TEST_ARCHIVED_COURSE_MESSAGE =
 export const PUBLISHED_LAST_QUESTION_MESSAGE =
   'Опублікований тест має містити хоча б одне питання.';
 export const TEST_NOT_PUBLISHED_MESSAGE = 'Test is not published';
+export const LESSON_TEST_EXISTS_MESSAGE = 'У цього уроку вже є тест.';
+export const LESSON_TEST_ATTEMPTS_MESSAGE = 'Тест уроку має рівно 3 спроби.';
+export const LESSON_TEST_COURSE_MESSAGE =
+  'Тест уроку лишається на своєму курсі.';
 
 const optionSelect = {
   id: true,
@@ -99,6 +110,7 @@ const questionSelect = {
 const testSelect = {
   id: true,
   courseId: true,
+  courseLessonId: true,
   name: true,
   description: true,
   format: true,
@@ -186,6 +198,7 @@ function toTest(test: TestRow): TestDto {
   return {
     id: test.id,
     courseId: test.courseId,
+    courseLessonId: test.courseLessonId ?? null,
     name: test.name,
     description: test.description,
     format: test.format,
@@ -330,6 +343,64 @@ export class TestsService {
     return toTest(created);
   }
 
+  /**
+   * Тест одного уроку. maxAttempts завжди 3. Один тест на урок.
+   * Публікується тим самим PATCH /tests/{testId}/publication.
+   */
+  async createForLesson(
+    actor: User,
+    courseId: string,
+    chapterId: string,
+    lessonId: string,
+    payload: CreateLessonTestDto,
+  ): Promise<TestDto> {
+    assertCanManage(actor);
+    await this.requireOrganization(actor.organizationId);
+
+    const created = await this.prisma.$transaction(async (tx) => {
+      await this.requireCourse(tx, actor, courseId);
+      const lesson = await tx.courseLesson.findFirst({
+        where: { id: lessonId, chapterId, courseId },
+        select: { id: true },
+      });
+      if (!lesson) {
+        throw new NotFoundException(LESSON_NOT_FOUND_MESSAGE);
+      }
+      const existing = await tx.theoryTest.findFirst({
+        where: {
+          courseLessonId: lessonId,
+          organizationId: actor.organizationId,
+        },
+        select: { id: true },
+      });
+      if (existing) {
+        throw new ConflictException(LESSON_TEST_EXISTS_MESSAGE);
+      }
+      await this.assertNameAvailable(tx, actor.organizationId, payload.name);
+      return tx.theoryTest.create({
+        data: {
+          organizationId: actor.organizationId,
+          courseId,
+          courseLessonId: lessonId,
+          name: payload.name,
+          description: payload.description ?? null,
+          format: payload.format,
+          passingScore: payload.passingScore,
+          timeLimitMinutes: payload.timeLimitMinutes ?? null,
+          maxAttempts: LESSON_TEST_ATTEMPTS,
+          shuffleQuestions: payload.shuffleQuestions ?? false,
+          publicationStatus: TheoryTestPublicationStatus.DRAFT,
+        },
+        select: testSelect,
+      });
+    });
+
+    this.logger.log(
+      `Lesson test created testId=${created.id} lessonId=${lessonId} courseId=${courseId} organizationId=${actor.organizationId} actorId=${actor.id}`,
+    );
+    return toTest(created);
+  }
+
   async update(
     actor: User,
     testId: string,
@@ -364,6 +435,9 @@ export class TestsService {
         payload.courseId !== undefined &&
         payload.courseId !== existing.courseId
       ) {
+        if (existing.courseLessonId) {
+          throw new ConflictException(LESSON_TEST_COURSE_MESSAGE);
+        }
         const course = await this.requireCourse(tx, actor, payload.courseId);
         if (
           existing.publicationStatus ===
@@ -394,6 +468,12 @@ export class TestsService {
         payload.maxAttempts !== undefined &&
         payload.maxAttempts !== existing.maxAttempts
       ) {
+        if (
+          existing.courseLessonId &&
+          payload.maxAttempts !== LESSON_TEST_ATTEMPTS
+        ) {
+          throw fieldError('maxAttempts', LESSON_TEST_ATTEMPTS_MESSAGE);
+        }
         data.maxAttempts = payload.maxAttempts;
       }
       if (
@@ -499,6 +579,20 @@ export class TestsService {
     await this.requireAssignedPublishedCourse(actor, test.courseId);
     if (test.publicationStatus !== TheoryTestPublicationStatus.PUBLISHED) {
       throw new ForbiddenException(TEST_NOT_PUBLISHED_MESSAGE);
+    }
+    if (test.courseLessonId) {
+      const gate = await loadLessonGate(
+        this.prisma,
+        actor.organizationId,
+        test.courseId,
+        actor.id,
+      );
+      if (
+        !gate.ordered.some((lesson) => lesson.id === test.courseLessonId) ||
+        gate.locked.has(test.courseLessonId)
+      ) {
+        throw new ForbiddenException(LESSON_LOCKED_MESSAGE);
+      }
     }
     return toStudentDetail(test);
   }

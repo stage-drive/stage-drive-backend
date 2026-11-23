@@ -3,6 +3,7 @@ import 'dotenv/config';
 import { PrismaPg } from '@prisma/adapter-pg';
 import {
   CarStatus,
+  CourseLessonPublicationStatus,
   CourseMaterialType,
   CoursePublicationStatus,
   CourseStatus,
@@ -344,8 +345,13 @@ async function upsertLesson(input: {
       title: input.title,
       description,
       position: input.position,
+      publicationStatus: CourseLessonPublicationStatus.PUBLISHED,
     },
-    create: { ...input, description },
+    create: {
+      ...input,
+      description,
+      publicationStatus: CourseLessonPublicationStatus.PUBLISHED,
+    },
   });
 }
 

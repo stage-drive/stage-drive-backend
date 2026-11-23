@@ -40,6 +40,11 @@ describe('CourseStructureController', () => {
     'updateLesson',
     'createMaterial',
     'updateMaterial',
+    'changeLessonPublication',
+    'archiveLesson',
+    'deleteChapter',
+    'deleteLesson',
+    'uploadMaterial',
   ] as const)('restricts %s to ADMIN', (method) => {
     const roles = new Reflector().get<UserRole[]>(
       ROLES_KEY,

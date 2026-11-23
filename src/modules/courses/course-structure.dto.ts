@@ -1,5 +1,6 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import {
+  CourseLessonPublicationStatus,
   CourseMaterialType,
   CoursePublicationStatus,
   CourseStatus,
@@ -8,6 +9,7 @@ import { Transform } from 'class-transformer';
 import {
   IsDefined,
   IsEnum,
+  IsIn,
   IsInt,
   IsNotEmpty,
   IsOptional,
@@ -30,7 +32,12 @@ export const STRUCTURE_TITLE_LENGTH_MESSAGE = `Назва має містити 
 export const MATERIAL_BODY_LENGTH_MESSAGE = `Текст має містити не більше ${MATERIAL_BODY_MAX_LENGTH} символів.`;
 export const POSITION_INTEGER_MESSAGE = 'position має бути цілим числом.';
 export const POSITION_MIN_MESSAGE = 'position має бути не менше 1.';
-export const MATERIAL_TYPE_MESSAGE = 'type має бути TEXT, LINK або VIDEO.';
+export const MATERIAL_TYPE_MESSAGE =
+  'type має бути TEXT, LINK, VIDEO, PDF, IMAGE або FILE.';
+export const MATERIAL_FILE_MESSAGE =
+  'Для PDF, зображення або файлу вкажіть адресу http(s) або шлях /uploads/materials/.';
+export const LESSON_PUBLICATION_VALUE_MESSAGE =
+  'publicationStatus має бути DRAFT або PUBLISHED.';
 
 function trimString({ value }: { value: unknown }): unknown {
   return typeof value === 'string' ? value.trim() : value;
@@ -115,6 +122,14 @@ export class LessonDto {
   @ApiProperty({ example: 1, minimum: 1 })
   position: number;
 
+  @ApiProperty({
+    enum: CourseLessonPublicationStatus,
+    example: CourseLessonPublicationStatus.DRAFT,
+    description:
+      'Новий урок завжди DRAFT. PUBLISHED і ARCHIVED ставляться окремими ендпоінтами.',
+  })
+  publicationStatus: CourseLessonPublicationStatus;
+
   @ApiProperty()
   createdAt: Date;
 
@@ -167,6 +182,20 @@ export class LessonStructureDto {
 
   @ApiProperty({ example: 1, minimum: 1 })
   position: number;
+
+  @ApiProperty({
+    enum: CourseLessonPublicationStatus,
+    example: CourseLessonPublicationStatus.PUBLISHED,
+  })
+  publicationStatus: CourseLessonPublicationStatus;
+
+  @ApiPropertyOptional({
+    example: false,
+    description:
+      'Лише у відповіді студента. true — попередній урок ще не пройдено або його тест не складено. ' +
+      'Тоді description порожній, а materials — [].',
+  })
+  locked?: boolean;
 
   @ApiProperty()
   createdAt: Date;
@@ -440,7 +469,8 @@ export class CreateMaterialDto {
     enum: CourseMaterialType,
     default: CourseMaterialType.TEXT,
     description:
-      'TEXT — текст у body. LINK і VIDEO — http(s) адреса в body. За замовчуванням TEXT.',
+      'TEXT — текст у body. LINK і VIDEO — http(s) адреса. ' +
+      'PDF, IMAGE і FILE — http(s) адреса або шлях /uploads/materials/. За замовчуванням TEXT.',
   })
   @IsOptional()
   @IsEnum(CourseMaterialType, { message: MATERIAL_TYPE_MESSAGE })
@@ -452,7 +482,7 @@ export class CreateMaterialDto {
     maxLength: MATERIAL_BODY_MAX_LENGTH,
     example: 'Попереджувальні, пріоритету, заборонні, наказові, інформаційні.',
     description:
-      'Для LINK і VIDEO поле обов’язкове і має бути адресою http або https. Порожній рядок зберігається як null.',
+      'Для LINK і VIDEO — адреса http або https. Для PDF, IMAGE і FILE — така адреса або шлях /uploads/materials/. Порожній рядок зберігається як null.',
   })
   @Transform(emptyToNull)
   @IsOptional()
@@ -519,6 +549,57 @@ export class UpdateMaterialDto {
     example: 2,
     minimum: 1,
     description: 'Нова позиція серед матеріалів цього уроку.',
+  })
+  @Transform(integerValue)
+  @ValidateIf((_, value) => value !== undefined)
+  @Min(1, { message: POSITION_MIN_MESSAGE })
+  @IsInt({ message: POSITION_INTEGER_MESSAGE })
+  position?: number;
+}
+
+export class UpdateLessonPublicationDto {
+  @ApiProperty({
+    enum: [
+      CourseLessonPublicationStatus.DRAFT,
+      CourseLessonPublicationStatus.PUBLISHED,
+    ],
+    example: CourseLessonPublicationStatus.PUBLISHED,
+    description:
+      'PUBLISHED відкриває урок студентам курсу. DRAFT знову ховає його. ARCHIVED цим запитом не ставиться.',
+  })
+  @IsIn(
+    [
+      CourseLessonPublicationStatus.DRAFT,
+      CourseLessonPublicationStatus.PUBLISHED,
+    ],
+    { message: LESSON_PUBLICATION_VALUE_MESSAGE },
+  )
+  @IsDefined({ message: REQUIRED_FIELD_MESSAGE })
+  publicationStatus:
+    | typeof CourseLessonPublicationStatus.DRAFT
+    | typeof CourseLessonPublicationStatus.PUBLISHED;
+}
+
+export class UploadMaterialDto {
+  @ApiProperty({
+    example: 'Схема перехрестя',
+    maxLength: STRUCTURE_TITLE_MAX_LENGTH,
+  })
+  @Transform(trimString)
+  @IsPlainText()
+  @MaxLength(STRUCTURE_TITLE_MAX_LENGTH, {
+    message: STRUCTURE_TITLE_LENGTH_MESSAGE,
+  })
+  @IsNotEmpty({ message: REQUIRED_FIELD_MESSAGE })
+  @IsString({ message: 'title має бути рядком.' })
+  @IsDefined({ message: REQUIRED_FIELD_MESSAGE })
+  title: string;
+
+  @ApiPropertyOptional({
+    example: 1,
+    minimum: 1,
+    description:
+      'Позиція в уроці, з 1. Якщо не передати — матеріал стає останнім.',
   })
   @Transform(integerValue)
   @ValidateIf((_, value) => value !== undefined)

@@ -64,6 +64,35 @@ export class CourseLessonProgressDto {
   completed: boolean;
 
   @ApiProperty({
+    example: false,
+    description:
+      'true, коли попередній опублікований урок ще не пройдено або його тест не складено. Контент такого уроку не віддається.',
+  })
+  locked: boolean;
+
+  @ApiProperty({
+    example: false,
+    description:
+      'true, якщо опублікований тест цього уроку складено. false, якщо тесту немає або він ще не складений.',
+  })
+  passed: boolean;
+
+  @ApiProperty({
+    example: false,
+    description: 'true, якщо в уроку є опублікований тест.',
+  })
+  hasTest: boolean;
+
+  @ApiProperty({
+    type: String,
+    nullable: true,
+    example: 'Пройдіть урок ще раз.',
+    description:
+      'Після провалу тесту уроку, доки його не складено. null — повторювати урок не потрібно.',
+  })
+  retryMessage: string | null;
+
+  @ApiProperty({
     type: String,
     format: 'date-time',
     nullable: true,

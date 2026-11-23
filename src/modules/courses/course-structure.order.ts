@@ -62,6 +62,24 @@ export async function shiftForInsert(
  * Переносить елемент, тимчасово паркуючи його на від'ємній позиції.
  * Від'ємне значення живе лише до кінця транзакції: фінальний запис ставить ціль.
  */
+/**
+ * Після видалення зсуває сусідів на 1…n без дірок.
+ * Спочатку паркує рядки на від'ємних позиціях, щоб унікальний (parent, position)
+ * не зіткнувся, коли елемент іде вниз.
+ */
+export async function compactPositions(
+  rows: PositionRow[],
+  update: PositionUpdate,
+): Promise<void> {
+  const ordered = [...rows].sort((left, right) => left.position - right.position);
+  for (const row of ordered) {
+    await update(row.id, -row.position);
+  }
+  for (let index = 0; index < ordered.length; index += 1) {
+    await update(ordered[index].id, index + 1);
+  }
+}
+
 export async function shiftForMove(
   rows: PositionRow[],
   id: string,

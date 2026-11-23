@@ -110,6 +110,8 @@ describe('CourseProgressService', () => {
     courseProgress: { findUnique: jest.fn(), upsert: jest.fn() },
     student: { findUnique: jest.fn() },
     lesson: { findMany: jest.fn() },
+    theoryTest: { findMany: jest.fn() },
+    theoryTestAttempt: { findMany: jest.fn() },
     theoryTestResult: { findUnique: jest.fn() },
     $queryRaw: jest.fn(),
     $transaction: jest.fn(),
@@ -159,6 +161,8 @@ describe('CourseProgressService', () => {
     prisma.courseProgress.findUnique.mockResolvedValue(null);
     prisma.student.findUnique.mockResolvedValue(null);
     prisma.lesson.findMany.mockResolvedValue([]);
+    prisma.theoryTest.findMany.mockResolvedValue([]);
+    prisma.theoryTestAttempt.findMany.mockResolvedValue([]);
     prisma.theoryTestResult.findUnique.mockResolvedValue(null);
     prisma.courseProgress.upsert.mockResolvedValue({ updatedAt });
     prisma.$queryRaw.mockResolvedValue([{ id: courseId }]);
@@ -291,6 +295,10 @@ describe('CourseProgressService', () => {
               chapterPosition: 1,
               completed: false,
               completedAt: null,
+              locked: false,
+              passed: false,
+              hasTest: false,
+              retryMessage: null,
               sessions: [],
             },
             {
@@ -301,6 +309,10 @@ describe('CourseProgressService', () => {
               chapterPosition: 1,
               completed: false,
               completedAt: null,
+              locked: true,
+              passed: false,
+              hasTest: false,
+              retryMessage: null,
               sessions: [],
             },
             {
@@ -311,6 +323,10 @@ describe('CourseProgressService', () => {
               chapterPosition: 2,
               completed: false,
               completedAt: null,
+              locked: true,
+              passed: false,
+              hasTest: false,
+              retryMessage: null,
               sessions: [],
             },
           ],
@@ -496,22 +512,22 @@ describe('CourseProgressService', () => {
     it('stores the completion and the recalculated progress', async () => {
       allowStudentCourse();
       givenLessons();
-      prisma.courseLesson.findFirst.mockResolvedValue({ id: signs.id });
+      prisma.courseLesson.findFirst.mockResolvedValue({ id: control.id });
       prisma.courseLessonCompletion.findMany.mockResolvedValue([
-        { lessonId: signs.id, completedAt },
+        { lessonId: control.id, completedAt },
       ]);
 
       const result = await service.completeLesson(
         student as never,
         courseId,
-        signs.id,
+        control.id,
       );
 
       expect(prisma.courseLessonCompletion.create).toHaveBeenCalledWith({
         data: {
           organizationId: 'org-1',
           courseId,
-          lessonId: signs.id,
+          lessonId: control.id,
           studentId: 'student-1',
         },
       });
@@ -522,7 +538,7 @@ describe('CourseProgressService', () => {
         updatedAt,
       });
       expect(log).toHaveBeenCalledWith(
-        'Course progress saved courseId=course-1 lessonId=lesson-signs studentId=student-1 completedLessonCount=1 totalLessonCount=3 percent=33 organizationId=org-1 actorId=student-1',
+        'Course progress saved courseId=course-1 lessonId=lesson-control studentId=student-1 completedLessonCount=1 totalLessonCount=3 percent=33 organizationId=org-1 actorId=student-1',
       );
       const query = executedQuery();
       expect(query.text).toContain('FOR UPDATE');
@@ -533,13 +549,13 @@ describe('CourseProgressService', () => {
     it('does not create a second row when the lesson was already completed', async () => {
       allowStudentCourse();
       givenLessons();
-      prisma.courseLesson.findFirst.mockResolvedValue({ id: signs.id });
+      prisma.courseLesson.findFirst.mockResolvedValue({ id: control.id });
       prisma.courseLessonCompletion.findUnique.mockResolvedValue({
         courseId,
         organizationId: 'org-1',
       });
       prisma.courseLessonCompletion.findMany.mockResolvedValue([
-        { lessonId: signs.id, completedAt },
+        { lessonId: control.id, completedAt },
       ]);
       prisma.courseProgress.findUnique.mockResolvedValue({
         organizationId: 'org-1',
@@ -552,14 +568,14 @@ describe('CourseProgressService', () => {
       const result = await service.completeLesson(
         student as never,
         courseId,
-        signs.id,
+        control.id,
       );
 
       expect(prisma.courseLessonCompletion.create).not.toHaveBeenCalled();
       expect(prisma.courseProgress.upsert).not.toHaveBeenCalled();
       expect(result.completedLessonCount).toBe(1);
       expect(
-        result.lessons.find((lesson) => lesson.lessonId === signs.id)
+        result.lessons.find((lesson) => lesson.lessonId === control.id)
           ?.completedAt,
       ).toEqual(completedAt);
     });
@@ -630,7 +646,7 @@ describe('CourseProgressService', () => {
     it('treats a concurrent unique conflict as the lesson already saved', async () => {
       allowStudentCourse();
       givenLessons();
-      prisma.courseLesson.findFirst.mockResolvedValue({ id: signs.id });
+      prisma.courseLesson.findFirst.mockResolvedValue({ id: control.id });
       prisma.courseLessonCompletion.create.mockRejectedValue(
         new Prisma.PrismaClientKnownRequestError('Unique constraint failed', {
           code: 'P2002',
@@ -638,11 +654,11 @@ describe('CourseProgressService', () => {
         }),
       );
       prisma.courseLessonCompletion.findMany.mockResolvedValue([
-        { lessonId: signs.id, completedAt },
+        { lessonId: control.id, completedAt },
       ]);
 
       await expect(
-        service.completeLesson(student as never, courseId, signs.id),
+        service.completeLesson(student as never, courseId, control.id),
       ).resolves.toMatchObject({ completedLessonCount: 1, percent: 33 });
     });
 

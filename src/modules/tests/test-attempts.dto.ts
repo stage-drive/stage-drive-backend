@@ -125,6 +125,13 @@ export class AttemptDetailDto {
 
   @ApiProperty({ type: [AttemptQuestionDto] })
   questions: AttemptQuestionDto[];
+
+  @ApiPropertyOptional({
+    example: 'Пройдіть урок ще раз.',
+    description:
+      'Є після провалу тесту уроку і коли спроби цього тесту вичерпано. Студент має пройти урок знову.',
+  })
+  message?: string;
 }
 
 export class AttemptConflictDto {
@@ -140,7 +147,7 @@ export class AttemptConflictDto {
     enum: NextAttemptBlockReason,
     example: NextAttemptBlockReason.IN_PROGRESS,
     description:
-      'IN_PROGRESS — треба продовжити відкриту спробу. ALREADY_PASSED — тест складено. ATTEMPTS_EXHAUSTED — ліміт спроб вичерпано.',
+      'IN_PROGRESS — треба продовжити відкриту спробу. ALREADY_PASSED — тест складено. ATTEMPTS_EXHAUSTED — ліміт спроб вичерпано. LESSON_NOT_COMPLETED — урок тесту ще не пройдено, повідомлення «Пройдіть урок ще раз.».',
   })
   reason: string;
 

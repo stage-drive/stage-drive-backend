@@ -1,11 +1,14 @@
+import { readFile, unlink } from 'fs/promises';
 import {
   BadRequestException,
+  ConflictException,
   ForbiddenException,
   Injectable,
   Logger,
   NotFoundException,
 } from '@nestjs/common';
 import {
+  CourseLessonPublicationStatus,
   CourseMaterialType,
   CoursePublicationStatus,
   CourseStatus,
@@ -28,15 +31,25 @@ import {
   LessonStructureDto,
   MATERIAL_BODY_LENGTH_MESSAGE,
   MATERIAL_BODY_MAX_LENGTH,
+  MATERIAL_FILE_MESSAGE,
   MATERIAL_URL_MAX_LENGTH,
   MaterialDto,
   UpdateChapterDto,
   UpdateLessonDto,
+  UpdateLessonPublicationDto,
   UpdateMaterialDto,
+  UploadMaterialDto,
 } from './course-structure.dto';
+import { publicUploadUrl } from '../../common/files/image-upload';
+import {
+  MATERIAL_UPLOAD_SUBDIR,
+  assertMaterialFile,
+} from '../../common/files/material-upload';
+import { loadLessonGate, type LessonGate } from './lesson-gate';
 import {
   assertInsertPosition,
   assertMovePosition,
+  compactPositions,
   shiftForInsert,
   shiftForMove,
 } from './course-structure.order';
@@ -58,6 +71,8 @@ export const NO_MATERIAL_FIELDS_MESSAGE =
 export const MATERIAL_URL_REQUIRED_MESSAGE =
   'Для посилання або відео вкажіть URL.';
 export const MATERIAL_URL_MESSAGE = 'body має бути адресою http або https.';
+export const LESSON_ARCHIVED_PUBLICATION_MESSAGE =
+  'Архівований урок не можна опублікувати.';
 
 const PLAIN_TEXT = /^[^<>]*$/u;
 
@@ -78,6 +93,7 @@ const lessonSelect = {
   title: true,
   description: true,
   position: true,
+  publicationStatus: true,
   createdAt: true,
   updatedAt: true,
 } satisfies Prisma.CourseLessonSelect;
@@ -148,6 +164,23 @@ function fieldError(field: string, message: string): BadRequestException {
   });
 }
 
+function isHttpUrl(body: string): boolean {
+  return (
+    body.length <= MATERIAL_URL_MAX_LENGTH &&
+    isURL(body, { protocols: ['http', 'https'], require_protocol: true })
+  );
+}
+
+function isStoredMaterialPath(body: string): boolean {
+  const prefix = `/uploads/${MATERIAL_UPLOAD_SUBDIR}/`;
+  return (
+    body.startsWith(prefix) &&
+    body.length > prefix.length &&
+    !body.includes('..') &&
+    body.length <= MATERIAL_URL_MAX_LENGTH
+  );
+}
+
 function assertMaterialBody(
   type: CourseMaterialType,
   body: string | null,
@@ -161,15 +194,43 @@ function assertMaterialBody(
     }
     return;
   }
+  if (
+    type === CourseMaterialType.PDF ||
+    type === CourseMaterialType.IMAGE ||
+    type === CourseMaterialType.FILE
+  ) {
+    if (body === null || body.length === 0) {
+      throw fieldError('body', MATERIAL_FILE_MESSAGE);
+    }
+    if (!isHttpUrl(body) && !isStoredMaterialPath(body)) {
+      throw fieldError('body', MATERIAL_FILE_MESSAGE);
+    }
+    return;
+  }
   if (body === null || body.length === 0) {
     throw fieldError('body', MATERIAL_URL_REQUIRED_MESSAGE);
   }
-  if (
-    body.length > MATERIAL_URL_MAX_LENGTH ||
-    !isURL(body, { protocols: ['http', 'https'], require_protocol: true })
-  ) {
+  if (!isHttpUrl(body)) {
     throw fieldError('body', MATERIAL_URL_MESSAGE);
   }
+}
+
+function lessonPublication(lesson: {
+  publicationStatus?: CourseLessonPublicationStatus;
+}): CourseLessonPublicationStatus {
+  return lesson.publicationStatus ?? CourseLessonPublicationStatus.PUBLISHED;
+}
+
+function emptyStudentGate(): LessonGate {
+  return {
+    ordered: [],
+    completed: new Set(),
+    passed: new Set(),
+    testsByLesson: new Map(),
+    failedWithoutPass: new Set(),
+    cleared: new Set(),
+    locked: new Set(),
+  };
 }
 
 function byPosition<T extends { position: number }>(items: T[]): T[] {
@@ -196,6 +257,7 @@ function toLesson(lesson: LessonRow): LessonDto {
     title: lesson.title,
     description: lesson.description,
     position: lesson.position,
+    publicationStatus: lessonPublication(lesson),
     createdAt: lesson.createdAt,
     updatedAt: lesson.updatedAt,
   };
@@ -217,23 +279,43 @@ function toMaterial(material: MaterialRow): MaterialDto {
 
 function toLessonStructure(
   lesson: StructureRow['chapters'][number]['lessons'][number],
+  gate: LessonGate | null,
 ): LessonStructureDto {
+  const base = toLesson(lesson);
+  if (!gate) {
+    return {
+      ...base,
+      materials: byPosition(lesson.materials).map(toMaterial),
+    };
+  }
+  const locked = gate.locked.has(lesson.id);
   return {
-    ...toLesson(lesson),
-    materials: byPosition(lesson.materials).map(toMaterial),
+    ...base,
+    description: locked ? null : base.description,
+    locked,
+    materials: locked ? [] : byPosition(lesson.materials).map(toMaterial),
   };
 }
 
 function toChapterStructure(
   chapter: StructureRow['chapters'][number],
+  gate: LessonGate | null,
 ): ChapterStructureDto {
+  const lessons = byPosition(chapter.lessons).filter(
+    (lesson) =>
+      gate === null ||
+      lessonPublication(lesson) === CourseLessonPublicationStatus.PUBLISHED,
+  );
   return {
     ...toChapter(chapter),
-    lessons: byPosition(chapter.lessons).map(toLessonStructure),
+    lessons: lessons.map((lesson) => toLessonStructure(lesson, gate)),
   };
 }
 
-function toStructure(course: StructureRow): CourseStructureDto {
+function toStructure(
+  course: StructureRow,
+  gate: LessonGate | null = null,
+): CourseStructureDto {
   return {
     id: course.id,
     name: course.name,
@@ -242,7 +324,9 @@ function toStructure(course: StructureRow): CourseStructureDto {
     publicationStatus: course.publicationStatus,
     createdAt: course.createdAt,
     updatedAt: course.updatedAt,
-    chapters: byPosition(course.chapters).map(toChapterStructure),
+    chapters: byPosition(course.chapters).map((chapter) =>
+      toChapterStructure(chapter, gate),
+    ),
   };
 }
 
@@ -435,6 +519,7 @@ export class CourseStructureService {
           title: payload.title,
           description: payload.description ?? null,
           position,
+          publicationStatus: CourseLessonPublicationStatus.DRAFT,
         },
         select: lessonSelect,
       });
@@ -628,6 +713,161 @@ export class CourseStructureService {
     return toMaterial(updated);
   }
 
+  async changeLessonPublication(
+    actor: User,
+    courseId: string,
+    chapterId: string,
+    lessonId: string,
+    payload: UpdateLessonPublicationDto,
+  ): Promise<LessonDto> {
+    await this.prepare(actor);
+    let changed = false;
+    const saved = await this.withLockedCourse(actor, courseId, async (tx) => {
+      const existing = await this.requireLesson(
+        tx,
+        courseId,
+        chapterId,
+        lessonId,
+      );
+      if (
+        lessonPublication(existing) === CourseLessonPublicationStatus.ARCHIVED
+      ) {
+        throw new ConflictException(LESSON_ARCHIVED_PUBLICATION_MESSAGE);
+      }
+      if (payload.publicationStatus === lessonPublication(existing)) {
+        return existing;
+      }
+      changed = true;
+      return tx.courseLesson.update({
+        where: { id: existing.id },
+        data: { publicationStatus: payload.publicationStatus },
+        select: lessonSelect,
+      });
+    });
+    if (changed) {
+      this.logger.log(
+        `Lesson publication changed lessonId=${saved.id} publicationStatus=${lessonPublication(saved)} courseId=${courseId} organizationId=${actor.organizationId} actorId=${actor.id}`,
+      );
+    }
+    return toLesson(saved);
+  }
+
+  async archiveLesson(
+    actor: User,
+    courseId: string,
+    chapterId: string,
+    lessonId: string,
+  ): Promise<LessonDto> {
+    await this.prepare(actor);
+    let changed = false;
+    const saved = await this.withLockedCourse(actor, courseId, async (tx) => {
+      const existing = await this.requireLesson(
+        tx,
+        courseId,
+        chapterId,
+        lessonId,
+      );
+      if (
+        lessonPublication(existing) === CourseLessonPublicationStatus.ARCHIVED
+      ) {
+        return existing;
+      }
+      changed = true;
+      return tx.courseLesson.update({
+        where: { id: existing.id },
+        data: { publicationStatus: CourseLessonPublicationStatus.ARCHIVED },
+        select: lessonSelect,
+      });
+    });
+    if (changed) {
+      this.logger.log(
+        `Lesson archived lessonId=${saved.id} courseId=${courseId} organizationId=${actor.organizationId} actorId=${actor.id}`,
+      );
+    }
+    return toLesson(saved);
+  }
+
+  async deleteChapter(
+    actor: User,
+    courseId: string,
+    chapterId: string,
+  ): Promise<void> {
+    await this.prepare(actor);
+    await this.withLockedCourse(actor, courseId, async (tx) => {
+      const chapter = await this.requireChapter(tx, courseId, chapterId);
+      await tx.courseChapter.delete({ where: { id: chapter.id } });
+      const remaining = await tx.courseChapter.findMany({
+        where: { courseId },
+        select: { id: true, position: true },
+        orderBy: { position: 'asc' },
+      });
+      await compactPositions(remaining, this.chapterPosition(tx));
+    });
+    this.logger.log(
+      `Chapter deleted chapterId=${chapterId} courseId=${courseId} organizationId=${actor.organizationId} actorId=${actor.id}`,
+    );
+  }
+
+  async deleteLesson(
+    actor: User,
+    courseId: string,
+    chapterId: string,
+    lessonId: string,
+  ): Promise<void> {
+    await this.prepare(actor);
+    await this.withLockedCourse(actor, courseId, async (tx) => {
+      const lesson = await this.requireLesson(
+        tx,
+        courseId,
+        chapterId,
+        lessonId,
+      );
+      await tx.courseLesson.delete({ where: { id: lesson.id } });
+      const remaining = await tx.courseLesson.findMany({
+        where: { courseId, chapterId },
+        select: { id: true, position: true },
+        orderBy: { position: 'asc' },
+      });
+      await compactPositions(remaining, this.lessonPosition(tx));
+    });
+    this.logger.log(
+      `Lesson deleted lessonId=${lessonId} chapterId=${chapterId} courseId=${courseId} organizationId=${actor.organizationId} actorId=${actor.id}`,
+    );
+  }
+
+  async createUploadedMaterial(
+    actor: User,
+    courseId: string,
+    chapterId: string,
+    lessonId: string,
+    file: Express.Multer.File | undefined,
+    payload: UploadMaterialDto,
+  ): Promise<MaterialDto> {
+    await this.prepare(actor);
+    if (!file) {
+      throw fieldError('file', 'Додайте файл матеріалу.');
+    }
+    let type: CourseMaterialType;
+    try {
+      const header = await readFile(file.path);
+      type = assertMaterialFile(file.mimetype, header.subarray(0, 12));
+    } catch (error) {
+      await unlink(file.path).catch(() => undefined);
+      throw error;
+    }
+    try {
+      return await this.createMaterial(actor, courseId, chapterId, lessonId, {
+        title: payload.title,
+        type,
+        body: publicUploadUrl(MATERIAL_UPLOAD_SUBDIR, file.filename),
+        position: payload.position,
+      });
+    } catch (error) {
+      await unlink(file.path).catch(() => undefined);
+      throw error;
+    }
+  }
+
   private async loadAssignedPublishedCourse(
     actor: User,
     courseId: string,
@@ -668,7 +908,22 @@ export class CourseStructureService {
     if (!course) {
       throw new NotFoundException(COURSE_NOT_FOUND_MESSAGE);
     }
-    return toStructure(course);
+    const hasPublishedLesson = course.chapters.some((chapter) =>
+      chapter.lessons.some(
+        (lesson) =>
+          lessonPublication(lesson) === CourseLessonPublicationStatus.PUBLISHED,
+      ),
+    );
+    if (!hasPublishedLesson) {
+      return toStructure(course, emptyStudentGate());
+    }
+    const gate = await loadLessonGate(
+      this.prisma,
+      actor.organizationId,
+      course.id,
+      actor.id,
+    );
+    return toStructure(course, gate);
   }
 
   private async prepare(actor: User): Promise<void> {

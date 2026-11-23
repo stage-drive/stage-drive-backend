@@ -1,6 +1,7 @@
 import {
   Body,
   Controller,
+  Delete,
   Get,
   HttpCode,
   HttpStatus,
@@ -8,13 +9,19 @@ import {
   ParseUUIDPipe,
   Patch,
   Post,
+  UploadedFile,
   UseGuards,
+  UseInterceptors,
 } from '@nestjs/common';
+import { FileInterceptor } from '@nestjs/platform-express';
 import {
   ApiBadRequestResponse,
   ApiBearerAuth,
+  ApiConflictResponse,
+  ApiConsumes,
   ApiCreatedResponse,
   ApiForbiddenResponse,
+  ApiNoContentResponse,
   ApiNotFoundResponse,
   ApiOkResponse,
   ApiOperation,
@@ -23,6 +30,13 @@ import {
   ApiUnauthorizedResponse,
 } from '@nestjs/swagger';
 import { User } from '@prisma/client';
+import { ImageUploadInterceptor } from '../../common/files/image-upload.interceptor';
+import {
+  MATERIAL_MAX_SIZE,
+  MATERIAL_TOO_LARGE_MESSAGE,
+  materialFileFilter,
+  materialStorage,
+} from '../../common/files/material-upload';
 import { AuthGuard } from '../auth/auth.guard';
 import { CurrentUser } from '../auth/current-user.decorator';
 import { Roles } from '../auth/roles.decorator';
@@ -37,7 +51,9 @@ import {
   MaterialDto,
   UpdateChapterDto,
   UpdateLessonDto,
+  UpdateLessonPublicationDto,
   UpdateMaterialDto,
+  UploadMaterialDto,
 } from './course-structure.dto';
 import { CourseStructureService } from './course-structure.service';
 import { COURSE_MANAGE_ROLES, COURSE_STUDENT_ROLES } from './courses.service';
@@ -352,6 +368,182 @@ export class CourseStructureController {
       chapterId,
       lessonId,
       materialId,
+      body,
+    );
+  }
+
+  @Patch(':courseId/chapters/:chapterId/lessons/:lessonId/publication')
+  @Roles(...COURSE_MANAGE_ROLES)
+  @ApiOperation({
+    summary: 'Опублікувати або зняти з публікації урок теоретичного курсу',
+    description:
+      'ADMIN змінює publicationStatus уроку: DRAFT або PUBLISHED. ' +
+      'Студент бачить матеріали лише опублікованого уроку опублікованого курсу. ' +
+      'ARCHIVED-урок цим запитом не змінюється: спершу його не архівують повторно, опублікувати його не можна. ' +
+      'Повтор того самого статусу повертає урок без запису.',
+  })
+  @ApiParam(courseIdParam)
+  @ApiParam(chapterIdParam)
+  @ApiParam(lessonIdParam)
+  @ApiOkResponse({ type: LessonDto })
+  @ApiBadRequestResponse({
+    description:
+      'publicationStatus відсутній або не DRAFT і не PUBLISHED. Тіло містить errors: [{ field, message }].',
+  })
+  @ApiForbiddenResponse({
+    description: 'Змінювати публікацію уроку може лише ADMIN.',
+  })
+  @ApiNotFoundResponse({
+    description: 'Курс, розділ або урок не знайдено в цій автошколі.',
+  })
+  @ApiConflictResponse({
+    description: 'Архівований урок не можна опублікувати.',
+  })
+  changeLessonPublication(
+    @CurrentUser() user: User,
+    @Param('courseId', uuidPipe) courseId: string,
+    @Param('chapterId', uuidPipe) chapterId: string,
+    @Param('lessonId', uuidPipe) lessonId: string,
+    @Body() body: UpdateLessonPublicationDto,
+  ) {
+    return this.structure.changeLessonPublication(
+      user,
+      courseId,
+      chapterId,
+      lessonId,
+      body,
+    );
+  }
+
+  @Post(':courseId/chapters/:chapterId/lessons/:lessonId/archive')
+  @Roles(...COURSE_MANAGE_ROLES)
+  @ApiOperation({
+    summary: 'Архівувати урок теоретичного курсу',
+    description:
+      'ADMIN ставить уроку publicationStatus ARCHIVED. Рядок лишається. ' +
+      'Студент перестає бачити цей урок, і він більше не тримає наступні уроки закритими. ' +
+      'Повтор для вже архівованого уроку повертає його без запису. ' +
+      'Повернути ARCHIVED у PUBLISHED не можна.',
+  })
+  @ApiParam(courseIdParam)
+  @ApiParam(chapterIdParam)
+  @ApiParam(lessonIdParam)
+  @ApiOkResponse({ type: LessonDto })
+  @ApiForbiddenResponse({ description: 'Архівувати уроки може лише ADMIN.' })
+  @ApiNotFoundResponse({
+    description: 'Курс, розділ або урок не знайдено в цій автошколі.',
+  })
+  archiveLesson(
+    @CurrentUser() user: User,
+    @Param('courseId', uuidPipe) courseId: string,
+    @Param('chapterId', uuidPipe) chapterId: string,
+    @Param('lessonId', uuidPipe) lessonId: string,
+  ) {
+    return this.structure.archiveLesson(user, courseId, chapterId, lessonId);
+  }
+
+  @Delete(':courseId/chapters/:chapterId')
+  @Roles(...COURSE_MANAGE_ROLES)
+  @HttpCode(HttpStatus.NO_CONTENT)
+  @ApiOperation({
+    summary: 'Видалити розділ теоретичного курсу',
+    description:
+      'ADMIN видаляє розділ разом з його уроками, матеріалами і проходженнями. ' +
+      'Розклад очних занять лишається: прив’язка до уроку курсу стає порожньою. ' +
+      'Позиції сусідніх розділів стискаються без дірок.',
+  })
+  @ApiParam(courseIdParam)
+  @ApiParam(chapterIdParam)
+  @ApiNoContentResponse({ description: 'Розділ видалено.' })
+  @ApiForbiddenResponse({ description: 'Видаляти розділи може лише ADMIN.' })
+  @ApiNotFoundResponse({
+    description: 'Курс або розділ не знайдено в цій автошколі.',
+  })
+  deleteChapter(
+    @CurrentUser() user: User,
+    @Param('courseId', uuidPipe) courseId: string,
+    @Param('chapterId', uuidPipe) chapterId: string,
+  ) {
+    return this.structure.deleteChapter(user, courseId, chapterId);
+  }
+
+  @Delete(':courseId/chapters/:chapterId/lessons/:lessonId')
+  @Roles(...COURSE_MANAGE_ROLES)
+  @HttpCode(HttpStatus.NO_CONTENT)
+  @ApiOperation({
+    summary: 'Видалити урок теоретичного курсу',
+    description:
+      'ADMIN видаляє урок разом з матеріалами, проходженнями і тестом цього уроку. ' +
+      'Очне заняття групи лишається без прив’язки до контенту. ' +
+      'Позиції сусідніх уроків розділу стискаються без дірок.',
+  })
+  @ApiParam(courseIdParam)
+  @ApiParam(chapterIdParam)
+  @ApiParam(lessonIdParam)
+  @ApiNoContentResponse({ description: 'Урок видалено.' })
+  @ApiForbiddenResponse({ description: 'Видаляти уроки може лише ADMIN.' })
+  @ApiNotFoundResponse({
+    description: 'Курс, розділ або урок не знайдено в цій автошколі.',
+  })
+  deleteLesson(
+    @CurrentUser() user: User,
+    @Param('courseId', uuidPipe) courseId: string,
+    @Param('chapterId', uuidPipe) chapterId: string,
+    @Param('lessonId', uuidPipe) lessonId: string,
+  ) {
+    return this.structure.deleteLesson(user, courseId, chapterId, lessonId);
+  }
+
+  @Post(':courseId/chapters/:chapterId/lessons/:lessonId/materials/upload')
+  @Roles(...COURSE_MANAGE_ROLES)
+  @HttpCode(HttpStatus.CREATED)
+  @ApiConsumes('multipart/form-data')
+  @ApiOperation({
+    summary: 'Завантажити файл матеріалу уроку',
+    description:
+      'ADMIN завантажує PDF, зображення (JPEG, PNG, WEBP, GIF) або файл TXT, DOC, DOCX. ' +
+      'Поле файлу — file, до 10 МБ. Тип матеріалу визначає сервер за вмістом. ' +
+      'Файл віддається як /uploads/materials/.... title обов’язковий, position — як у звичайного матеріалу.',
+  })
+  @ApiParam(courseIdParam)
+  @ApiParam(chapterIdParam)
+  @ApiParam(lessonIdParam)
+  @ApiCreatedResponse({ type: MaterialDto })
+  @ApiBadRequestResponse({
+    description:
+      'Немає файлу, тип не дозволений або вміст не збігається з форматом. Тіло містить errors: [{ field, message }].',
+  })
+  @ApiForbiddenResponse({
+    description: 'Завантажувати матеріали може лише ADMIN.',
+  })
+  @ApiNotFoundResponse({
+    description: 'Курс, розділ або урок не знайдено в цій автошколі.',
+  })
+  @UseInterceptors(
+    new ImageUploadInterceptor('file', MATERIAL_TOO_LARGE_MESSAGE),
+    FileInterceptor('file', {
+      storage: materialStorage((req) => {
+        const lessonId = req.params.lessonId;
+        return Array.isArray(lessonId) ? lessonId[0] : lessonId;
+      }),
+      limits: { fileSize: MATERIAL_MAX_SIZE },
+      fileFilter: materialFileFilter,
+    }),
+  )
+  uploadMaterial(
+    @CurrentUser() user: User,
+    @Param('courseId', uuidPipe) courseId: string,
+    @Param('chapterId', uuidPipe) chapterId: string,
+    @Param('lessonId', uuidPipe) lessonId: string,
+    @UploadedFile() file: Express.Multer.File,
+    @Body() body: UploadMaterialDto,
+  ) {
+    return this.structure.createUploadedMaterial(
+      user,
+      courseId,
+      chapterId,
+      lessonId,
+      file,
       body,
     );
   }

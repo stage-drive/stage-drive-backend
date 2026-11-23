@@ -29,7 +29,10 @@ function isMissingFile(error: unknown): boolean {
 export class ImageUploadInterceptor implements NestInterceptor {
   private readonly logger = new Logger(ImageUploadInterceptor.name);
 
-  constructor(private readonly field: string) {}
+  constructor(
+    private readonly field: string,
+    private readonly tooLargeMessage = IMAGE_TOO_LARGE_MESSAGE,
+  ) {}
 
   intercept(context: ExecutionContext, next: CallHandler): Observable<unknown> {
     const request = context.switchToHttp().getRequest<Request>();
@@ -48,7 +51,7 @@ export class ImageUploadInterceptor implements NestInterceptor {
     if (error instanceof PayloadTooLargeException) {
       return new PayloadTooLargeException({
         statusCode: 413,
-        errors: [{ field: this.field, message: IMAGE_TOO_LARGE_MESSAGE }],
+        errors: [{ field: this.field, message: this.tooLargeMessage }],
       });
     }
     return error;
