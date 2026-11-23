@@ -1,4 +1,5 @@
 import {
+  CourseLessonPublicationStatus,
   CoursePublicationStatus,
   CourseStatus,
   EnrollmentStatus,
@@ -60,7 +61,10 @@ export async function syncTheoryCompletion(
   }
 
   const lessons = await tx.courseLesson.findMany({
-    where: { courseId: course.id },
+    where: {
+      courseId: course.id,
+      publicationStatus: CourseLessonPublicationStatus.PUBLISHED,
+    },
     select: { id: true },
   });
   if (lessons.length === 0) {

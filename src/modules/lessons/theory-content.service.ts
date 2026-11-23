@@ -4,6 +4,7 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import {
+  CourseLessonPublicationStatus,
   CoursePublicationStatus,
   CourseStatus,
   EnrollmentStatus,
@@ -12,6 +13,7 @@ import {
   UserRole,
 } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
+import { LESSON_LOCKED_MESSAGE, loadLessonGate } from '../courses/lesson-gate';
 import { COURSE_NOT_PUBLISHED_MESSAGE } from '../courses/courses.service';
 import { LESSON_NOT_FOUND_MESSAGE } from './lessons.dto';
 import { TheoryLessonContentDto } from './theory-content.dto';
@@ -39,6 +41,7 @@ const contentSelect = {
       title: true,
       description: true,
       position: true,
+      publicationStatus: true,
       course: {
         select: {
           organizationId: true,
@@ -126,6 +129,25 @@ export class TheoryContentService {
         linked.course.status !== CourseStatus.ACTIVE)
     ) {
       throw new ForbiddenException(COURSE_NOT_PUBLISHED_MESSAGE);
+    }
+    if (actor.role === UserRole.STUDENT) {
+      const status =
+        linked.publicationStatus ?? CourseLessonPublicationStatus.PUBLISHED;
+      if (status !== CourseLessonPublicationStatus.PUBLISHED) {
+        throw new ForbiddenException(LESSON_LOCKED_MESSAGE);
+      }
+      const gate = await loadLessonGate(
+        this.prisma,
+        actor.organizationId,
+        linked.courseId,
+        actor.id,
+      );
+      if (
+        !gate.ordered.some((lesson) => lesson.id === linked.id) ||
+        gate.locked.has(linked.id)
+      ) {
+        throw new ForbiddenException(LESSON_LOCKED_MESSAGE);
+      }
     }
   }
 

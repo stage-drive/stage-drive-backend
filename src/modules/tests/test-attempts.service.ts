@@ -18,6 +18,11 @@ import {
 } from '@prisma/client';
 import { fieldBadRequest } from '../../common/validation/field-error';
 import { PrismaService } from '../../prisma/prisma.service';
+import {
+  LESSON_LOCKED_MESSAGE,
+  LESSON_RETRY_MESSAGE,
+  loadLessonGate,
+} from '../courses/lesson-gate';
 import { syncTheoryCompletion } from '../students/theory-completion';
 import {
   COURSE_NOT_FOUND_MESSAGE,
@@ -78,6 +83,7 @@ const catalogSelect = {
   timeLimitMinutes: true,
   maxAttempts: true,
   shuffleQuestions: true,
+  courseLessonId: true,
   publicationStatus: true,
   questions: {
     orderBy: { position: 'asc' as const },
@@ -198,13 +204,17 @@ function revealsAnswers(status: TheoryTestAttemptStatus): boolean {
 function attemptConflict(
   reason: NextAttemptBlockReason,
   attemptId: string | null,
+  lessonTest = false,
 ): ConflictException {
   const message =
     reason === NextAttemptBlockReason.IN_PROGRESS
       ? ATTEMPT_IN_PROGRESS_MESSAGE
       : reason === NextAttemptBlockReason.ALREADY_PASSED
         ? ALREADY_PASSED_MESSAGE
-        : ATTEMPTS_EXHAUSTED_MESSAGE;
+        : reason === NextAttemptBlockReason.LESSON_NOT_COMPLETED ||
+            (lessonTest && reason === NextAttemptBlockReason.ATTEMPTS_EXHAUSTED)
+          ? LESSON_RETRY_MESSAGE
+          : ATTEMPTS_EXHAUSTED_MESSAGE;
   return new ConflictException({
     statusCode: 409,
     message,
@@ -342,7 +352,7 @@ function toQuestion(
 }
 
 /** До PASSED/FAILED студент не бачить isCorrect і власні позначки. */
-function toAttempt(attempt: AttemptRow): AttemptDetailDto {
+function toAttempt(attempt: AttemptRow, message?: string): AttemptDetailDto {
   const reveal = revealsAnswers(attempt.status);
   return {
     id: attempt.id,
@@ -360,6 +370,7 @@ function toAttempt(attempt: AttemptRow): AttemptDetailDto {
     questions: attempt.questions.map((question) =>
       toQuestion(question, reveal),
     ),
+    ...(message ? { message } : {}),
   };
 }
 
@@ -432,6 +443,15 @@ export class TestAttemptsService {
           decision.unavailableReason ??
             NextAttemptBlockReason.ATTEMPTS_EXHAUSTED,
           decision.openAttemptId,
+          Boolean(test.courseLessonId),
+        );
+      }
+      if (test.courseLessonId) {
+        await this.assertLessonReady(
+          tx,
+          actor,
+          test.courseId,
+          test.courseLessonId,
         );
       }
       try {
@@ -639,14 +659,14 @@ export class TestAttemptsService {
     const saved = await this.prisma.$transaction(async (tx) => {
       const locked = await this.lockOwnAttempt(tx, actor, testId, attemptId);
       if (locked.status !== TheoryTestAttemptStatus.IN_PROGRESS) {
-        return locked;
+        return { attempt: locked, message: undefined };
       }
       if (isAttemptExpired(locked.expiresAt, now)) {
         const expired = await this.markExpired(tx, locked, now);
         this.logger.log(
           `Attempt expired attemptId=${locked.id} testId=${testId} studentId=${actor.id} organizationId=${actor.organizationId}`,
         );
-        return expired;
+        return { attempt: expired, message: undefined };
       }
       await this.assertCanContinue(tx, actor, locked.courseId, testId);
       assertFieldErrors(
@@ -681,38 +701,85 @@ export class TestAttemptsService {
         data: { status, score, submittedAt: now },
         select: attemptSelect,
       });
-      await tx.theoryTestResult.upsert({
-        where: {
-          studentId_courseId: {
-            studentId: actor.id,
-            courseId: locked.courseId,
-          },
-        },
-        create: {
-          organizationId: actor.organizationId,
-          courseId: locked.courseId,
-          studentId: actor.id,
-          testId: locked.testId,
-          attemptId: locked.id,
-          status: passed ? TheoryTestStatus.PASSED : TheoryTestStatus.FAILED,
-          score,
-          takenAt: now,
-        },
-        update: {
-          testId: locked.testId,
-          attemptId: locked.id,
-          status: passed ? TheoryTestStatus.PASSED : TheoryTestStatus.FAILED,
-          score,
-          takenAt: now,
-        },
+      const linked = await tx.theoryTest.findFirst({
+        where: { id: testId, organizationId: actor.organizationId },
+        select: { courseLessonId: true },
       });
+      const courseLessonId = linked?.courseLessonId ?? null;
+      if (courseLessonId && !passed) {
+        await tx.courseLessonCompletion.deleteMany({
+          where: {
+            studentId: actor.id,
+            lessonId: courseLessonId,
+            organizationId: actor.organizationId,
+          },
+        });
+      }
+      if (!courseLessonId) {
+        await tx.theoryTestResult.upsert({
+          where: {
+            studentId_courseId: {
+              studentId: actor.id,
+              courseId: locked.courseId,
+            },
+          },
+          create: {
+            organizationId: actor.organizationId,
+            courseId: locked.courseId,
+            studentId: actor.id,
+            testId: locked.testId,
+            attemptId: locked.id,
+            status: passed ? TheoryTestStatus.PASSED : TheoryTestStatus.FAILED,
+            score,
+            takenAt: now,
+          },
+          update: {
+            testId: locked.testId,
+            attemptId: locked.id,
+            status: passed ? TheoryTestStatus.PASSED : TheoryTestStatus.FAILED,
+            score,
+            takenAt: now,
+          },
+        });
+      }
       await syncTheoryCompletion(tx, actor.id, actor.organizationId);
       this.logger.log(
         `Attempt submitted attemptId=${locked.id} testId=${testId} studentId=${actor.id} status=${status} score=${score} organizationId=${actor.organizationId}`,
       );
-      return updated;
+      return {
+        attempt: updated,
+        message: courseLessonId && !passed ? LESSON_RETRY_MESSAGE : undefined,
+      };
     });
-    return toAttempt(saved);
+    return toAttempt(saved.attempt, saved.message);
+  }
+
+  /** Урок тесту відкритий і вже позначений пройденим. Інакше нову спробу не починаємо. */
+  private async assertLessonReady(
+    tx: Prisma.TransactionClient,
+    actor: User,
+    courseId: string,
+    lessonId: string,
+  ): Promise<void> {
+    const gate = await loadLessonGate(
+      tx,
+      actor.organizationId,
+      courseId,
+      actor.id,
+    );
+    if (
+      !gate.ordered.some((lesson) => lesson.id === lessonId) ||
+      gate.locked.has(lessonId)
+    ) {
+      throw new ForbiddenException(LESSON_LOCKED_MESSAGE);
+    }
+    if (!gate.completed.has(lessonId)) {
+      throw attemptConflict(
+        NextAttemptBlockReason.LESSON_NOT_COMPLETED,
+        null,
+        true,
+      );
+    }
   }
 
   private attemptData(actor: User, test: CatalogTest, now: Date) {

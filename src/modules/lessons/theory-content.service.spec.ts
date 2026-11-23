@@ -68,6 +68,10 @@ describe('TheoryContentService', () => {
     organization: { findUnique: jest.fn() },
     lesson: { findFirst: jest.fn() },
     enrollment: { findFirst: jest.fn() },
+    courseLesson: { findMany: jest.fn() },
+    courseLessonCompletion: { findMany: jest.fn() },
+    theoryTest: { findMany: jest.fn() },
+    theoryTestAttempt: { findMany: jest.fn() },
   };
   let service: TheoryContentService;
 
@@ -79,6 +83,16 @@ describe('TheoryContentService', () => {
     });
     prisma.lesson.findFirst.mockResolvedValue(lessonRow());
     prisma.enrollment.findFirst.mockResolvedValue({ id: 'enrollment-1' });
+    prisma.courseLesson.findMany.mockResolvedValue([
+      {
+        id: 'course-lesson-1',
+        position: 1,
+        chapter: { position: 1 },
+      },
+    ]);
+    prisma.courseLessonCompletion.findMany.mockResolvedValue([]);
+    prisma.theoryTest.findMany.mockResolvedValue([]);
+    prisma.theoryTestAttempt.findMany.mockResolvedValue([]);
     service = new TheoryContentService(prisma as unknown as PrismaService);
   });
 

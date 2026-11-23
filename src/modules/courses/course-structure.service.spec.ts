@@ -1,5 +1,6 @@
 import {
   BadRequestException,
+  ConflictException,
   ForbiddenException,
   HttpException,
   Logger,
@@ -49,6 +50,7 @@ type Row = {
   lessonId?: string;
   type?: CourseMaterialType;
   body?: string | null;
+  publicationStatus?: string;
   createdAt: Date;
   updatedAt: Date;
 };
@@ -100,6 +102,14 @@ function createStore(prefix: string) {
         return Promise.reject(new Error(`position collision ${row.position}`));
       }
       items.push(row);
+      return Promise.resolve(row);
+    }),
+    delete: jest.fn(({ where }: { where: { id: string } }) => {
+      const index = items.findIndex((item) => item.id === where.id);
+      if (index < 0) {
+        return Promise.reject(new Error(`missing ${where.id}`));
+      }
+      const [row] = items.splice(index, 1);
       return Promise.resolve(row);
     }),
     update: jest.fn(
@@ -629,6 +639,74 @@ describe('CourseStructureService', () => {
       expect(error).toBeInstanceOf(NotFoundException);
       expect(error.message).toBe(LESSON_NOT_FOUND_MESSAGE);
       expect(lessons.update).not.toHaveBeenCalled();
+    });
+
+    it('publishes a draft lesson and refuses to publish an archived one', async () => {
+      lessons.items.push(
+        stamp({
+          id: 'lesson-1',
+          courseId,
+          chapterId: 'chapter-1',
+          title: 'Знаки',
+          position: 1,
+          publicationStatus: 'DRAFT',
+        }),
+      );
+
+      const published = await service.changeLessonPublication(
+        admin as never,
+        courseId,
+        'chapter-1',
+        'lesson-1',
+        { publicationStatus: 'PUBLISHED' },
+      );
+
+      expect(published.publicationStatus).toBe('PUBLISHED');
+
+      await service.archiveLesson(
+        admin as never,
+        courseId,
+        'chapter-1',
+        'lesson-1',
+      );
+      const error = await caught(
+        service.changeLessonPublication(
+          admin as never,
+          courseId,
+          'chapter-1',
+          'lesson-1',
+          { publicationStatus: 'PUBLISHED' },
+        ),
+      );
+      expect(error).toBeInstanceOf(ConflictException);
+    });
+
+    it('deletes a lesson and closes the position gap', async () => {
+      lessons.items.push(
+        stamp({
+          id: 'lesson-1',
+          courseId,
+          chapterId: 'chapter-1',
+          title: 'Перший',
+          position: 1,
+        }),
+        stamp({
+          id: 'lesson-2',
+          courseId,
+          chapterId: 'chapter-1',
+          title: 'Другий',
+          position: 2,
+        }),
+      );
+
+      await service.deleteLesson(
+        admin as never,
+        courseId,
+        'chapter-1',
+        'lesson-1',
+      );
+
+      expect(labels(lessons.items)).toEqual([['Другий', 1]]);
     });
   });
 

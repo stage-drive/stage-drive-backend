@@ -1,4 +1,4 @@
-import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
+import { ApiProperty, ApiPropertyOptional, OmitType } from '@nestjs/swagger';
 import { TheoryTestFormat, TheoryTestPublicationStatus } from '@prisma/client';
 import { Transform, Type } from 'class-transformer';
 import {
@@ -132,6 +132,15 @@ export class TestDto {
 
   @ApiProperty({ example: '41414141-4141-4414-8414-414141414141' })
   courseId: string;
+
+  @ApiProperty({
+    type: String,
+    format: 'uuid',
+    nullable: true,
+    description:
+      'Урок, до якого прив’язаний тест. null — тест усього курсу. У тесту уроку рівно 3 спроби.',
+  })
+  courseLessonId: string | null;
 
   @ApiProperty({ example: 'ПДР, категорія B' })
   name: string;
@@ -396,6 +405,12 @@ export class CreateTestDto {
   @IsBoolean({ message: SHUFFLE_MESSAGE })
   shuffleQuestions?: boolean;
 }
+
+/** Тест уроку. courseId береться з адреси, maxAttempts завжди 3. */
+export class CreateLessonTestDto extends OmitType(CreateTestDto, [
+  'courseId',
+  'maxAttempts',
+] as const) {}
 
 export class UpdateTestDto {
   @ApiPropertyOptional({ example: '41414141-4141-4414-8414-414141414141' })

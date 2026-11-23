@@ -173,12 +173,25 @@ enum CoursePublicationStatus {
   PUBLISHED
 }
 
+/// Публікація уроку теоретичного курсу. Окремо від публікації всього курсу.
+/// Новий урок — DRAFT. Студент бачить лише PUBLISHED.
+/// ARCHIVED не публікується знову.
+enum CourseLessonPublicationStatus {
+  DRAFT
+  PUBLISHED
+  ARCHIVED
+}
+
 /// Навчальний матеріал теоретичного уроку.
 /// TEXT — текст, LINK — зовнішнє посилання, VIDEO — посилання на відео.
+/// PDF, IMAGE і FILE — файл у /uploads/materials або адреса http(s).
 enum CourseMaterialType {
   TEXT
   LINK
   VIDEO
+  PDF
+  IMAGE
+  FILE
 }
 
 /// Відвідування теоретичного заняття. «Не відмічено» — відсутність рядка.
@@ -528,14 +541,16 @@ model CourseLesson {
   course           Course                   @relation(fields: [courseId], references: [id], onDelete: Cascade)
   chapterId        String                   @map("chapter_id") @db.Uuid
   chapter          CourseChapter            @relation(fields: [chapterId, courseId], references: [id, courseId], onDelete: Cascade)
-  title            String                   @db.VarChar(200)
-  description      String?
-  position         Int
-  createdAt        DateTime                 @default(now()) @map("created_at")
-  updatedAt        DateTime                 @updatedAt @map("updated_at")
-  materials        CourseMaterial[]
-  completions      CourseLessonCompletion[]
-  scheduledLessons Lesson[]
+  title             String                         @db.VarChar(200)
+  description       String?
+  position          Int
+  publicationStatus CourseLessonPublicationStatus  @default(DRAFT) @map("publication_status")
+  createdAt         DateTime                       @default(now()) @map("created_at")
+  updatedAt         DateTime                       @updatedAt @map("updated_at")
+  materials         CourseMaterial[]
+  completions       CourseLessonCompletion[]
+  scheduledLessons  Lesson[]
+  theoryTests       TheoryTest[]
 
   @@unique([id, courseId])
   @@unique([chapterId, position])
@@ -641,6 +656,10 @@ model TheoryTest {
   organization      Organization                @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   courseId          String                      @map("course_id") @db.Uuid
   course            Course                      @relation(fields: [courseId, organizationId], references: [id, organizationId], onDelete: Cascade)
+  /// Тест конкретного уроку. null — тест усього курсу, як раніше.
+  /// Складений FK не дає прив’язати тест до уроку іншого курсу.
+  courseLessonId    String?                     @map("course_lesson_id") @db.Uuid
+  courseLesson      CourseLesson?               @relation(fields: [courseLessonId, courseId], references: [id, courseId], onDelete: Cascade)
   name              String                      @db.VarChar(200)
   description       String?
   format            TheoryTestFormat
@@ -660,6 +679,7 @@ model TheoryTest {
   results           TheoryTestResult[]
 
   @@unique([id, organizationId])
+  @@unique([courseLessonId])
   @@index([organizationId])
   @@index([courseId])
   @@map("theory_tests")

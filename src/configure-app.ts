@@ -18,6 +18,7 @@ function parseCorsOrigins(): string[] {
 export function configureApp(app: NestExpressApplication) {
   ensureUploadDir('avatars');
   ensureUploadDir('logos');
+  ensureUploadDir('materials');
   app.enableCors({
     origin: parseCorsOrigins(),
     credentials: true,

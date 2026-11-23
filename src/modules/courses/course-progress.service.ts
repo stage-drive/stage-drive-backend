@@ -5,6 +5,7 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import {
+  CourseLessonPublicationStatus,
   CoursePublicationStatus,
   CourseStatus,
   EnrollmentStatus,
@@ -21,6 +22,11 @@ import {
   TheoryTestResultDto,
 } from './course-progress.dto';
 import { LESSON_NOT_FOUND_MESSAGE } from './course-structure.service';
+import {
+  LESSON_LOCKED_MESSAGE,
+  LESSON_RETRY_MESSAGE,
+  loadLessonGate,
+} from './lesson-gate';
 import {
   COURSE_NOT_FOUND_MESSAGE,
   COURSE_NOT_PUBLISHED_MESSAGE,
@@ -196,11 +202,24 @@ export class CourseProgressService {
       await lockCourse(tx, courseId, actor.organizationId);
       await this.requireAssignedPublishedCourse(tx, actor, courseId);
       const lesson = await tx.courseLesson.findFirst({
-        where: { id: lessonId, courseId },
+        where: {
+          id: lessonId,
+          courseId,
+          publicationStatus: CourseLessonPublicationStatus.PUBLISHED,
+        },
         select: { id: true },
       });
       if (!lesson) {
         throw new NotFoundException(LESSON_NOT_FOUND_MESSAGE);
+      }
+      const gate = await loadLessonGate(
+        tx,
+        actor.organizationId,
+        courseId,
+        actor.id,
+      );
+      if (gate.locked.has(lessonId)) {
+        throw new ForbiddenException(LESSON_LOCKED_MESSAGE);
       }
       await this.markCompleted(tx, actor, courseId, lessonId);
       const progress = await this.syncProgress(
@@ -447,9 +466,13 @@ export class CourseProgressService {
     scope: SessionScope,
   ): Promise<CourseProgressDto> {
     const lessons = await tx.courseLesson.findMany({
-      where: { courseId },
+      where: {
+        courseId,
+        publicationStatus: CourseLessonPublicationStatus.PUBLISHED,
+      },
       select: lessonProgressSelect,
     });
+    const gate = await loadLessonGate(tx, organizationId, courseId, studentId);
     const completions =
       lessons.length === 0
         ? []
@@ -512,6 +535,7 @@ export class CourseProgressService {
             lesson,
             completedAtByLesson,
             sessionsByLesson.get(lesson.id) ?? [],
+            gate,
           ),
         )
         .sort(byCourseOrder),
@@ -685,6 +709,7 @@ function toLessonProgress(
   lesson: LessonProgressRow,
   completedAtByLesson: Map<string, Date>,
   sessions: LinkedTheorySessionDto[],
+  gate: Awaited<ReturnType<typeof loadLessonGate>>,
 ): CourseLessonProgressDto {
   return {
     lessonId: lesson.id,
@@ -694,6 +719,12 @@ function toLessonProgress(
     chapterPosition: lesson.chapter.position,
     completed: completedAtByLesson.has(lesson.id),
     completedAt: completedAtByLesson.get(lesson.id) ?? null,
+    locked: gate.locked.has(lesson.id),
+    passed: gate.passed.has(lesson.id),
+    hasTest: gate.testsByLesson.has(lesson.id),
+    retryMessage: gate.failedWithoutPass.has(lesson.id)
+      ? LESSON_RETRY_MESSAGE
+      : null,
     sessions,
   };
 }
