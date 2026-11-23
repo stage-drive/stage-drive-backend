@@ -1,5 +1,10 @@
-import { HttpStatus } from '@nestjs/common';
-import { GUARDS_METADATA, HTTP_CODE_METADATA } from '@nestjs/common/constants';
+import { HttpStatus, RequestMethod } from '@nestjs/common';
+import {
+  GUARDS_METADATA,
+  HTTP_CODE_METADATA,
+  METHOD_METADATA,
+  PATH_METADATA,
+} from '@nestjs/common/constants';
 import { Reflector } from '@nestjs/core';
 import { UserRole } from '@prisma/client';
 import { AuthGuard } from '../auth/auth.guard';
@@ -19,7 +24,25 @@ describe('LessonsController', () => {
     ]);
   });
 
+  it('lists theory with GET /theory for ADMIN', () => {
+    expect(
+      Reflect.getMetadata(
+        METHOD_METADATA,
+        // eslint-disable-next-line @typescript-eslint/unbound-method -- only reads decorator metadata, never invoked
+        LessonsController.prototype.listTheory,
+      ),
+    ).toBe(RequestMethod.GET);
+    expect(
+      Reflect.getMetadata(
+        PATH_METADATA,
+        // eslint-disable-next-line @typescript-eslint/unbound-method -- only reads decorator metadata, never invoked
+        LessonsController.prototype.listTheory,
+      ),
+    ).toBe('theory');
+  });
+
   it.each([
+    ['listTheory', [UserRole.ADMIN]],
     ['createTheory', [UserRole.ADMIN, UserRole.TEACHER]],
     ['createPractice', [UserRole.ADMIN]],
     ['updateTheory', [UserRole.ADMIN, UserRole.TEACHER]],
@@ -91,6 +114,7 @@ describe('LessonsController', () => {
     const id = 'lesson-1';
     const response = { id };
     const lessonsService = {
+      listTheory: jest.fn().mockResolvedValue(response),
       createTheory: jest.fn().mockResolvedValue(response),
       createPractice: jest.fn().mockResolvedValue(response),
       updateTheory: jest.fn().mockResolvedValue(response),
@@ -168,6 +192,13 @@ describe('LessonsController', () => {
         expect(lessonsService[method]).toHaveBeenCalledWith(user, id);
       },
     );
+
+    it('listTheory passes the current user to the service', async () => {
+      await expect(controller.listTheory(user as never)).resolves.toBe(
+        response,
+      );
+      expect(lessonsService.listTheory).toHaveBeenCalledWith(user);
+    });
 
     it('getTheoryContent passes the current user and id to the content service', async () => {
       await expect(
