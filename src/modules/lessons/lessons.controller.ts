@@ -56,6 +56,7 @@ import {
   SCHEDULE_DEFAULT_RANGE_DAYS,
   SCHEDULE_MAX_RANGE_DAYS,
   TheoryLessonDto,
+  TheoryLessonListDto,
   UpdatePracticeLessonDto,
   UpdateTheoryLessonDto,
 } from './lessons.dto';
@@ -69,6 +70,7 @@ import {
   STUDENT_CANCEL_MIN_HOURS,
   STUDENT_RESCHEDULE_MIN_HOURS,
   THEORY_LESSON_EDIT_ROLES,
+  THEORY_LESSON_LIST_ROLES,
 } from './lessons.service';
 import {
   PersonalScheduleService,
@@ -182,6 +184,24 @@ export class LessonsController {
     @Query() query: PersonalScheduleQueryDto,
   ): Promise<PersonalScheduleDto> {
     return this.personalScheduleService.getMySchedule(user, query);
+  }
+
+  @Get('theory')
+  @Roles(...THEORY_LESSON_LIST_ROLES)
+  @ApiOperation({
+    summary: 'Усі теоретичні заняття',
+    description:
+      'Повний список теорії автошколи для ADMIN: усі заняття, зокрема скасовані, без вікна дат. ' +
+      'Порядок — за зростанням scheduledAt, потім id. Заняття інших автошкіл не повертаються. ' +
+      'timezone — часовий пояс автошколи, у ньому показуйте час занять.',
+  })
+  @ApiOkResponse({ type: TheoryLessonListDto })
+  @ApiForbiddenResponse({ description: 'Роль не ADMIN.' })
+  @ApiNotFoundResponse({
+    description: 'Автошколу не знайдено або її видалено.',
+  })
+  listTheory(@CurrentUser() user: User): Promise<TheoryLessonListDto> {
+    return this.lessonsService.listTheory(user);
   }
 
   @Post('theory')

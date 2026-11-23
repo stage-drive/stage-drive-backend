@@ -430,6 +430,22 @@ export class TheoryLessonDto {
   updatedAt: Date;
 }
 
+/** Усі теоретичні заняття автошколи, без вікна дат. */
+export class TheoryLessonListDto {
+  @ApiProperty({
+    example: 'Europe/Kyiv',
+    description: 'Часовий пояс автошколи: показуйте час занять у ньому.',
+  })
+  timezone: string;
+
+  @ApiProperty({
+    type: [TheoryLessonDto],
+    description:
+      'Усі теоретичні заняття автошколи, зокрема скасовані, за зростанням scheduledAt.',
+  })
+  items: TheoryLessonDto[];
+}
+
 export class PracticeLessonDto {
   @ApiProperty()
   id: string;

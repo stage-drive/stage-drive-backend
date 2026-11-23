@@ -34,6 +34,7 @@ import {
   lessonPersonSelect,
   practiceBookingStatus,
   theoryCourseLessonSelect,
+  theoryLessonViewSelect,
   toPracticeLessonDto,
   toTheoryLessonDto,
 } from './lesson-view';
@@ -47,6 +48,7 @@ import {
   RescheduleLessonDto,
   THEORY_DEFAULT_DURATION_MIN,
   TheoryLessonDto,
+  TheoryLessonListDto,
   UpdatePracticeLessonDto,
   UpdateTheoryLessonDto,
 } from './lessons.dto';
@@ -80,6 +82,9 @@ export const THEORY_LESSON_EDIT_ROLES = [
   UserRole.ADMIN,
   UserRole.TEACHER,
 ] as const;
+
+/** Повний список теорії автошколи бачить лише ADMIN. */
+export const THEORY_LESSON_LIST_ROLES = [UserRole.ADMIN] as const;
 
 /** Створення й перенесення практики: розкладом керує лише ADMIN. */
 export const PRACTICE_LESSON_SCHEDULE_ROLES = [UserRole.ADMIN] as const;
@@ -359,6 +364,26 @@ export class LessonsService {
     private readonly prisma: PrismaService,
     private readonly payment: PracticePaymentService,
   ) {}
+
+  /**
+   * Усі теоретичні заняття автошколи, без вікна дат і разом зі скасованими.
+   * Заняття інших організацій не повертаються. Без транзакції: це читання.
+   */
+  async listTheory(actor: User): Promise<TheoryLessonListDto> {
+    assertRole(actor, THEORY_LESSON_LIST_ROLES);
+    const organization = await this.requireOrganization(actor.organizationId);
+
+    const rows = await this.prisma.lesson.findMany({
+      where: { organizationId: actor.organizationId },
+      select: theoryLessonViewSelect,
+      orderBy: [{ scheduledAt: 'asc' }, { id: 'asc' }],
+    });
+
+    return {
+      timezone: organization.timezone,
+      items: rows.map(toTheoryLessonDto),
+    };
+  }
 
   /**
    * Нове теоретичне заняття групи. Викладач заняття — викладач групи. Порядок

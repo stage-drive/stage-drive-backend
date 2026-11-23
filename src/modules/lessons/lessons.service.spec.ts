@@ -343,6 +343,71 @@ describe('LessonsService', () => {
     jest.useRealTimers();
   });
 
+  describe('listTheory', () => {
+    it('returns every theory lesson of the school, including cancelled ones', async () => {
+      const scheduled = theoryRow();
+      const cancelled = theoryRow({
+        lesson: {
+          id: 'lesson-t2',
+          status: LessonStatus.CANCELLED,
+          cancelledAt: new Date('2026-10-22T08:00:00.000Z'),
+          cancellationReason: 'Викладач захворів',
+          scheduledAt: new Date('2026-11-04T16:00:00.000Z'),
+        },
+      });
+      prisma.lesson.findMany.mockResolvedValue([scheduled, cancelled]);
+
+      const result = await service.listTheory(admin as never);
+
+      expect(prisma.lesson.findMany).toHaveBeenCalledWith({
+        where: { organizationId: 'org-1' },
+        select: expect.any(Object),
+        orderBy: [{ scheduledAt: 'asc' }, { id: 'asc' }],
+      });
+      expect(result).toEqual({
+        timezone: 'Europe/Kyiv',
+        items: [
+          expect.objectContaining({
+            id: 'lesson-t1',
+            type: 'THEORY',
+            status: LessonStatus.SCHEDULED,
+            topic: 'Дорожні знаки',
+            endsAt: new Date('2026-11-03T17:30:00.000Z'),
+          }),
+          expect.objectContaining({
+            id: 'lesson-t2',
+            type: 'THEORY',
+            status: LessonStatus.CANCELLED,
+            cancellationReason: 'Викладач захворів',
+            cancelledAt: new Date('2026-10-22T08:00:00.000Z'),
+          }),
+        ],
+      });
+    });
+
+    it.each([ownerActor, teacherActor, instructorActor, studentActor])(
+      'rejects $role',
+      async (actor) => {
+        await expect(service.listTheory(actor as never)).rejects.toBeInstanceOf(
+          ForbiddenException,
+        );
+        expect(prisma.lesson.findMany).not.toHaveBeenCalled();
+      },
+    );
+
+    it('rejects when the organization is gone', async () => {
+      prisma.organization.findUnique.mockResolvedValue({
+        ...organization,
+        deletedAt: new Date('2026-10-01T00:00:00.000Z'),
+      });
+
+      await expect(service.listTheory(admin as never)).rejects.toBeInstanceOf(
+        NotFoundException,
+      );
+      expect(prisma.lesson.findMany).not.toHaveBeenCalled();
+    });
+  });
+
   describe('practice', () => {
     it('reschedules to a free slot and returns the saved lesson', async () => {
       const result = await service.reschedulePractice(
