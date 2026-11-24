@@ -17,6 +17,7 @@ import {
   ApiBearerAuth,
   ApiConflictResponse,
   ApiCreatedResponse,
+  ApiExtraModels,
   ApiForbiddenResponse,
   ApiNoContentResponse,
   ApiNotFoundResponse,
@@ -26,6 +27,7 @@ import {
   ApiTags,
   ApiUnauthorizedResponse,
   ApiUnprocessableEntityResponse,
+  getSchemaPath,
 } from '@nestjs/swagger';
 import { User } from '@prisma/client';
 import { AuthGuard } from '../auth/auth.guard';
@@ -44,6 +46,7 @@ import {
 } from './theory-content.service';
 import {
   CancelLessonDto,
+  CourseLessonLinkConflictResponseDto,
   CreatePracticeLessonDto,
   CreateTheoryLessonDto,
   LESSON_MAX_DURATION_MIN,
@@ -57,6 +60,7 @@ import {
   SCHEDULE_MAX_RANGE_DAYS,
   TheoryLessonDto,
   TheoryLessonListDto,
+  TheoryLessonListQueryDto,
   UpdatePracticeLessonDto,
   UpdateTheoryLessonDto,
 } from './lessons.dto';
@@ -118,6 +122,19 @@ const CREATE_CONFLICT_DESCRIPTION =
   'інструктора чи авто, або час конфліктує з іншими заняттями ' +
   '(тіло з conflicts: [{ resource, resourceId, lessonType, lessonId, scheduledAt, endsAt }]).';
 
+const COURSE_LESSON_CONFLICT_DESCRIPTION =
+  'Якщо урок курсу вже прив’язано до іншого нескасованого заняття групи, тіло містить conflictingLesson: ' +
+  '{ id, scheduledAt, endsAt, topic, status, courseLessonId, group: { id, name } }.';
+
+const THEORY_SCHEDULE_OR_LINK_CONFLICT = {
+  schema: {
+    oneOf: [
+      { $ref: getSchemaPath(LessonScheduleConflictResponseDto) },
+      { $ref: getSchemaPath(CourseLessonLinkConflictResponseDto) },
+    ],
+  },
+};
+
 const LESSON_CONFLICT_DESCRIPTION =
   'Заняття не SCHEDULED (тіло з currentStatus), група закрита, заняття вже почалося, ' +
   'ресурс недоступний (викладач, інструктор, авто, студент), новий час конфліктує з іншими заняттями ' +
@@ -151,6 +168,10 @@ const DELETE_RULES =
 
 @ApiTags('lessons')
 @ApiBearerAuth()
+@ApiExtraModels(
+  LessonScheduleConflictResponseDto,
+  CourseLessonLinkConflictResponseDto,
+)
 @ApiUnauthorizedResponse({ description: 'Потрібен access token' })
 @Controller('lessons')
 @UseGuards(AuthGuard, RolesGuard)
@@ -191,17 +212,30 @@ export class LessonsController {
   @ApiOperation({
     summary: 'Усі теоретичні заняття',
     description:
-      'Повний список теорії автошколи для ADMIN: усі заняття, зокрема скасовані, без вікна дат. ' +
+      'Повний список теорії автошколи для ADMIN. Без параметрів — усі заняття, зокрема скасовані, без вікна дат. ' +
+      'groupId залишає заняття однієї групи. from і to — межі вікна [from, to): повертаються заняття, що його перетинають. ' +
+      'Можна передати лише from (немає верхньої межі) або лише to (немає нижньої). ' +
+      `Обидві межі разом — не довше ${SCHEDULE_MAX_RANGE_DAYS} днів. ` +
       'Порядок — за зростанням scheduledAt, потім id. Заняття інших автошкіл не повертаються. ' +
-      'timezone — часовий пояс автошколи, у ньому показуйте час занять.',
+      'timezone — часовий пояс автошколи, у ньому показуйте час занять. ' +
+      'Щоб заблокувати урок курсу у формі, дивіться courseLesson у нескасованих заняттях.',
   })
   @ApiOkResponse({ type: TheoryLessonListDto })
+  @ApiBadRequestResponse({
+    description:
+      'groupId не UUID, from чи to не ISO 8601 з часовим зсувом (знак + кодуйте як %2B), ' +
+      `to не пізніше за from, вікно довше ${SCHEDULE_MAX_RANGE_DAYS} днів, або невідомий параметр. ` +
+      'Тіло містить errors: [{ field, message }].',
+  })
   @ApiForbiddenResponse({ description: 'Роль не ADMIN.' })
   @ApiNotFoundResponse({
     description: 'Автошколу не знайдено або її видалено.',
   })
-  listTheory(@CurrentUser() user: User): Promise<TheoryLessonListDto> {
-    return this.lessonsService.listTheory(user);
+  listTheory(
+    @CurrentUser() user: User,
+    @Query() query: TheoryLessonListQueryDto,
+  ): Promise<TheoryLessonListDto> {
+    return this.lessonsService.listTheory(user, query);
   }
 
   @Post('theory')
@@ -228,8 +262,8 @@ export class LessonsController {
     description: 'Групу не знайдено або вона належить іншій автошколі.',
   })
   @ApiConflictResponse({
-    type: LessonScheduleConflictResponseDto,
-    description: CREATE_CONFLICT_DESCRIPTION,
+    ...THEORY_SCHEDULE_OR_LINK_CONFLICT,
+    description: `${CREATE_CONFLICT_DESCRIPTION} ${COURSE_LESSON_CONFLICT_DESCRIPTION} Група без курсу теж дає 409.`,
   })
   createTheory(
     @CurrentUser() user: User,
@@ -304,8 +338,8 @@ export class LessonsController {
     description: 'Заняття не знайдено або воно належить іншій автошколі.',
   })
   @ApiConflictResponse({
-    type: LessonScheduleConflictResponseDto,
-    description: LESSON_CONFLICT_DESCRIPTION,
+    ...THEORY_SCHEDULE_OR_LINK_CONFLICT,
+    description: `${LESSON_CONFLICT_DESCRIPTION} ${COURSE_LESSON_CONFLICT_DESCRIPTION}`,
   })
   updateTheory(
     @CurrentUser() user: User,

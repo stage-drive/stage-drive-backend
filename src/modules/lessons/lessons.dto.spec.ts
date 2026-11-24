@@ -17,6 +17,7 @@ import {
   MEETING_PLACE_TYPE_MESSAGE,
   PersonalScheduleQueryDto,
   REQUIRED_FIELD_MESSAGE,
+  TheoryLessonListQueryDto,
   RescheduleLessonDto,
   SCHEDULE_RANGE_FORMAT_MESSAGE,
   SCHEDULED_AT_FORMAT_MESSAGE,
@@ -560,4 +561,42 @@ describe('PersonalScheduleQueryDto', () => {
       );
     },
   );
+});
+
+describe('TheoryLessonListQueryDto', () => {
+  const query = (value: unknown) =>
+    validate(TheoryLessonListQueryDto, value, 'query');
+  const queryErrors = (value: unknown) =>
+    errorsFor(TheoryLessonListQueryDto, value, 'query');
+  const groupId = '4c21a0b0-0000-4000-8000-000000000000';
+
+  it('lets an empty query through so the service returns every lesson', async () => {
+    await expect(query({})).resolves.toEqual({});
+  });
+
+  it('accepts groupId with a date window', async () => {
+    await expect(
+      query({
+        groupId,
+        from: '2026-11-02T00:00:00+02:00',
+        to: '2026-12-02T00:00:00Z',
+      }),
+    ).resolves.toEqual({
+      groupId,
+      from: '2026-11-02T00:00:00+02:00',
+      to: '2026-12-02T00:00:00Z',
+    });
+  });
+
+  it('rejects a groupId that is not a UUID', async () => {
+    await expect(queryErrors({ groupId: 'group-1' })).resolves.toEqual(
+      fieldErrors('groupId', 'groupId має бути UUID.'),
+    );
+  });
+
+  it('rejects an unknown parameter', async () => {
+    await expect(queryErrors({ status: 'SCHEDULED' })).resolves.toEqual(
+      fieldErrors('status', 'property status should not exist'),
+    );
+  });
 });

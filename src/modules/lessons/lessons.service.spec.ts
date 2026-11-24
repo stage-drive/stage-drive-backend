@@ -68,6 +68,10 @@ import {
   STUDENT_CANCEL_TOO_LATE_MESSAGE,
   STUDENT_NOT_IN_PRACTICE_MESSAGE,
 } from './lessons.service';
+import {
+  SCHEDULE_RANGE_LENGTH_MESSAGE,
+  SCHEDULE_RANGE_ORDER_MESSAGE,
+} from './lessons.dto';
 import { LESSON_SCHEDULE_CONFLICT_MESSAGE } from './schedule-conflicts';
 
 async function caught(promise: Promise<unknown>): Promise<HttpException> {
@@ -404,6 +408,114 @@ describe('LessonsService', () => {
       await expect(service.listTheory(admin as never)).rejects.toBeInstanceOf(
         NotFoundException,
       );
+      expect(prisma.lesson.findMany).not.toHaveBeenCalled();
+    });
+
+    it('filters by group without a date window', async () => {
+      await service.listTheory(admin as never, { groupId: 'group-1' });
+
+      expect(prisma.lesson.findMany).toHaveBeenCalledWith({
+        where: { organizationId: 'org-1', groupId: 'group-1' },
+        select: expect.any(Object),
+        orderBy: [{ scheduledAt: 'asc' }, { id: 'asc' }],
+      });
+    });
+
+    it('returns lessons that overlap [from, to) and drops those that only touch the edge', async () => {
+      const earlier = theoryRow({
+        lesson: {
+          id: 'lesson-earlier',
+          scheduledAt: new Date('2026-11-03T14:00:00.000Z'),
+          durationMin: 90,
+        },
+      });
+      const inside = theoryRow();
+      const later = theoryRow({
+        lesson: {
+          id: 'lesson-later',
+          scheduledAt: new Date('2026-11-03T18:00:00.000Z'),
+        },
+      });
+      prisma.lesson.findMany.mockResolvedValue([earlier, inside, later]);
+
+      const result = await service.listTheory(admin as never, {
+        from: '2026-11-03T16:00:00Z',
+        to: '2026-11-03T18:00:00Z',
+      });
+
+      expect(prisma.lesson.findMany).toHaveBeenCalledWith({
+        where: {
+          AND: [
+            { organizationId: 'org-1' },
+            {
+              scheduledAt: {
+                gt: new Date('2026-11-03T12:00:00.000Z'),
+                lt: new Date('2026-11-03T18:00:00.000Z'),
+              },
+            },
+          ],
+        },
+        select: expect.any(Object),
+        orderBy: [{ scheduledAt: 'asc' }, { id: 'asc' }],
+      });
+      expect(result.items.map((item) => item.id)).toEqual(['lesson-t1']);
+    });
+
+    it('keeps a lesson that is still running when only from is set', async () => {
+      prisma.lesson.findMany.mockResolvedValue([
+        theoryRow({
+          lesson: {
+            id: 'lesson-done',
+            scheduledAt: new Date('2026-11-03T14:00:00.000Z'),
+            durationMin: 60,
+          },
+        }),
+        theoryRow({
+          lesson: {
+            id: 'lesson-ongoing',
+            scheduledAt: new Date('2026-11-03T15:00:00.000Z'),
+            durationMin: 90,
+          },
+        }),
+      ]);
+
+      const result = await service.listTheory(admin as never, {
+        from: '2026-11-03T15:30:00Z',
+      });
+
+      expect(result.items.map((item) => item.id)).toEqual(['lesson-ongoing']);
+    });
+
+    it('rejects a window where to is not after from before reading the database', async () => {
+      const error = await caught(
+        service.listTheory(admin as never, {
+          from: '2026-11-03T18:00:00Z',
+          to: '2026-11-03T16:00:00Z',
+        }),
+      );
+
+      expect(error).toBeInstanceOf(BadRequestException);
+      expect(error.getResponse()).toEqual({
+        statusCode: 400,
+        errors: [{ field: 'to', message: SCHEDULE_RANGE_ORDER_MESSAGE }],
+      });
+      expect(prisma.organization.findUnique).not.toHaveBeenCalled();
+      expect(prisma.lesson.findMany).not.toHaveBeenCalled();
+    });
+
+    it('rejects a window longer than 62 days', async () => {
+      const error = await caught(
+        service.listTheory(admin as never, {
+          from: '2026-01-01T00:00:00Z',
+          to: '2026-04-01T00:00:00Z',
+        }),
+      );
+
+      expect(error).toBeInstanceOf(BadRequestException);
+      expect(error.getResponse()).toEqual({
+        statusCode: 400,
+        errors: [{ field: 'to', message: SCHEDULE_RANGE_LENGTH_MESSAGE }],
+      });
       expect(prisma.lesson.findMany).not.toHaveBeenCalled();
     });
   });
@@ -1043,6 +1155,50 @@ describe('LessonsService', () => {
       });
       expect(prisma.lesson.findMany).not.toHaveBeenCalled();
       expect(prisma.courseLesson.findFirst).not.toHaveBeenCalled();
+    });
+
+    it('names the lesson that already holds the course lesson', async () => {
+      const lesson = theoryRow({ group: { courseId: 'course-1' } });
+      const conflict = theoryRow({
+        lesson: {
+          id: 'lesson-other',
+          topic: 'Перехрестя',
+          scheduledAt: new Date('2026-11-10T16:00:00.000Z'),
+          durationMin: 90,
+          status: LessonStatus.COMPLETED,
+          courseLessonId: 'course-lesson-1',
+        },
+      });
+      prisma.lesson.findFirst
+        .mockResolvedValueOnce({ groupId: 'group-1' })
+        .mockResolvedValueOnce(lesson)
+        .mockResolvedValueOnce(conflict);
+      prisma.courseLesson.findFirst.mockResolvedValue({
+        id: 'course-lesson-1',
+      });
+
+      const error = await caught(
+        service.updateTheory(admin as never, 'lesson-t1', {
+          courseLessonId: 'course-lesson-1',
+        }),
+      );
+
+      expect(error).toBeInstanceOf(ConflictException);
+      expect(error.getResponse()).toEqual({
+        statusCode: 409,
+        error: 'Conflict',
+        message: COURSE_LESSON_ALREADY_LINKED_MESSAGE,
+        conflictingLesson: {
+          id: 'lesson-other',
+          scheduledAt: new Date('2026-11-10T16:00:00.000Z'),
+          endsAt: new Date('2026-11-10T17:30:00.000Z'),
+          topic: 'Перехрестя',
+          status: LessonStatus.COMPLETED,
+          courseLessonId: 'course-lesson-1',
+          group: { id: 'group-1', name: 'ПДР — Група А' },
+        },
+      });
+      expect(prisma.lesson.update).not.toHaveBeenCalled();
     });
 
     it('forbids a teacher of another group', async () => {
@@ -2058,7 +2214,18 @@ describe('LessonsService', () => {
         prisma.courseLesson.findFirst.mockResolvedValue({
           id: 'course-lesson-1',
         });
-        prisma.lesson.findFirst.mockResolvedValue({ id: 'lesson-other' });
+        prisma.lesson.findFirst.mockResolvedValue(
+          theoryRow({
+            lesson: {
+              id: 'lesson-other',
+              topic: 'Перехрестя',
+              scheduledAt: new Date('2026-11-10T16:00:00.000Z'),
+              durationMin: 90,
+              status: LessonStatus.SCHEDULED,
+              courseLessonId: 'course-lesson-1',
+            },
+          }),
+        );
 
         const error = await caught(
           service.createTheory(admin as never, {
@@ -2068,8 +2235,93 @@ describe('LessonsService', () => {
         );
 
         expect(error).toBeInstanceOf(ConflictException);
-        expect(error.message).toBe(COURSE_LESSON_ALREADY_LINKED_MESSAGE);
+        expect(error.getResponse()).toEqual({
+          statusCode: 409,
+          error: 'Conflict',
+          message: COURSE_LESSON_ALREADY_LINKED_MESSAGE,
+          conflictingLesson: {
+            id: 'lesson-other',
+            scheduledAt: new Date('2026-11-10T16:00:00.000Z'),
+            endsAt: new Date('2026-11-10T17:30:00.000Z'),
+            topic: 'Перехрестя',
+            status: LessonStatus.SCHEDULED,
+            courseLessonId: 'course-lesson-1',
+            group: { id: 'group-1', name: 'ПДР — Група А' },
+          },
+        });
         expect(prisma.lesson.create).not.toHaveBeenCalled();
+      });
+
+      it('reports the lesson that won the unique-index race', async () => {
+        givenGroup({ ...theoryRow().group, courseId: 'course-1' });
+        prisma.courseLesson.findFirst.mockResolvedValue({
+          id: 'course-lesson-1',
+        });
+        prisma.lesson.findFirst
+          .mockResolvedValueOnce(null)
+          .mockResolvedValueOnce(
+            theoryRow({
+              lesson: {
+                id: 'lesson-other',
+                topic: 'Перехрестя',
+                scheduledAt: new Date('2026-11-10T16:00:00.000Z'),
+                durationMin: 90,
+                courseLessonId: 'course-lesson-1',
+              },
+            }),
+          );
+        prisma.lesson.create.mockRejectedValue(
+          new Prisma.PrismaClientKnownRequestError('Unique constraint failed', {
+            code: 'P2002',
+            clientVersion: '7.9.1',
+          }),
+        );
+
+        const error = await caught(
+          service.createTheory(admin as never, {
+            ...payload,
+            courseLessonId: 'course-lesson-1',
+          }),
+        );
+
+        expect(error.getResponse()).toMatchObject({
+          statusCode: 409,
+          message: COURSE_LESSON_ALREADY_LINKED_MESSAGE,
+          conflictingLesson: {
+            id: 'lesson-other',
+            courseLessonId: 'course-lesson-1',
+          },
+        });
+      });
+
+      it('keeps the message when the winning lesson cannot be read', async () => {
+        givenGroup({ ...theoryRow().group, courseId: 'course-1' });
+        prisma.courseLesson.findFirst.mockResolvedValue({
+          id: 'course-lesson-1',
+        });
+        prisma.lesson.findFirst
+          .mockResolvedValueOnce(null)
+          .mockResolvedValueOnce(null);
+        prisma.lesson.create.mockRejectedValue(
+          new Prisma.PrismaClientKnownRequestError('Unique constraint failed', {
+            code: 'P2002',
+            clientVersion: '7.9.1',
+          }),
+        );
+
+        const error = await caught(
+          service.createTheory(admin as never, {
+            ...payload,
+            courseLessonId: 'course-lesson-1',
+          }),
+        );
+
+        expect(error).toBeInstanceOf(ConflictException);
+        expect(error.getResponse()).toEqual({
+          statusCode: 409,
+          error: 'Conflict',
+          message: COURSE_LESSON_ALREADY_LINKED_MESSAGE,
+        });
       });
 
       it('checks conflicts for the default 90 minutes, or for the given duration', async () => {
