@@ -9,6 +9,12 @@ import { ScheduleSlot } from './schedule-conflicts';
 
 const DAY_MS = 24 * 60 * 60_000;
 
+/** Необов'язкове вікно списку. null на межі означає відкритий кінець. */
+export type OptionalScheduleRange = {
+  start: Date | null;
+  end: Date | null;
+};
+
 export function fieldError(
   field: string,
   message: string,
@@ -37,6 +43,31 @@ export function resolveRange(
   }
   if (end.getTime() - start.getTime() > SCHEDULE_MAX_RANGE_DAYS * DAY_MS) {
     throw fieldError('to', SCHEDULE_RANGE_LENGTH_MESSAGE);
+  }
+  return { start, end };
+}
+
+/**
+ * Необов'язкове вікно списку теорії. Без from і to — null, тобто всі заняття.
+ * Одна межа лишає інший кінець відкритим. Обидві — [from, to) не довше
+ * SCHEDULE_MAX_RANGE_DAYS. Формат меж уже перевірив DTO.
+ */
+export function resolveOptionalRange(query: {
+  from?: string;
+  to?: string;
+}): OptionalScheduleRange | null {
+  if (!query.from && !query.to) {
+    return null;
+  }
+  const start = query.from ? new Date(query.from) : null;
+  const end = query.to ? new Date(query.to) : null;
+  if (start && end) {
+    if (end.getTime() <= start.getTime()) {
+      throw fieldError('to', SCHEDULE_RANGE_ORDER_MESSAGE);
+    }
+    if (end.getTime() - start.getTime() > SCHEDULE_MAX_RANGE_DAYS * DAY_MS) {
+      throw fieldError('to', SCHEDULE_RANGE_LENGTH_MESSAGE);
+    }
   }
   return { start, end };
 }

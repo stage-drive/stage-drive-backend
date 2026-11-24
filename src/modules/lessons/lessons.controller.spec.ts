@@ -193,11 +193,13 @@ describe('LessonsController', () => {
       },
     );
 
-    it('listTheory passes the current user to the service', async () => {
-      await expect(controller.listTheory(user as never)).resolves.toBe(
+    it('listTheory passes the current user and query to the service', async () => {
+      const query = { groupId: '4c21a0b0-0000-4000-8000-000000000000' };
+
+      await expect(controller.listTheory(user as never, query)).resolves.toBe(
         response,
       );
-      expect(lessonsService.listTheory).toHaveBeenCalledWith(user);
+      expect(lessonsService.listTheory).toHaveBeenCalledWith(user, query);
     });
 
     it('getTheoryContent passes the current user and id to the content service', async () => {

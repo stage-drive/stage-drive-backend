@@ -430,7 +430,43 @@ export class TheoryLessonDto {
   updatedAt: Date;
 }
 
-/** Усі теоретичні заняття автошколи, без вікна дат. */
+/**
+ * Фільтр GET /lessons/theory. Порожній запит — усі заняття автошколи.
+ * from і to не заповнюються замовчуванням: інакше зник би повний список.
+ */
+export class TheoryLessonListQueryDto {
+  @ApiPropertyOptional({
+    format: 'uuid',
+    example: '4c21a0b0-0000-4000-8000-000000000000',
+    description:
+      'Лише заняття цієї групи. Група іншої автошколи дає порожній список.',
+  })
+  @IsUUID('4', { message: 'groupId має бути UUID.' })
+  @IsOptional()
+  groupId?: string;
+
+  @ApiPropertyOptional({
+    format: 'date-time',
+    example: '2026-11-02T00:00:00+02:00',
+    description:
+      'Початок вікна, включно. Заняття, що закінчилося раніше, не повертається. ' +
+      'Без to верхньої межі немає. Знак + у query кодуйте як %2B.',
+  })
+  @IsScheduleBoundary()
+  from?: string;
+
+  @ApiPropertyOptional({
+    format: 'date-time',
+    example: '2026-12-02T00:00:00+02:00',
+    description:
+      'Кінець вікна, не включно. Заняття, що починається в цей момент або пізніше, не повертається. ' +
+      `Разом із from вікно не довше ${SCHEDULE_MAX_RANGE_DAYS} днів. Без from нижньої межі немає.`,
+  })
+  @IsScheduleBoundary()
+  to?: string;
+}
+
+/** Теоретичні заняття автошколи. Без фільтрів — усі, зокрема скасовані. */
 export class TheoryLessonListDto {
   @ApiProperty({
     example: 'Europe/Kyiv',
@@ -441,9 +477,54 @@ export class TheoryLessonListDto {
   @ApiProperty({
     type: [TheoryLessonDto],
     description:
-      'Усі теоретичні заняття автошколи, зокрема скасовані, за зростанням scheduledAt.',
+      'Теоретичні заняття автошколи за зростанням scheduledAt. Без фільтрів — усі, зокрема скасовані. ' +
+      'Зайнятий урок курсу — це courseLesson нескасованого заняття.',
   })
   items: TheoryLessonDto[];
+}
+
+/** Заняття, яке вже тримає урок курсу. Його бачить адмін у 409. */
+export class ConflictingTheoryLessonDto {
+  @ApiProperty({ example: '61616161-6161-4616-8616-616161616161' })
+  id: string;
+
+  @ApiProperty({ example: '2026-11-03T16:00:00.000Z' })
+  scheduledAt: Date;
+
+  @ApiProperty({
+    example: '2026-11-03T17:30:00.000Z',
+    description: 'scheduledAt + durationMin.',
+  })
+  endsAt: Date;
+
+  @ApiProperty({ example: 'Дорожні знаки' })
+  topic: string;
+
+  @ApiProperty({ enum: LessonStatus, example: LessonStatus.SCHEDULED })
+  status: LessonStatus;
+
+  @ApiProperty({ example: '51515151-5151-4515-8515-515151515151' })
+  courseLessonId: string;
+
+  @ApiProperty({ type: LessonGroupDto })
+  group: LessonGroupDto;
+}
+
+/** 409, коли courseLessonId уже зайнятий іншим нескасованим заняттям групи. */
+export class CourseLessonLinkConflictResponseDto {
+  @ApiProperty({ example: 409 })
+  statusCode: number;
+
+  @ApiProperty({ example: 'Conflict' })
+  error: string;
+
+  @ApiProperty({
+    example: 'Цей урок курсу вже прив’язано до іншого заняття групи.',
+  })
+  message: string;
+
+  @ApiProperty({ type: ConflictingTheoryLessonDto })
+  conflictingLesson: ConflictingTheoryLessonDto;
 }
 
 export class PracticeLessonDto {
