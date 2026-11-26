@@ -56,7 +56,7 @@ import {
   UploadMaterialDto,
 } from './course-structure.dto';
 import { CourseStructureService } from './course-structure.service';
-import { COURSE_MANAGE_ROLES, COURSE_STUDENT_ROLES } from './courses.service';
+import { COURSE_CONTENT_ROLES, COURSE_STUDENT_ROLES } from './courses.service';
 
 const courseIdParam = {
   name: 'courseId',
@@ -145,19 +145,21 @@ export class CourseStructureController {
   }
 
   @Get(':courseId')
-  @Roles(...COURSE_MANAGE_ROLES)
+  @Roles(...COURSE_CONTENT_ROLES)
   @ApiOperation({
     summary: 'Структура теоретичного курсу',
     description:
-      'ADMIN отримує курс своєї автошколи разом із розділами, уроками, матеріалами і publicationStatus. ' +
-      'Порядок — за position від 1. Курс іншої автошколи повертає 404. ' +
-      'Порожній курс має chapters: []. Чернетка для ADMIN доступна. ' +
+      'ADMIN і TEACHER отримують будь-який курс своєї автошколи. ' +
+      'Відповідь містить розділи, уроки, матеріали і publicationStatus за position від 1. ' +
+      'Курс іншої автошколи повертає 404. ' +
+      'Порожній курс має chapters: []. Чернетка доступна. ' +
       'Студент читає лише опублікований курс своєї групи: GET /courses/current або GET /courses/{courseId}/content.',
   })
   @ApiParam(courseIdParam)
   @ApiOkResponse({ type: CourseStructureDto })
   @ApiForbiddenResponse({
-    description: 'Структуру курсу бачить лише ADMIN.',
+    description:
+      'Структуру бачить ADMIN або TEACHER своєї автошколи.',
   })
   @ApiNotFoundResponse({
     description:
@@ -171,7 +173,7 @@ export class CourseStructureController {
   }
 
   @Post(':courseId/chapters')
-  @Roles(...COURSE_MANAGE_ROLES)
+  @Roles(...COURSE_CONTENT_ROLES)
   @HttpCode(HttpStatus.CREATED)
   @ApiOperation({
     summary: 'Створити розділ теоретичного курсу',
@@ -185,7 +187,10 @@ export class CourseStructureController {
     description:
       'Некоректне тіло або position поза діапазоном. Тіло містить errors: [{ field, message }].',
   })
-  @ApiForbiddenResponse({ description: 'Створювати розділи може лише ADMIN.' })
+  @ApiForbiddenResponse({
+    description:
+      'Створювати розділи може ADMIN або TEACHER своєї автошколи.',
+  })
   @ApiNotFoundResponse({
     description: 'Курс не знайдено або він належить іншій автошколі.',
   })
@@ -198,7 +203,7 @@ export class CourseStructureController {
   }
 
   @Patch(':courseId/chapters/:chapterId')
-  @Roles(...COURSE_MANAGE_ROLES)
+  @Roles(...COURSE_CONTENT_ROLES)
   @ApiOperation({
     summary: 'Редагувати розділ теоретичного курсу',
     description:
@@ -212,7 +217,10 @@ export class CourseStructureController {
     description:
       'Порожнє тіло, некоректні поля або position поза діапазоном. Тіло містить errors: [{ field, message }].',
   })
-  @ApiForbiddenResponse({ description: 'Редагувати розділи може лише ADMIN.' })
+  @ApiForbiddenResponse({
+    description:
+      'Редагувати розділи може ADMIN або TEACHER своєї автошколи.',
+  })
   @ApiNotFoundResponse({
     description: 'Курс або розділ не знайдено в цій автошколі.',
   })
@@ -226,7 +234,7 @@ export class CourseStructureController {
   }
 
   @Post(':courseId/chapters/:chapterId/lessons')
-  @Roles(...COURSE_MANAGE_ROLES)
+  @Roles(...COURSE_CONTENT_ROLES)
   @HttpCode(HttpStatus.CREATED)
   @ApiOperation({
     summary: 'Створити урок теоретичного курсу',
@@ -241,7 +249,10 @@ export class CourseStructureController {
     description:
       'Некоректне тіло або position поза діапазоном. Тіло містить errors: [{ field, message }].',
   })
-  @ApiForbiddenResponse({ description: 'Створювати уроки може лише ADMIN.' })
+  @ApiForbiddenResponse({
+    description:
+      'Створювати уроки може ADMIN або TEACHER своєї автошколи.',
+  })
   @ApiNotFoundResponse({
     description: 'Курс або розділ не знайдено в цій автошколі.',
   })
@@ -255,7 +266,7 @@ export class CourseStructureController {
   }
 
   @Patch(':courseId/chapters/:chapterId/lessons/:lessonId')
-  @Roles(...COURSE_MANAGE_ROLES)
+  @Roles(...COURSE_CONTENT_ROLES)
   @ApiOperation({
     summary: 'Редагувати урок теоретичного курсу',
     description:
@@ -270,7 +281,10 @@ export class CourseStructureController {
     description:
       'Порожнє тіло, некоректні поля або position поза діапазоном. Тіло містить errors: [{ field, message }].',
   })
-  @ApiForbiddenResponse({ description: 'Редагувати уроки може лише ADMIN.' })
+  @ApiForbiddenResponse({
+    description:
+      'Редагувати уроки може ADMIN або TEACHER своєї автошколи.',
+  })
   @ApiNotFoundResponse({
     description: 'Курс, розділ або урок не знайдено в цій автошколі.',
   })
@@ -291,7 +305,7 @@ export class CourseStructureController {
   }
 
   @Post(':courseId/chapters/:chapterId/lessons/:lessonId/materials')
-  @Roles(...COURSE_MANAGE_ROLES)
+  @Roles(...COURSE_CONTENT_ROLES)
   @HttpCode(HttpStatus.CREATED)
   @ApiOperation({
     summary: 'Додати навчальний матеріал уроку',
@@ -308,7 +322,8 @@ export class CourseStructureController {
       'Некоректне тіло, position поза діапазоном або body не відповідає type. Тіло містить errors: [{ field, message }].',
   })
   @ApiForbiddenResponse({
-    description: 'Додавати матеріали може лише ADMIN.',
+    description:
+      'Додавати матеріали може ADMIN або TEACHER своєї автошколи.',
   })
   @ApiNotFoundResponse({
     description: 'Курс, розділ або урок не знайдено в цій автошколі.',
@@ -332,7 +347,7 @@ export class CourseStructureController {
   @Patch(
     ':courseId/chapters/:chapterId/lessons/:lessonId/materials/:materialId',
   )
-  @Roles(...COURSE_MANAGE_ROLES)
+  @Roles(...COURSE_CONTENT_ROLES)
   @ApiOperation({
     summary: 'Редагувати навчальний матеріал уроку',
     description:
@@ -349,7 +364,8 @@ export class CourseStructureController {
       'Порожнє тіло, некоректні поля або body не відповідає type. Тіло містить errors: [{ field, message }].',
   })
   @ApiForbiddenResponse({
-    description: 'Редагувати матеріали може лише ADMIN.',
+    description:
+      'Редагувати матеріали може ADMIN або TEACHER своєї автошколи.',
   })
   @ApiNotFoundResponse({
     description: 'Курс, розділ, урок або матеріал не знайдено в цій автошколі.',
@@ -373,11 +389,12 @@ export class CourseStructureController {
   }
 
   @Patch(':courseId/chapters/:chapterId/lessons/:lessonId/publication')
-  @Roles(...COURSE_MANAGE_ROLES)
+  @Roles(...COURSE_CONTENT_ROLES)
   @ApiOperation({
     summary: 'Опублікувати або зняти з публікації урок теоретичного курсу',
     description:
-      'ADMIN змінює publicationStatus уроку: DRAFT або PUBLISHED. ' +
+      'ADMIN або TEACHER змінює publicationStatus уроку: DRAFT або PUBLISHED. ' +
+      'PUBLISHED можливий лише коли в уроку вже є опублікований тест: після аудиторії або YouTube-уроку тест обов’язковий. ' +
       'Студент бачить матеріали лише опублікованого уроку опублікованого курсу. ' +
       'ARCHIVED-урок цим запитом не змінюється: спершу його не архівують повторно, опублікувати його не можна. ' +
       'Повтор того самого статусу повертає урок без запису.',
@@ -391,13 +408,15 @@ export class CourseStructureController {
       'publicationStatus відсутній або не DRAFT і не PUBLISHED. Тіло містить errors: [{ field, message }].',
   })
   @ApiForbiddenResponse({
-    description: 'Змінювати публікацію уроку може лише ADMIN.',
+    description:
+      'Змінювати публікацію уроку може ADMIN або TEACHER своєї автошколи.',
   })
   @ApiNotFoundResponse({
     description: 'Курс, розділ або урок не знайдено в цій автошколі.',
   })
   @ApiConflictResponse({
-    description: 'Архівований урок не можна опублікувати.',
+    description:
+      'Архівований урок не можна опублікувати. Урок без опублікованого тесту теж не публікується.',
   })
   changeLessonPublication(
     @CurrentUser() user: User,
@@ -416,7 +435,7 @@ export class CourseStructureController {
   }
 
   @Post(':courseId/chapters/:chapterId/lessons/:lessonId/archive')
-  @Roles(...COURSE_MANAGE_ROLES)
+  @Roles(...COURSE_CONTENT_ROLES)
   @ApiOperation({
     summary: 'Архівувати урок теоретичного курсу',
     description:
@@ -429,7 +448,10 @@ export class CourseStructureController {
   @ApiParam(chapterIdParam)
   @ApiParam(lessonIdParam)
   @ApiOkResponse({ type: LessonDto })
-  @ApiForbiddenResponse({ description: 'Архівувати уроки може лише ADMIN.' })
+  @ApiForbiddenResponse({
+    description:
+      'Архівувати уроки може ADMIN або TEACHER своєї автошколи.',
+  })
   @ApiNotFoundResponse({
     description: 'Курс, розділ або урок не знайдено в цій автошколі.',
   })
@@ -443,7 +465,7 @@ export class CourseStructureController {
   }
 
   @Delete(':courseId/chapters/:chapterId')
-  @Roles(...COURSE_MANAGE_ROLES)
+  @Roles(...COURSE_CONTENT_ROLES)
   @HttpCode(HttpStatus.NO_CONTENT)
   @ApiOperation({
     summary: 'Видалити розділ теоретичного курсу',
@@ -455,7 +477,10 @@ export class CourseStructureController {
   @ApiParam(courseIdParam)
   @ApiParam(chapterIdParam)
   @ApiNoContentResponse({ description: 'Розділ видалено.' })
-  @ApiForbiddenResponse({ description: 'Видаляти розділи може лише ADMIN.' })
+  @ApiForbiddenResponse({
+    description:
+      'Видаляти розділи може ADMIN або TEACHER своєї автошколи.',
+  })
   @ApiNotFoundResponse({
     description: 'Курс або розділ не знайдено в цій автошколі.',
   })
@@ -468,7 +493,7 @@ export class CourseStructureController {
   }
 
   @Delete(':courseId/chapters/:chapterId/lessons/:lessonId')
-  @Roles(...COURSE_MANAGE_ROLES)
+  @Roles(...COURSE_CONTENT_ROLES)
   @HttpCode(HttpStatus.NO_CONTENT)
   @ApiOperation({
     summary: 'Видалити урок теоретичного курсу',
@@ -481,7 +506,10 @@ export class CourseStructureController {
   @ApiParam(chapterIdParam)
   @ApiParam(lessonIdParam)
   @ApiNoContentResponse({ description: 'Урок видалено.' })
-  @ApiForbiddenResponse({ description: 'Видаляти уроки може лише ADMIN.' })
+  @ApiForbiddenResponse({
+    description:
+      'Видаляти уроки може ADMIN або TEACHER своєї автошколи.',
+  })
   @ApiNotFoundResponse({
     description: 'Курс, розділ або урок не знайдено в цій автошколі.',
   })
@@ -495,7 +523,7 @@ export class CourseStructureController {
   }
 
   @Post(':courseId/chapters/:chapterId/lessons/:lessonId/materials/upload')
-  @Roles(...COURSE_MANAGE_ROLES)
+  @Roles(...COURSE_CONTENT_ROLES)
   @HttpCode(HttpStatus.CREATED)
   @ApiConsumes('multipart/form-data')
   @ApiOperation({
@@ -514,7 +542,8 @@ export class CourseStructureController {
       'Немає файлу, тип не дозволений або вміст не збігається з форматом. Тіло містить errors: [{ field, message }].',
   })
   @ApiForbiddenResponse({
-    description: 'Завантажувати матеріали може лише ADMIN.',
+    description:
+      'Завантажувати матеріали може ADMIN або TEACHER своєї автошколи.',
   })
   @ApiNotFoundResponse({
     description: 'Курс, розділ або урок не знайдено в цій автошколі.',

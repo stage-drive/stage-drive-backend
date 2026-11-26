@@ -40,6 +40,7 @@ import {
   UpdateGroupStatusDto,
 } from './groups.dto';
 import {
+  GROUP_LIST_ROLES,
   GROUP_MANAGE_ROLES,
   GROUP_ROSTER_ROLES,
   GroupsService,
@@ -54,15 +55,18 @@ export class GroupsController {
   constructor(private readonly groupsService: GroupsService) {}
 
   @Get()
-  @Roles(...GROUP_MANAGE_ROLES)
+  @Roles(...GROUP_LIST_ROLES)
   @ApiOperation({
     summary: 'Список навчальних груп своєї автошколи',
     description:
-      'Усі групи організації поточного ADMIN: назва, статус, дати, викладач і кількість активних студентів. ' +
+      'ADMIN бачить усі групи організації: назва, статус, дати, викладач і кількість активних студентів. ' +
+      'TEACHER бачить лише групи, які він веде. ' +
       'Групи інших організацій не повертаються. Якщо груп немає, повертається порожній масив.',
   })
   @ApiOkResponse({ type: GroupListDto })
-  @ApiForbiddenResponse({ description: 'Список груп доступний лише ADMIN.' })
+  @ApiForbiddenResponse({
+    description: 'Список груп доступний ADMIN і TEACHER.',
+  })
   @ApiNotFoundResponse({
     description: 'Автошколу не знайдено або її видалено.',
   })

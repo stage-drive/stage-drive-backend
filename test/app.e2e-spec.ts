@@ -6094,12 +6094,17 @@ describe('API (e2e)', () => {
         };
       };
     };
-    const publication = (body.paths['/api/tests/{testId}/publication'] ??
-      body.paths['/tests/{testId}/publication'])?.patch;
-    const current = (body.paths['/api/tests/current'] ??
-      body.paths['/tests/current'])?.get;
-    const content = (body.paths['/api/tests/{testId}/content'] ??
-      body.paths['/tests/{testId}/content'])?.get;
+    const publication = (
+      body.paths['/api/tests/{testId}/publication'] ??
+      body.paths['/tests/{testId}/publication']
+    )?.patch;
+    const current = (
+      body.paths['/api/tests/current'] ?? body.paths['/tests/current']
+    )?.get;
+    const content = (
+      body.paths['/api/tests/{testId}/content'] ??
+      body.paths['/tests/{testId}/content']
+    )?.get;
 
     expect(publication).toBeDefined();
     expect(current).toBeDefined();
@@ -6111,5 +6116,174 @@ describe('API (e2e)', () => {
     expect(
       body.components.schemas.StudentAnswerOptionDto?.properties,
     ).not.toHaveProperty('isCorrect');
+  });
+
+  describe('lesson test API contract', () => {
+    type OpenApiOperation = {
+      deprecated?: boolean;
+      requestBody?: unknown;
+      responses?: Record<string, unknown>;
+    };
+    type OpenApiSchema = {
+      properties?: Record<string, unknown>;
+      required?: string[];
+    };
+    type OpenApiBody = {
+      paths: Record<string, Record<string, OpenApiOperation | undefined>>;
+      components: { schemas: Record<string, OpenApiSchema | undefined> };
+    };
+
+    async function openApi(): Promise<OpenApiBody> {
+      const response = await request(app.getHttpServer())
+        .get('/api/docs-json')
+        .expect(200);
+      return response.body as OpenApiBody;
+    }
+
+    function operation(
+      body: OpenApiBody,
+      method: string,
+      path: string,
+    ): OpenApiOperation | undefined {
+      return (body.paths[`/api${path}`] ?? body.paths[path])?.[method];
+    }
+
+    it('documents every endpoint of the lesson test', async () => {
+      const body = await openApi();
+      const expected: Array<[string, string]> = [
+        // Admin / Teacher: керування тестом.
+        ['get', '/tests'],
+        ['post', '/tests'],
+        ['get', '/tests/{testId}'],
+        ['patch', '/tests/{testId}'],
+        ['patch', '/tests/{testId}/publication'],
+        ['patch', '/tests/{testId}/archive'],
+        ['post', '/tests/{testId}/questions'],
+        ['patch', '/tests/{testId}/questions/{questionId}'],
+        ['delete', '/tests/{testId}/questions/{questionId}'],
+        ['post', '/tests/{testId}/questions/{questionId}/options'],
+        ['patch', '/tests/{testId}/questions/{questionId}/options/{optionId}'],
+        ['delete', '/tests/{testId}/questions/{questionId}/options/{optionId}'],
+        // Admin / Teacher: спроби студентів.
+        ['get', '/tests/{testId}/attempts'],
+        ['get', '/tests/attempts'],
+        // Student: проходження.
+        ['get', '/lessons/{lessonId}/test'],
+        ['post', '/tests/{testId}/attempts'],
+        ['get', '/tests/attempts/{attemptId}'],
+        ['patch', '/tests/attempts/{attemptId}/answers'],
+        ['post', '/tests/attempts/{attemptId}/submit'],
+        ['post', '/tests/attempts/{attemptId}/expire'],
+        ['get', '/tests/{testId}/attempts/me'],
+        ['get', '/me/test-attempts'],
+      ];
+
+      const missing = expected
+        .filter(([method, path]) => !operation(body, method, path))
+        .map(([method, path]) => `${method.toUpperCase()} ${path}`);
+
+      expect(missing).toEqual([]);
+    });
+
+    it('keeps the current lesson-test routes active', async () => {
+      const body = await openApi();
+
+      expect(
+        operation(body, 'post', '/courses/{courseId}/test'),
+      ).toBeUndefined();
+      for (const [method, path] of [
+        ['post', '/tests/{testId}/attempts'],
+        ['get', '/tests/attempts/{attemptId}'],
+        ['post', '/tests/attempts/{attemptId}/submit'],
+        ['get', '/lessons/{lessonId}/test'],
+      ]) {
+        expect(operation(body, method, path)?.deprecated).not.toBe(true);
+      }
+    });
+
+    it('takes no score, result or status from the client when a test is submitted', async () => {
+      const { components } = await openApi();
+      const submit = components.schemas.SubmitAttemptDto;
+      const save = components.schemas.SaveAttemptAnswersDto;
+
+      expect(submit?.properties).toHaveProperty('answers');
+      for (const forbidden of [
+        'score',
+        'scorePercent',
+        'passed',
+        'result',
+        'status',
+      ]) {
+        expect(submit?.properties).not.toHaveProperty(forbidden);
+        expect(save?.properties).not.toHaveProperty(forbidden);
+      }
+      expect(save?.required).toContain('answers');
+    });
+
+    it('describes the attempt response with the counters, the server score and the result', async () => {
+      const { components } = await openApi();
+      const attempt = components.schemas.TestAttemptDto;
+
+      for (const field of [
+        'status',
+        'result',
+        'attemptNumber',
+        'attemptsUsed',
+        'attemptsLeft',
+        'startedAt',
+        'expiresAt',
+        'scorePercent',
+        'earnedPoints',
+        'maxPoints',
+        'correctCount',
+        'totalQuestions',
+        'questions',
+        'answers',
+      ]) {
+        expect(attempt?.properties).toHaveProperty(field);
+      }
+    });
+
+    it('shows the student a lesson test without correct answers and with the attempt counters', async () => {
+      const { components } = await openApi();
+      const lessonTest = components.schemas.LessonTestDto;
+
+      expect(
+        components.schemas.LessonTestOptionDto?.properties,
+      ).not.toHaveProperty('isCorrect');
+      for (const field of [
+        'lessonId',
+        'passed',
+        'attemptsUsed',
+        'attemptsLeft',
+        'lockedNextUntilPassed',
+        'questions',
+      ]) {
+        expect(lessonTest?.properties).toHaveProperty(field);
+      }
+    });
+
+    it('documents the lesson test block of the course progress and content', async () => {
+      const { components } = await openApi();
+
+      for (const field of [
+        'id',
+        'status',
+        'passed',
+        'attemptsUsed',
+        'attemptsLeft',
+        'lockedNextUntilPassed',
+      ]) {
+        expect(
+          components.schemas.LessonTestProgressDto?.properties,
+        ).toHaveProperty(field);
+      }
+      expect(
+        components.schemas.CourseLessonProgressDto?.properties,
+      ).toHaveProperty('test');
+      expect(components.schemas.LessonStructureDto?.properties).toHaveProperty(
+        'test',
+      );
+    });
   });
 });

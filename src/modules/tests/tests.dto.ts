@@ -6,6 +6,7 @@ import {
   IsBoolean,
   IsDefined,
   IsEnum,
+  IsIn,
   IsInt,
   IsNotEmpty,
   IsOptional,
@@ -39,13 +40,55 @@ export const QUESTION_TEXT_LENGTH_MESSAGE = `Текст питання має м
 export const OPTION_TEXT_LENGTH_MESSAGE = `Текст варіанта має містити не більше ${OPTION_TEXT_MAX_LENGTH} символів.`;
 export const TEST_FORMAT_MESSAGE =
   'format має бути SINGLE_CHOICE, MULTIPLE_CHOICE або TRUE_FALSE.';
+export const QUESTION_TYPE_MESSAGE =
+  'type має бути SINGLE_CHOICE, MULTIPLE_CHOICE або TRUE_FALSE.';
 export const TEST_PUBLICATION_MESSAGE =
-  'publicationStatus має бути DRAFT або PUBLISHED.';
+  'publicationStatus має бути DRAFT або PUBLISHED. Для архіву є PATCH /tests/{testId}/archive.';
+export const TEST_STATUS_FILTER_MESSAGE =
+  'publicationStatus має бути DRAFT, PUBLISHED або ARCHIVED.';
 export const PASSING_SCORE_MESSAGE = `passingScore має бути цілим числом від ${PASSING_SCORE_MIN} до ${PASSING_SCORE_MAX}.`;
 export const TIME_LIMIT_MESSAGE = `timeLimitMinutes має бути цілим числом від ${TIME_LIMIT_MIN} до ${TIME_LIMIT_MAX} або null.`;
 export const MAX_ATTEMPTS_MESSAGE = `maxAttempts має бути цілим числом від ${MAX_ATTEMPTS_MIN} до ${MAX_ATTEMPTS_MAX} або null.`;
 export const SHUFFLE_MESSAGE = 'shuffleQuestions має бути true або false.';
 export const COURSE_ID_MESSAGE = 'courseId має бути UUID.';
+export const LESSON_ID_MESSAGE = 'lessonId має бути UUID.';
+
+function emptyToUndefined({ value }: { value: unknown }): unknown {
+  return value === '' ? undefined : value;
+}
+
+export class TestListQueryDto {
+  @ApiPropertyOptional({
+    format: 'uuid',
+    description:
+      'Лише тести цього курсу. Для TEACHER курс має бути призначений його групі.',
+  })
+  @Transform(emptyToUndefined)
+  @IsOptional()
+  @IsUUID('4', { message: COURSE_ID_MESSAGE })
+  courseId?: string;
+
+  @ApiPropertyOptional({
+    format: 'uuid',
+    description:
+      'Лише тести цього уроку програми курсу (CourseLesson). Для TEACHER курс уроку має бути призначений його групі.',
+  })
+  @Transform(emptyToUndefined)
+  @IsOptional()
+  @IsUUID('4', { message: LESSON_ID_MESSAGE })
+  lessonId?: string;
+
+  @ApiPropertyOptional({
+    enum: TheoryTestPublicationStatus,
+    description:
+      'Лише тести з цим статусом. Без фільтра повертаються всі, включно з ARCHIVED.',
+  })
+  @Transform(emptyToUndefined)
+  @IsOptional()
+  @IsEnum(TheoryTestPublicationStatus, { message: TEST_STATUS_FILTER_MESSAGE })
+  publicationStatus?: TheoryTestPublicationStatus;
+}
+
 export const OPTIONS_ARRAY_MESSAGE = 'options має бути масивом варіантів.';
 export const POSITION_INTEGER_MESSAGE = 'position має бути цілим числом.';
 export const POSITION_MIN_MESSAGE = 'position має бути не менше 1.';
@@ -110,6 +153,15 @@ export class QuestionDto {
   @ApiProperty({ example: '61616161-6161-4616-8616-616161616161' })
   testId: string;
 
+  @ApiProperty({
+    enum: TheoryTestFormat,
+    example: TheoryTestFormat.SINGLE_CHOICE,
+    description:
+      'Тип питання. SINGLE_CHOICE — одна правильна відповідь. MULTIPLE_CHOICE — кілька. TRUE_FALSE — так/ні. ' +
+      'У одному тесті можуть бути питання різних типів.',
+  })
+  type: TheoryTestFormat;
+
   @ApiProperty({ example: 'Що означає цей знак?' })
   text: string;
 
@@ -138,7 +190,18 @@ export class TestDto {
     format: 'uuid',
     nullable: true,
     description:
-      'Урок, до якого прив’язаний тест. null — тест усього курсу. У тесту уроку рівно 3 спроби.',
+      'Урок програми курсу (CourseLesson), до якого прив’язаний тест. ' +
+      'null — старий тест усього курсу без уроку: його не можна опублікувати, доки не вказано lessonId. ' +
+      'У тесту уроку рівно 3 спроби.',
+  })
+  lessonId: string | null;
+
+  @ApiProperty({
+    type: String,
+    format: 'uuid',
+    nullable: true,
+    deprecated: true,
+    description: 'Те саме, що lessonId. Лишено для сумісності.',
   })
   courseLessonId: string | null;
 
@@ -156,7 +219,8 @@ export class TestDto {
     enum: TheoryTestFormat,
     example: TheoryTestFormat.SINGLE_CHOICE,
     description:
-      'SINGLE_CHOICE — одна правильна відповідь. MULTIPLE_CHOICE — кілька. TRUE_FALSE — так/ні.',
+      'Тип за замовчуванням для нових питань. Тип кожного питання лежить у questions[].type, ' +
+      'тож в одному тесті можуть бути питання різних типів.',
   })
   format: TheoryTestFormat;
 
@@ -194,7 +258,8 @@ export class TestDto {
     enum: TheoryTestPublicationStatus,
     example: TheoryTestPublicationStatus.DRAFT,
     description:
-      'Новий тест завжди DRAFT. PUBLISHED ставиться лише PATCH /tests/{testId}/publication після перевірки структури.',
+      'Новий тест завжди DRAFT. PUBLISHED ставиться лише PATCH /tests/{testId}/publication після перевірки (UC-003). ' +
+      'ARCHIVED ставиться PATCH /tests/{testId}/archive: студенти такий тест не бачать, історія спроб лишається.',
   })
   publicationStatus: TheoryTestPublicationStatus;
 
@@ -251,6 +316,13 @@ export class StudentQuestionDto {
   @ApiProperty({ example: '61616161-6161-4616-8616-616161616161' })
   testId: string;
 
+  @ApiProperty({
+    enum: TheoryTestFormat,
+    example: TheoryTestFormat.SINGLE_CHOICE,
+    description: 'Тип питання: скільки варіантів можна обрати.',
+  })
+  type: TheoryTestFormat;
+
   @ApiProperty({ example: 'Що означає цей знак?' })
   text: string;
 
@@ -291,9 +363,173 @@ export class StudentTestListDto {
   @ApiProperty({
     type: [TestListItemDto],
     description:
-      'Лише тести зі збереженим publicationStatus PUBLISHED. Чернетки не повертаються.',
+      'Лише тести зі збереженим publicationStatus PUBLISHED. Чернетки й архівні не повертаються.',
   })
   tests: TestListItemDto[];
+}
+
+export class LessonTestOptionDto {
+  @ApiProperty({ example: '81818181-8181-4818-8818-818181818181' })
+  id: string;
+
+  @ApiProperty({ example: 'Поступитися дорогою' })
+  text: string;
+
+  @ApiProperty({ example: 1, minimum: 1 })
+  position: number;
+}
+
+export class LessonTestQuestionDto {
+  @ApiProperty({ example: '71717171-7171-4717-8717-717171717171' })
+  id: string;
+
+  @ApiProperty({
+    enum: TheoryTestFormat,
+    example: TheoryTestFormat.SINGLE_CHOICE,
+    description: 'Тип питання: скільки варіантів можна обрати.',
+  })
+  type: TheoryTestFormat;
+
+  @ApiProperty({ example: 'Що означає цей знак?' })
+  text: string;
+
+  @ApiProperty({ example: 1, minimum: 1 })
+  position: number;
+
+  @ApiProperty({
+    type: [LessonTestOptionDto],
+    description:
+      'Варіанти без isCorrect: правильну відповідь студент не отримує.',
+  })
+  options: LessonTestOptionDto[];
+}
+
+/**
+ * Опублікований тест уроку для студента: зміст без isCorrect і стан його спроб.
+ * Лічильники рахують поточний цикл спроб.
+ */
+export class LessonTestDto {
+  @ApiProperty({ example: '61616161-6161-4616-8616-616161616161' })
+  id: string;
+
+  @ApiProperty({
+    example: '51515151-5151-4515-8515-515151515151',
+    description: 'Урок програми курсу (CourseLesson), тест якого повернуто.',
+  })
+  lessonId: string;
+
+  @ApiProperty({ example: '41414141-4141-4414-8414-414141414141' })
+  courseId: string;
+
+  @ApiProperty({ example: 'Тест: дорожні знаки' })
+  name: string;
+
+  @ApiProperty({ type: String, nullable: true })
+  description: string | null;
+
+  @ApiProperty({
+    enum: TheoryTestPublicationStatus,
+    example: TheoryTestPublicationStatus.PUBLISHED,
+    description:
+      'Студент бачить лише опублікований тест, тож тут завжди PUBLISHED.',
+  })
+  status: TheoryTestPublicationStatus;
+
+  @ApiProperty({ example: 80, description: 'Поріг складання у відсотках.' })
+  passingScore: number;
+
+  @ApiProperty({
+    type: Number,
+    nullable: true,
+    example: 20,
+    description:
+      'Ліміт часу на одну спробу в хвилинах. null — без обмеження. Час рахує сервер від startedAt.',
+  })
+  timeLimitMinutes: number | null;
+
+  @ApiProperty({
+    type: Number,
+    nullable: true,
+    example: 3,
+    description: 'Скільки спроб дає один цикл. У тесту уроку їх 3.',
+  })
+  maxAttempts: number | null;
+
+  @ApiProperty({ example: false })
+  shuffleQuestions: boolean;
+
+  @ApiProperty({ example: 10 })
+  questionCount: number;
+
+  @ApiProperty({
+    type: [LessonTestQuestionDto],
+    description: 'Питання за position. Позначок правильних відповідей немає.',
+  })
+  questions: LessonTestQuestionDto[];
+
+  @ApiProperty({
+    example: false,
+    description:
+      'Тест уже складено. Лише PASSED відкриває наступний урок; перегляд матеріалів не обов’язковий.',
+  })
+  passed: boolean;
+
+  @ApiProperty({
+    example: 1,
+    description:
+      'Скільки спроб поточного циклу вже зайнято: витрачені та відкрита (IN_PROGRESS).',
+  })
+  attemptsUsed: number;
+
+  @ApiProperty({
+    type: Number,
+    nullable: true,
+    example: 2,
+    description:
+      'Скільки спроб ще можна почати в поточному циклі. 0 — спроби вичерпано, пройдіть урок ще раз.',
+  })
+  attemptsLeft: number | null;
+
+  @ApiProperty({
+    type: String,
+    format: 'uuid',
+    nullable: true,
+    description:
+      'Відкрита спроба, яку можна продовжити через GET /tests/attempts/{attemptId}.',
+  })
+  openAttemptId: string | null;
+
+  @ApiProperty({
+    example: true,
+    description:
+      'Чи можна зараз почати нову спробу (POST /tests/{testId}/attempts).',
+  })
+  nextAttemptAvailable: boolean;
+
+  @ApiProperty({
+    type: String,
+    nullable: true,
+    enum: ['IN_PROGRESS', 'ALREADY_PASSED', 'ATTEMPTS_EXHAUSTED'],
+    description:
+      'Чому нову спробу почати не можна. null — можна. ' +
+      'IN_PROGRESS — є відкрита спроба. ALREADY_PASSED — тест складено. ATTEMPTS_EXHAUSTED — ліміт циклу вичерпано.',
+  })
+  unavailableReason: string | null;
+
+  @ApiProperty({
+    example: true,
+    description:
+      'Наступний урок закритий, доки тест не складено (passed = false).',
+  })
+  lockedNextUntilPassed: boolean;
+
+  @ApiPropertyOptional({
+    example: 'Пройдіть урок ще раз.',
+    description:
+      'Є лише коли спроби вичерпано без складеного тесту. Нові 3 спроби з’являються після того, ' +
+      'як студент знову позначить урок пройденим (POST /courses/{courseId}/lessons/{lessonId}/complete).',
+  })
+  message?: string;
 }
 
 export class AnswerOptionInputDto {
@@ -316,13 +552,28 @@ export class AnswerOptionInputDto {
 }
 
 export class CreateTestDto {
-  @ApiProperty({
-    example: '41414141-4141-4414-8414-414141414141',
-    description: 'Курс своєї автошколи. Курс іншої організації дає 404.',
+  @ApiPropertyOptional({
+    example: '51515151-5151-4515-8515-515151515151',
+    description:
+      'Урок програми курсу (CourseLesson), до якого належить тест. Курс береться з уроку. ' +
+      'Урок іншої автошколи дає 404, а в уроку може бути лише один не архівний тест (409). ' +
+      'Тест уроку завжди має 3 спроби. Потрібен lessonId або (застарілий) courseId.',
   })
+  @ValidateIf((_, value) => value !== undefined)
+  @IsUUID('4', { message: LESSON_ID_MESSAGE })
+  lessonId?: string;
+
+  @ApiPropertyOptional({
+    example: '41414141-4141-4414-8414-414141414141',
+    deprecated: true,
+    description:
+      'Застаріло: тест належить уроку, а не курсу. Без lessonId створюється тест курсу без уроку, ' +
+      'який не можна опублікувати, доки не вказано lessonId (PATCH /tests/{testId}). ' +
+      'Якщо передано разом із lessonId, курс має збігатися з курсом уроку. Курс іншої організації дає 404.',
+  })
+  @ValidateIf((_, value) => value !== undefined)
   @IsUUID('4', { message: COURSE_ID_MESSAGE })
-  @IsDefined({ message: REQUIRED_FIELD_MESSAGE })
-  courseId: string;
+  courseId?: string;
 
   @ApiProperty({ example: 'ПДР, категорія B', maxLength: TEST_NAME_MAX_LENGTH })
   @Transform(trimString)
@@ -349,13 +600,17 @@ export class CreateTestDto {
   @IsString({ message: 'description має бути рядком або null.' })
   description?: string | null;
 
-  @ApiProperty({
+  @ApiPropertyOptional({
     enum: TheoryTestFormat,
+    default: TheoryTestFormat.SINGLE_CHOICE,
     example: TheoryTestFormat.SINGLE_CHOICE,
+    description:
+      'Тип за замовчуванням для нових питань. Тип кожного питання задається в питанні (type), ' +
+      'тож тест може мати питання різних типів.',
   })
+  @ValidateIf((_, value) => value !== undefined)
   @IsEnum(TheoryTestFormat, { message: TEST_FORMAT_MESSAGE })
-  @IsDefined({ message: REQUIRED_FIELD_MESSAGE })
-  format: TheoryTestFormat;
+  format?: TheoryTestFormat;
 
   @ApiProperty({
     example: 90,
@@ -406,14 +661,30 @@ export class CreateTestDto {
   shuffleQuestions?: boolean;
 }
 
-/** Тест уроку. courseId береться з адреси, maxAttempts завжди 3. */
+/** Тест уроку. Курс і урок беруться з адреси, maxAttempts завжди 3. */
 export class CreateLessonTestDto extends OmitType(CreateTestDto, [
   'courseId',
+  'lessonId',
   'maxAttempts',
 ] as const) {}
 
 export class UpdateTestDto {
-  @ApiPropertyOptional({ example: '41414141-4141-4414-8414-414141414141' })
+  @ApiPropertyOptional({
+    example: '51515151-5151-4515-8515-515151515151',
+    description:
+      'Прив’язує чернетку до уроку курсу тесту (або переносить на інший урок). ' +
+      'Лише для DRAFT: урок опублікованого тесту не змінюється (409). У уроку не може бути двох не архівних тестів (409).',
+  })
+  @ValidateIf((_, value) => value !== undefined)
+  @IsUUID('4', { message: LESSON_ID_MESSAGE })
+  lessonId?: string;
+
+  @ApiPropertyOptional({
+    example: '41414141-4141-4414-8414-414141414141',
+    deprecated: true,
+    description:
+      'Застаріло. Курс тесту уроку не змінюється (409): тест лишається на курсі свого уроку.',
+  })
   @ValidateIf((_, value) => value !== undefined)
   @IsUUID('4', { message: COURSE_ID_MESSAGE })
   courseId?: string;
@@ -441,7 +712,11 @@ export class UpdateTestDto {
   @IsString({ message: 'description має бути рядком або null.' })
   description?: string | null;
 
-  @ApiPropertyOptional({ enum: TheoryTestFormat })
+  @ApiPropertyOptional({
+    enum: TheoryTestFormat,
+    description:
+      'Тип за замовчуванням для нових питань. Існуючі питання не змінюються: їхній тип лежить у питанні (type).',
+  })
   @ValidateIf((_, value) => value !== undefined)
   @IsEnum(TheoryTestFormat, { message: TEST_FORMAT_MESSAGE })
   format?: TheoryTestFormat;
@@ -484,15 +759,23 @@ export class UpdateTestDto {
   shuffleQuestions?: boolean;
 }
 
+/** Статуси, які можна поставити публікацією. ARCHIVED ставить лише PATCH /tests/{testId}/archive. */
+export const PUBLICATION_TARGET_STATUSES = [
+  TheoryTestPublicationStatus.DRAFT,
+  TheoryTestPublicationStatus.PUBLISHED,
+] as const;
+
 export class UpdateTestPublicationDto {
   @ApiProperty({
-    enum: TheoryTestPublicationStatus,
+    enum: PUBLICATION_TARGET_STATUSES,
     example: TheoryTestPublicationStatus.PUBLISHED,
     description:
-      'PUBLISHED перевіряє, що в тесті є питання і кожне відповідає format. ' +
-      'DRAFT знімає публікацію без перевірки структури.',
+      'PUBLISHED перевіряє тест (UC-003): назва, урок, поріг складання, ліміт спроб більший за 0, ' +
+      'щонайменше одне питання, а в кожного питання — варіанти і правильні відповіді за його типом. ' +
+      'Помилки повертаються списком errors[{field, message}]. ' +
+      'DRAFT знімає публікацію без перевірки структури. Архівний тест не публікується (409).',
   })
-  @IsEnum(TheoryTestPublicationStatus, { message: TEST_PUBLICATION_MESSAGE })
+  @IsIn(PUBLICATION_TARGET_STATUSES, { message: TEST_PUBLICATION_MESSAGE })
   @IsDefined({ message: REQUIRED_FIELD_MESSAGE })
   publicationStatus: TheoryTestPublicationStatus;
 }
@@ -511,6 +794,17 @@ export class CreateQuestionDto {
   @IsString({ message: 'text має бути рядком.' })
   @IsDefined({ message: REQUIRED_FIELD_MESSAGE })
   text: string;
+
+  @ApiPropertyOptional({
+    enum: TheoryTestFormat,
+    example: TheoryTestFormat.SINGLE_CHOICE,
+    description:
+      'Тип питання: SINGLE_CHOICE, MULTIPLE_CHOICE або TRUE_FALSE. ' +
+      'Якщо не передати — береться format тесту.',
+  })
+  @ValidateIf((_, value) => value !== undefined)
+  @IsEnum(TheoryTestFormat, { message: QUESTION_TYPE_MESSAGE })
+  type?: TheoryTestFormat;
 
   @ApiPropertyOptional({
     example: 1,
@@ -548,6 +842,16 @@ export class UpdateQuestionDto {
   @IsNotEmpty({ message: REQUIRED_FIELD_MESSAGE })
   @IsString({ message: 'text має бути рядком.' })
   text?: string;
+
+  @ApiPropertyOptional({
+    enum: TheoryTestFormat,
+    description:
+      'Новий тип питання. Наявні варіанти мають відповідати йому: для опублікованого тесту — повністю, ' +
+      'для чернетки — не більше однієї правильної відповіді в SINGLE_CHOICE і TRUE_FALSE.',
+  })
+  @ValidateIf((_, value) => value !== undefined)
+  @IsEnum(TheoryTestFormat, { message: QUESTION_TYPE_MESSAGE })
+  type?: TheoryTestFormat;
 
   @ApiPropertyOptional({ example: 2, minimum: 1 })
   @Transform(integerValue)

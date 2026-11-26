@@ -11,6 +11,7 @@ import {
   GroupStatus,
   LessonStatus,
   Prisma,
+  TheoryDelivery,
   User,
   UserRole,
   UserStatus,
@@ -44,7 +45,11 @@ import {
   CreatePracticeLessonDto,
   LESSON_MAX_DURATION_MIN,
   LESSON_NOT_FOUND_MESSAGE,
+  CLASSROOM_REQUIRED_MESSAGE,
   CreateTheoryLessonDto,
+  ONLINE_LINK_REQUIRED_MESSAGE,
+  THEORY_CLASSROOM_FORBIDDEN_MESSAGE,
+  THEORY_ONLINE_LINK_FORBIDDEN_MESSAGE,
   PRACTICE_DEFAULT_DURATION_MIN,
   PracticeLessonDto,
   RescheduleLessonDto,
@@ -156,7 +161,7 @@ export const STUDENT_RESCHEDULE_NOT_ACTIVE_MESSAGE =
   'Перенести можна лише заплановане заняття. Щоб записатися знову, забронюйте новий слот.';
 export const STUDENT_DURATION_MESSAGE = 'Студент не змінює тривалість заняття.';
 export const NO_THEORY_LESSON_FIELDS_MESSAGE =
-  'Немає дозволених полів для оновлення (topic, durationMin, courseLessonId).';
+  'Немає дозволених полів для оновлення (topic, durationMin, courseLessonId, delivery, classroom, onlineLink).';
 export const GROUP_COURSE_REQUIRED_MESSAGE =
   'Групі не призначено теоретичний курс.';
 export const COURSE_LESSON_NOT_IN_GROUP_MESSAGE =
@@ -205,6 +210,9 @@ const theoryLessonSelect = {
   groupId: true,
   courseLessonId: true,
   topic: true,
+  delivery: true,
+  classroom: true,
+  onlineLink: true,
   scheduledAt: true,
   durationMin: true,
   status: true,
@@ -224,7 +232,99 @@ type TheoryChange = {
   scheduledAt?: Date;
   durationMin?: number;
   courseLessonId?: string | null;
+  delivery?: TheoryDelivery;
+  classroom?: string | null;
+  onlineLink?: string | null;
 };
+
+type TheoryPlace = {
+  delivery: TheoryDelivery;
+  classroom: string | null;
+  onlineLink: string | null;
+};
+
+/** Пара delivery + аудиторія або YouTube. Рівно одне місце проведення. */
+function theoryPlaceFromCreate(payload: CreateTheoryLessonDto): TheoryPlace {
+  const delivery = payload.delivery ?? TheoryDelivery.CLASSROOM;
+  if (delivery === TheoryDelivery.ONLINE) {
+    if (payload.classroom !== undefined) {
+      throw fieldError('classroom', THEORY_CLASSROOM_FORBIDDEN_MESSAGE);
+    }
+    if (!payload.onlineLink) {
+      throw fieldError('onlineLink', ONLINE_LINK_REQUIRED_MESSAGE);
+    }
+    return {
+      delivery,
+      classroom: null,
+      onlineLink: payload.onlineLink,
+    };
+  }
+  if (payload.onlineLink !== undefined) {
+    throw fieldError('onlineLink', THEORY_ONLINE_LINK_FORBIDDEN_MESSAGE);
+  }
+  if (!payload.classroom) {
+    throw fieldError('classroom', CLASSROOM_REQUIRED_MESSAGE);
+  }
+  return {
+    delivery: TheoryDelivery.CLASSROOM,
+    classroom: payload.classroom,
+    onlineLink: null,
+  };
+}
+
+/**
+ * Зміна місця проведення. null — у тілі немає delivery, classroom і onlineLink.
+ * onlineLink без delivery перемикає заняття на YouTube і прибирає аудиторію.
+ * classroom без delivery перемикає в аудиторію і прибирає посилання.
+ */
+function nextTheoryPlace(
+  lesson: {
+    delivery: TheoryDelivery;
+    classroom: string | null;
+    onlineLink: string | null;
+  },
+  change: TheoryChange,
+): TheoryPlace | null {
+  if (
+    change.delivery === undefined &&
+    change.classroom === undefined &&
+    change.onlineLink === undefined
+  ) {
+    return null;
+  }
+  if (change.classroom !== undefined && change.onlineLink !== undefined) {
+    throw fieldError('onlineLink', THEORY_ONLINE_LINK_FORBIDDEN_MESSAGE);
+  }
+  const delivery =
+    change.delivery ??
+    (change.onlineLink !== undefined
+      ? TheoryDelivery.ONLINE
+      : change.classroom !== undefined
+        ? TheoryDelivery.CLASSROOM
+        : lesson.delivery);
+  if (delivery === TheoryDelivery.ONLINE) {
+    if (change.classroom !== undefined) {
+      throw fieldError('classroom', THEORY_CLASSROOM_FORBIDDEN_MESSAGE);
+    }
+    const onlineLink = change.onlineLink ?? lesson.onlineLink;
+    if (!onlineLink) {
+      throw fieldError('onlineLink', ONLINE_LINK_REQUIRED_MESSAGE);
+    }
+    return { delivery, classroom: null, onlineLink };
+  }
+  if (change.onlineLink !== undefined) {
+    throw fieldError('onlineLink', THEORY_ONLINE_LINK_FORBIDDEN_MESSAGE);
+  }
+  const classroom = change.classroom ?? lesson.classroom;
+  if (!classroom) {
+    throw fieldError('classroom', CLASSROOM_REQUIRED_MESSAGE);
+  }
+  return {
+    delivery: TheoryDelivery.CLASSROOM,
+    classroom,
+    onlineLink: null,
+  };
+}
 
 type PracticeChange = {
   scheduledAt?: Date;
@@ -491,6 +591,7 @@ export class LessonsService {
     payload: CreateTheoryLessonDto,
   ): Promise<TheoryLessonDto> {
     assertCanEditTheory(actor);
+    const place = theoryPlaceFromCreate(payload);
     const scheduledAt = new Date(payload.scheduledAt);
     const durationMin = payload.durationMin ?? THEORY_DEFAULT_DURATION_MIN;
     assertCreatableAt(scheduledAt, new Date());
@@ -539,6 +640,9 @@ export class LessonsService {
             organizationId: actor.organizationId,
             groupId: group.id,
             topic: payload.topic,
+            delivery: place.delivery,
+            classroom: place.classroom,
+            onlineLink: place.onlineLink,
             scheduledAt,
             durationMin,
             ...(payload.courseLessonId !== undefined
@@ -562,7 +666,7 @@ export class LessonsService {
     }
 
     this.logger.log(
-      `Lesson created type=THEORY lessonId=${saved.id} groupId=${saved.groupId} scheduledAt=${saved.scheduledAt.toISOString()} durationMin=${saved.durationMin} actorId=${actor.id} organizationId=${actor.organizationId}`,
+      `Lesson created type=THEORY lessonId=${saved.id} groupId=${saved.groupId} delivery=${saved.delivery} scheduledAt=${saved.scheduledAt.toISOString()} durationMin=${saved.durationMin} actorId=${actor.id} organizationId=${actor.organizationId}`,
     );
     return toTheoryLessonDto(saved);
   }
@@ -671,6 +775,9 @@ export class LessonsService {
       topic: payload.topic,
       durationMin: payload.durationMin,
       courseLessonId: payload.courseLessonId,
+      delivery: payload.delivery,
+      classroom: payload.classroom,
+      onlineLink: payload.onlineLink,
     });
   }
 
@@ -1018,6 +1125,7 @@ export class LessonsService {
               ? change.courseLessonId
               : lesson.courseLessonId,
         };
+        const place = nextTheoryPlace(lesson, change);
         const data: TheoryChange = {};
         if (next.topic !== lesson.topic) {
           data.topic = next.topic;
@@ -1037,6 +1145,17 @@ export class LessonsService {
             lessonId: lesson.id,
           });
           data.courseLessonId = next.courseLessonId;
+        }
+        if (place) {
+          if (place.delivery !== lesson.delivery) {
+            data.delivery = place.delivery;
+          }
+          if (place.classroom !== lesson.classroom) {
+            data.classroom = place.classroom;
+          }
+          if (place.onlineLink !== lesson.onlineLink) {
+            data.onlineLink = place.onlineLink;
+          }
         }
         if (Object.keys(data).length === 0) {
           return { lesson, changed: [] as string[] };

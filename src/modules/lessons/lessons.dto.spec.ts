@@ -5,6 +5,9 @@ import {
   CANCELLATION_REASON_LENGTH_MESSAGE,
   CANCELLATION_REASON_MAX_LENGTH,
   CancelLessonDto,
+  CLASSROOM_LENGTH_MESSAGE,
+  CLASSROOM_MAX_LENGTH,
+  CLASSROOM_REQUIRED_MESSAGE,
   CreatePracticeLessonDto,
   CreateTheoryLessonDto,
   INCLUDE_CANCELLED_MESSAGE,
@@ -15,6 +18,12 @@ import {
   MEETING_PLACE_LENGTH_MESSAGE,
   MEETING_PLACE_MAX_LENGTH,
   MEETING_PLACE_TYPE_MESSAGE,
+  ONLINE_LINK_LENGTH_MESSAGE,
+  ONLINE_LINK_MESSAGE,
+  ONLINE_LINK_REQUIRED_MESSAGE,
+  THEORY_CLASSROOM_FORBIDDEN_MESSAGE,
+  THEORY_DELIVERY_MESSAGE,
+  THEORY_ONLINE_LINK_FORBIDDEN_MESSAGE,
   PersonalScheduleQueryDto,
   REQUIRED_FIELD_MESSAGE,
   TheoryLessonListQueryDto,
@@ -307,11 +316,100 @@ describe('CreateTheoryLessonDto', () => {
   const body = {
     groupId: GROUP_ID,
     topic: 'Дорожні знаки',
+    classroom: 'Аудиторія 12',
     scheduledAt: '2026-11-03T18:00:00+02:00',
   };
+  const youtube = 'https://www.youtube.com/watch?v=abc123XYZ_-';
 
   it('accepts a body without durationMin and leaves it undefined', async () => {
     await expect(validate(CreateTheoryLessonDto, body)).resolves.toEqual(body);
+  });
+
+  it('trims the classroom and keeps an offline lesson', async () => {
+    await expect(
+      validate(CreateTheoryLessonDto, {
+        ...body,
+        classroom: '  Аудиторія 12  ',
+        delivery: 'CLASSROOM',
+      }),
+    ).resolves.toEqual({ ...body, delivery: 'CLASSROOM' });
+  });
+
+  it('accepts a YouTube lesson without a classroom', async () => {
+    const { classroom: _classroom, ...offline } = body;
+    await expect(
+      validate(CreateTheoryLessonDto, {
+        ...offline,
+        delivery: 'ONLINE',
+        onlineLink: `  ${youtube}  `,
+      }),
+    ).resolves.toEqual({
+      ...offline,
+      delivery: 'ONLINE',
+      onlineLink: youtube,
+    });
+  });
+
+  it('requires a classroom for an offline lesson', async () => {
+    const { classroom: _classroom, ...offline } = body;
+    await expect(errorsFor(CreateTheoryLessonDto, offline)).resolves.toEqual(
+      fieldErrors('classroom', CLASSROOM_REQUIRED_MESSAGE),
+    );
+  });
+
+  it('requires a YouTube link for an online lesson', async () => {
+    const { classroom: _classroom, ...offline } = body;
+    await expect(
+      errorsFor(CreateTheoryLessonDto, { ...offline, delivery: 'ONLINE' }),
+    ).resolves.toEqual(fieldErrors('onlineLink', ONLINE_LINK_REQUIRED_MESSAGE));
+  });
+
+  it.each([
+    ['https://vimeo.com/123456789', ONLINE_LINK_MESSAGE],
+    ['http://www.youtube.com/watch?v=abc123XYZ_-', ONLINE_LINK_MESSAGE],
+    ['https://www.youtube.com/watch', ONLINE_LINK_MESSAGE],
+    ['а'.repeat(501), ONLINE_LINK_LENGTH_MESSAGE],
+  ])('rejects onlineLink %s', async (onlineLink, message) => {
+    const { classroom: _classroom, ...offline } = body;
+    await expect(
+      errorsFor(CreateTheoryLessonDto, {
+        ...offline,
+        delivery: 'ONLINE',
+        onlineLink,
+      }),
+    ).resolves.toEqual(fieldErrors('onlineLink', message));
+  });
+
+  it('rejects a classroom on a YouTube lesson', async () => {
+    await expect(
+      errorsFor(CreateTheoryLessonDto, {
+        ...body,
+        delivery: 'ONLINE',
+        onlineLink: youtube,
+      }),
+    ).resolves.toEqual(
+      fieldErrors('classroom', THEORY_CLASSROOM_FORBIDDEN_MESSAGE),
+    );
+  });
+
+  it('rejects a YouTube link on a classroom lesson', async () => {
+    await expect(
+      errorsFor(CreateTheoryLessonDto, { ...body, onlineLink: youtube }),
+    ).resolves.toEqual(
+      fieldErrors('onlineLink', THEORY_ONLINE_LINK_FORBIDDEN_MESSAGE),
+    );
+  });
+
+  it('rejects an unknown delivery and a classroom that is too long', async () => {
+    await expect(
+      errorsFor(CreateTheoryLessonDto, { ...body, delivery: 'REMOTE' }),
+    ).resolves.toEqual(fieldErrors('delivery', THEORY_DELIVERY_MESSAGE));
+    await expect(
+      errorsFor(CreateTheoryLessonDto, {
+        ...body,
+        classroom: 'а'.repeat(CLASSROOM_MAX_LENGTH + 1),
+      }),
+    ).resolves.toEqual(fieldErrors('classroom', CLASSROOM_LENGTH_MESSAGE));
   });
 
   it('accepts a course lesson id', async () => {

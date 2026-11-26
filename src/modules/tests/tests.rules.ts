@@ -11,11 +11,19 @@ export type CorrectnessOption = {
 };
 
 /**
- * Погоджені правила теоретичного тесту (DF-14).
+ * Погоджені правила теоретичного тесту (DF-14, UC-003).
  * Чернетка може бути неповною. Суперечливу правильну відповідь не зберігаємо ніколи:
  * SINGLE_CHOICE і TRUE_FALSE мають не більше однієї позначки isCorrect.
- * Перед публікацією кожне питання має відповідати формату тесту.
+ * Перед публікацією тест має назву, урок, поріг і ліміт спроб, а кожне питання відповідає своєму типу.
  */
+export const PUBLISH_NAME_REQUIRED_MESSAGE =
+  'Вкажіть назву тесту перед публікацією.';
+export const PUBLISH_LESSON_REQUIRED_MESSAGE =
+  'Прив’яжіть тест до уроку перед публікацією.';
+export const PUBLISH_PASSING_SCORE_MESSAGE =
+  'passingScore має бути від 1 до 100.';
+export const PUBLISH_MAX_ATTEMPTS_MESSAGE =
+  'maxAttempts має бути більшим за 0.';
 export const PUBLISH_QUESTIONS_REQUIRED_MESSAGE =
   'Додайте хоча б одне питання перед публікацією.';
 export const MIN_OPTIONS_MESSAGE = 'Додайте щонайменше два варіанти відповіді.';
@@ -34,20 +42,21 @@ export const TRUE_FALSE_CORRECT_MESSAGE =
 export const TRUE_FALSE_EXCLUSIVE_MESSAGE =
   'Питання «Так/Ні» може мати лише одну правильну відповідь.';
 
-export function isExclusiveFormat(format: TheoryTestFormat): boolean {
+/** Тип питання (TheoryQuestion.type), де відповідь лише одна. */
+export function isExclusiveFormat(type: TheoryTestFormat): boolean {
   return (
-    format === TheoryTestFormat.SINGLE_CHOICE ||
-    format === TheoryTestFormat.TRUE_FALSE
+    type === TheoryTestFormat.SINGLE_CHOICE ||
+    type === TheoryTestFormat.TRUE_FALSE
   );
 }
 
 export function questionRuleErrors(
-  format: TheoryTestFormat,
+  type: TheoryTestFormat,
   options: CorrectnessOption[],
   field = 'options',
 ): FieldError[] {
   const correct = options.filter((option) => option.isCorrect).length;
-  if (format === TheoryTestFormat.TRUE_FALSE) {
+  if (type === TheoryTestFormat.TRUE_FALSE) {
     if (options.length !== 2) {
       return [{ field, message: TRUE_FALSE_OPTIONS_MESSAGE }];
     }
@@ -59,28 +68,25 @@ export function questionRuleErrors(
   if (options.length < 2) {
     return [{ field, message: MIN_OPTIONS_MESSAGE }];
   }
-  if (format === TheoryTestFormat.SINGLE_CHOICE && correct !== 1) {
+  if (type === TheoryTestFormat.SINGLE_CHOICE && correct !== 1) {
     return [{ field, message: SINGLE_CORRECT_MESSAGE }];
   }
-  if (format === TheoryTestFormat.MULTIPLE_CHOICE && correct < 1) {
+  if (type === TheoryTestFormat.MULTIPLE_CHOICE && correct < 1) {
     return [{ field, message: MULTIPLE_CORRECT_REQUIRED_MESSAGE }];
   }
-  if (
-    format === TheoryTestFormat.MULTIPLE_CHOICE &&
-    correct === options.length
-  ) {
+  if (type === TheoryTestFormat.MULTIPLE_CHOICE && correct === options.length) {
     return [{ field, message: MULTIPLE_INCORRECT_REQUIRED_MESSAGE }];
   }
   return [];
 }
 
-/** Чернетка: відхиляє лише другу правильну відповідь у форматі з однією правильною. */
+/** Чернетка: відхиляє лише другу правильну відповідь у питанні з однією правильною. */
 export function exclusiveCorrectErrors(
-  format: TheoryTestFormat,
+  type: TheoryTestFormat,
   options: CorrectnessOption[],
   field = 'options',
 ): FieldError[] {
-  if (!isExclusiveFormat(format)) {
+  if (!isExclusiveFormat(type)) {
     return [];
   }
   const correct = options.filter((option) => option.isCorrect).length;
@@ -91,16 +97,61 @@ export function exclusiveCorrectErrors(
     {
       field,
       message:
-        format === TheoryTestFormat.TRUE_FALSE
+        type === TheoryTestFormat.TRUE_FALSE
           ? TRUE_FALSE_EXCLUSIVE_MESSAGE
           : SINGLE_EXCLUSIVE_MESSAGE,
     },
   ];
 }
 
+export type PublicationTest = {
+  name: string;
+  courseLessonId: string | null;
+  passingScore: number;
+  maxAttempts: number | null;
+};
+
+/**
+ * Поля самого тесту перед публікацією (UC-003): назва, урок, поріг складання,
+ * ліміт спроб більший за нуль. Помилки йдуть у тому ж форматі, що й помилки валідації тіла.
+ */
+export function testPublicationErrors(test: PublicationTest): FieldError[] {
+  const errors: FieldError[] = [];
+  if (test.name.trim().length === 0) {
+    errors.push({ field: 'name', message: PUBLISH_NAME_REQUIRED_MESSAGE });
+  }
+  if (test.courseLessonId === null) {
+    errors.push({
+      field: 'lessonId',
+      message: PUBLISH_LESSON_REQUIRED_MESSAGE,
+    });
+  }
+  if (
+    !Number.isInteger(test.passingScore) ||
+    test.passingScore < 1 ||
+    test.passingScore > 100
+  ) {
+    errors.push({
+      field: 'passingScore',
+      message: PUBLISH_PASSING_SCORE_MESSAGE,
+    });
+  }
+  if (
+    test.maxAttempts === null ||
+    !Number.isInteger(test.maxAttempts) ||
+    test.maxAttempts < 1
+  ) {
+    errors.push({
+      field: 'maxAttempts',
+      message: PUBLISH_MAX_ATTEMPTS_MESSAGE,
+    });
+  }
+  return errors;
+}
+
+/** Питання перед публікацією: хоча б одне, і кожне відповідає своєму типу. */
 export function publicationErrors(
-  format: TheoryTestFormat,
-  questions: Array<{ options: CorrectnessOption[] }>,
+  questions: Array<{ type: TheoryTestFormat; options: CorrectnessOption[] }>,
 ): FieldError[] {
   if (questions.length === 0) {
     return [
@@ -108,7 +159,11 @@ export function publicationErrors(
     ];
   }
   return questions.flatMap((question, index) =>
-    questionRuleErrors(format, question.options, `questions[${index}].options`),
+    questionRuleErrors(
+      question.type,
+      question.options,
+      `questions[${index}].options`,
+    ),
   );
 }
 

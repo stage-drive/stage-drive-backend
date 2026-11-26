@@ -1,13 +1,14 @@
 import {
-  CourseLessonPublicationStatus,
   CoursePublicationStatus,
   CourseStatus,
   EnrollmentStatus,
   LessonStatus,
   Prisma,
-  TheoryTestStatus,
+  TheoryTestAttemptStatus,
+  TheoryTestPublicationStatus,
   TrainingStatus,
 } from '@prisma/client';
+import { loadLessonGate } from '../courses/lesson-gate';
 
 /** На статусі PRACTICE студент відкатує рівно стільки годин, і лише тоді відкривається EXAM. */
 export const REQUIRED_PRACTICE_HOURS = 40;
@@ -18,8 +19,12 @@ export function minutesToHours(minutes: number): number {
 }
 
 /**
- * Ставить THEORY_COMPLETED, коли студент у ACTIVE, призначений курс опубліковано,
- * кожен його урок має проходження і тест курсу складено (PASSED).
+ * Ставить THEORY_COMPLETED, коли студент у ACTIVE, призначений курс опубліковано
+ * і кожен його опублікований урок завершено: тест уроку складено (PASSED),
+ * а якщо в уроку немає опублікованого тесту — урок позначено пройденим.
+ * Опубліковані тести всього курсу (старий формат без уроку) теж мають бути складені.
+ * Результат береться зі спроб, які оцінив сервер. Старий запис результату всього курсу
+ * на завершення теорії не впливає.
  * Журнал очної відвідуваності не читається.
  * Порожній курс теорію не закриває.
  * Повертає true, якщо навчальний статус щойно змінено.
@@ -60,35 +65,34 @@ export async function syncTheoryCompletion(
     return false;
   }
 
-  const lessons = await tx.courseLesson.findMany({
-    where: {
-      courseId: course.id,
-      publicationStatus: CourseLessonPublicationStatus.PUBLISHED,
-    },
-    select: { id: true },
-  });
-  if (lessons.length === 0) {
+  const gate = await loadLessonGate(tx, organizationId, course.id, studentId);
+  if (gate.ordered.length === 0 || gate.cleared.size < gate.ordered.length) {
     return false;
   }
 
-  const completedLessonCount = await tx.courseLessonCompletion.count({
+  const courseTests = await tx.theoryTest.findMany({
     where: {
       organizationId,
       courseId: course.id,
-      studentId,
-      lessonId: { in: lessons.map((lesson) => lesson.id) },
+      courseLessonId: null,
+      publicationStatus: TheoryTestPublicationStatus.PUBLISHED,
     },
+    select: { id: true },
   });
-  if (completedLessonCount < lessons.length) {
-    return false;
-  }
-
-  const test = await tx.theoryTestResult.findUnique({
-    where: { studentId_courseId: { studentId, courseId: course.id } },
-    select: { status: true },
-  });
-  if (test?.status !== TheoryTestStatus.PASSED) {
-    return false;
+  if (courseTests.length > 0) {
+    const passedTests = await tx.theoryTestAttempt.findMany({
+      where: {
+        organizationId,
+        studentId,
+        status: TheoryTestAttemptStatus.PASSED,
+        testId: { in: courseTests.map((test) => test.id) },
+      },
+      select: { testId: true },
+      distinct: ['testId'],
+    });
+    if (passedTests.length < courseTests.length) {
+      return false;
+    }
   }
 
   await tx.student.update({

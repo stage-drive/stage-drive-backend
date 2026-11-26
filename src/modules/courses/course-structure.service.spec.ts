@@ -20,6 +20,7 @@ import {
   CHAPTER_NOT_FOUND_MESSAGE,
   CourseStructureService,
   LESSON_NOT_FOUND_MESSAGE,
+  LESSON_TEST_REQUIRED_MESSAGE,
   MATERIAL_NOT_FOUND_MESSAGE,
   MATERIAL_URL_MESSAGE,
   MATERIAL_URL_REQUIRED_MESSAGE,
@@ -166,9 +167,11 @@ describe('CourseStructureService', () => {
     organization: { findUnique: jest.fn() },
     course: { findFirst: jest.fn() },
     enrollment: { findFirst: jest.fn() },
+    group: { findFirst: jest.fn() },
     courseChapter: chapters,
     courseLesson: lessons,
     courseMaterial: materials,
+    theoryTest: { findFirst: jest.fn() },
     $queryRaw: jest.fn(),
     $transaction: jest.fn(),
   };
@@ -199,6 +202,8 @@ describe('CourseStructureService', () => {
     });
     prisma.course.findFirst.mockResolvedValue(null);
     prisma.enrollment.findFirst.mockResolvedValue(null);
+    prisma.group.findFirst.mockResolvedValue({ id: 'group-1' });
+    prisma.theoryTest.findFirst.mockResolvedValue({ id: 'test-1' });
     prisma.$queryRaw.mockImplementation(() =>
       Promise.resolve(courseVisible ? [{ id: courseId }] : []),
     );
@@ -213,37 +218,64 @@ describe('CourseStructureService', () => {
     jest.restoreAllMocks();
   });
 
-  it.each([
-    UserRole.OWNER,
-    UserRole.TEACHER,
-    UserRole.INSTRUCTOR,
-    UserRole.STUDENT,
-  ])('forbids %s before touching the database', async (role) => {
-    const actor = { ...admin, role };
+  it.each([UserRole.OWNER, UserRole.INSTRUCTOR, UserRole.STUDENT])(
+    'forbids %s before touching the database',
+    async (role) => {
+      const actor = { ...admin, role };
+      await expect(
+        service.getStructure(actor as never, courseId),
+      ).rejects.toBeInstanceOf(ForbiddenException);
+      await expect(
+        service.createChapter(actor as never, courseId, { title: 'Розділ' }),
+      ).rejects.toBeInstanceOf(ForbiddenException);
+      await expect(
+        service.createLesson(actor as never, courseId, 'chapter-1', {
+          title: 'Урок',
+        }),
+      ).rejects.toBeInstanceOf(ForbiddenException);
+      await expect(
+        service.createMaterial(
+          actor as never,
+          courseId,
+          'chapter-1',
+          'lesson-1',
+          {
+            title: 'Матеріал',
+          },
+        ),
+      ).rejects.toBeInstanceOf(ForbiddenException);
+      expect(prisma.organization.findUnique).not.toHaveBeenCalled();
+      expect(prisma.$transaction).not.toHaveBeenCalled();
+    },
+  );
+
+  it('returns any course of the organization to a teacher', async () => {
+    const teacher = { ...admin, id: 'teacher-1', role: UserRole.TEACHER };
+    prisma.course.findFirst.mockResolvedValue({
+      id: courseId,
+      name: 'Категорія B',
+      description: null,
+      status: CourseStatus.ACTIVE,
+      publicationStatus: CoursePublicationStatus.DRAFT,
+      createdAt: now,
+      updatedAt: now,
+      chapters: [],
+    });
+
     await expect(
-      service.getStructure(actor as never, courseId),
-    ).rejects.toBeInstanceOf(ForbiddenException);
+      service.getStructure(teacher as never, courseId),
+    ).resolves.toEqual(expect.objectContaining({ id: courseId, chapters: [] }));
+    expect(prisma.group.findFirst).not.toHaveBeenCalled();
+  });
+
+  it('lets a teacher edit a course that is not assigned to their group', async () => {
+    const teacher = { ...admin, id: 'teacher-1', role: UserRole.TEACHER };
+    prisma.group.findFirst.mockResolvedValue(null);
+
     await expect(
-      service.createChapter(actor as never, courseId, { title: 'Розділ' }),
-    ).rejects.toBeInstanceOf(ForbiddenException);
-    await expect(
-      service.createLesson(actor as never, courseId, 'chapter-1', {
-        title: 'Урок',
-      }),
-    ).rejects.toBeInstanceOf(ForbiddenException);
-    await expect(
-      service.createMaterial(
-        actor as never,
-        courseId,
-        'chapter-1',
-        'lesson-1',
-        {
-          title: 'Матеріал',
-        },
-      ),
-    ).rejects.toBeInstanceOf(ForbiddenException);
-    expect(prisma.organization.findUnique).not.toHaveBeenCalled();
-    expect(prisma.$transaction).not.toHaveBeenCalled();
+      service.createChapter(teacher as never, courseId, { title: 'Розділ' }),
+    ).resolves.toEqual(expect.objectContaining({ title: 'Розділ' }));
+    expect(chapters.create).toHaveBeenCalled();
   });
 
   it('returns 404 when the organization is soft-deleted', async () => {
@@ -662,6 +694,35 @@ describe('CourseStructureService', () => {
       );
 
       expect(published.publicationStatus).toBe('PUBLISHED');
+
+      prisma.theoryTest.findFirst.mockResolvedValue(null);
+      await service.changeLessonPublication(
+        admin as never,
+        courseId,
+        'chapter-1',
+        'lesson-1',
+        { publicationStatus: 'DRAFT' },
+      );
+      const missingTest = await caught(
+        service.changeLessonPublication(
+          admin as never,
+          courseId,
+          'chapter-1',
+          'lesson-1',
+          { publicationStatus: 'PUBLISHED' },
+        ),
+      );
+      expect(missingTest).toBeInstanceOf(ConflictException);
+      expect(missingTest.message).toBe(LESSON_TEST_REQUIRED_MESSAGE);
+
+      prisma.theoryTest.findFirst.mockResolvedValue({ id: 'test-1' });
+      await service.changeLessonPublication(
+        admin as never,
+        courseId,
+        'chapter-1',
+        'lesson-1',
+        { publicationStatus: 'PUBLISHED' },
+      );
 
       await service.archiveLesson(
         admin as never,

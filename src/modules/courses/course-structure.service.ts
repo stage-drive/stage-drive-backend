@@ -14,6 +14,7 @@ import {
   CourseStatus,
   EnrollmentStatus,
   Prisma,
+  TheoryTestPublicationStatus,
   User,
   UserRole,
 } from '@prisma/client';
@@ -45,7 +46,11 @@ import {
   MATERIAL_UPLOAD_SUBDIR,
   assertMaterialFile,
 } from '../../common/files/material-upload';
-import { loadLessonGate, type LessonGate } from './lesson-gate';
+import {
+  loadLessonGate,
+  toLessonTestProgress,
+  type LessonGate,
+} from './lesson-gate';
 import {
   assertInsertPosition,
   assertMovePosition,
@@ -54,7 +59,7 @@ import {
   shiftForMove,
 } from './course-structure.order';
 import {
-  COURSE_MANAGE_ROLES,
+  COURSE_CONTENT_ROLES,
   COURSE_NOT_FOUND_MESSAGE,
   COURSE_NOT_PUBLISHED_MESSAGE,
   COURSE_STUDENT_ROLES,
@@ -73,6 +78,8 @@ export const MATERIAL_URL_REQUIRED_MESSAGE =
 export const MATERIAL_URL_MESSAGE = 'body має бути адресою http або https.';
 export const LESSON_ARCHIVED_PUBLICATION_MESSAGE =
   'Архівований урок не можна опублікувати.';
+export const LESSON_TEST_REQUIRED_MESSAGE =
+  'Опублікувати урок можна лише разом з опублікованим тестом.';
 
 const PLAIN_TEXT = /^[^<>]*$/u;
 
@@ -146,7 +153,7 @@ type MaterialRow = Prisma.CourseMaterialGetPayload<{
 type StructureRow = Prisma.CourseGetPayload<{ select: typeof structureSelect }>;
 
 function assertCanManage(actor: User): void {
-  if (!(COURSE_MANAGE_ROLES as readonly UserRole[]).includes(actor.role)) {
+  if (!(COURSE_CONTENT_ROLES as readonly UserRole[]).includes(actor.role)) {
     throw new ForbiddenException('Insufficient permissions');
   }
 }
@@ -227,7 +234,8 @@ function emptyStudentGate(): LessonGate {
     completed: new Set(),
     passed: new Set(),
     testsByLesson: new Map(),
-    failedWithoutPass: new Set(),
+    tests: new Map(),
+    exhausted: new Set(),
     cleared: new Set(),
     locked: new Set(),
   };
@@ -289,10 +297,12 @@ function toLessonStructure(
     };
   }
   const locked = gate.locked.has(lesson.id);
+  const testState = gate.tests.get(lesson.id);
   return {
     ...base,
     description: locked ? null : base.description,
     locked,
+    test: !locked && testState ? toLessonTestProgress(testState) : null,
     materials: locked ? [] : byPosition(lesson.materials).map(toMaterial),
   };
 }
@@ -736,6 +746,21 @@ export class CourseStructureService {
       }
       if (payload.publicationStatus === lessonPublication(existing)) {
         return existing;
+      }
+      if (
+        payload.publicationStatus === CourseLessonPublicationStatus.PUBLISHED
+      ) {
+        const test = await tx.theoryTest.findFirst({
+          where: {
+            courseLessonId: existing.id,
+            organizationId: actor.organizationId,
+            publicationStatus: TheoryTestPublicationStatus.PUBLISHED,
+          },
+          select: { id: true },
+        });
+        if (!test) {
+          throw new ConflictException(LESSON_TEST_REQUIRED_MESSAGE);
+        }
       }
       changed = true;
       return tx.courseLesson.update({

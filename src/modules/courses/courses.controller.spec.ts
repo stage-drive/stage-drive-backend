@@ -6,7 +6,12 @@ import { AuthGuard } from '../auth/auth.guard';
 import { ROLES_KEY } from '../auth/roles.decorator';
 import { RolesGuard } from '../auth/roles.guard';
 import { CoursesController } from './courses.controller';
-import { CoursesService } from './courses.service';
+import {
+  COURSE_ARCHIVE_ROLES,
+  COURSE_LIST_ROLES,
+  COURSE_WRITE_ROLES,
+  CoursesService,
+} from './courses.service';
 
 describe('CoursesController', () => {
   it('applies AuthGuard and RolesGuard to the whole controller', () => {
@@ -16,14 +21,14 @@ describe('CoursesController', () => {
     ]);
   });
 
-  it('restricts the course list to ADMIN', () => {
+  it('restricts the course list to ADMIN and TEACHER', () => {
     const roles = new Reflector().get<UserRole[]>(
       ROLES_KEY,
       // eslint-disable-next-line @typescript-eslint/unbound-method -- only reads decorator metadata, never invoked
       CoursesController.prototype.list,
     );
 
-    expect(roles).toEqual([UserRole.ADMIN]);
+    expect(roles).toEqual([...COURSE_LIST_ROLES]);
   });
 
   it('passes the current user to the service', async () => {
@@ -38,8 +43,8 @@ describe('CoursesController', () => {
     expect(coursesService.list).toHaveBeenCalledWith(user);
   });
 
-  it.each(['create', 'update', 'changePublication', 'archive'] as const)(
-    'restricts %s to ADMIN',
+  it.each(['create', 'update', 'changePublication'] as const)(
+    'opens %s to ADMIN and TEACHER',
     (method) => {
       const roles = new Reflector().get<UserRole[]>(
         ROLES_KEY,
@@ -47,9 +52,19 @@ describe('CoursesController', () => {
         CoursesController.prototype[method],
       );
 
-      expect(roles).toEqual([UserRole.ADMIN]);
+      expect(roles).toEqual([...COURSE_WRITE_ROLES]);
     },
   );
+
+  it('restricts archive to ADMIN', () => {
+    const roles = new Reflector().get<UserRole[]>(
+      ROLES_KEY,
+      // eslint-disable-next-line @typescript-eslint/unbound-method -- only reads decorator metadata, never invoked
+      CoursesController.prototype.archive,
+    );
+
+    expect(roles).toEqual([...COURSE_ARCHIVE_ROLES]);
+  });
 
   it('answers 201 when a course is created', () => {
     expect(

@@ -24,6 +24,53 @@ export type AnswerSelection = {
 };
 
 /**
+ * Статус спроби в API. У базі PASSED і FAILED — окремі статуси, а клієнт бачить
+ * завершену спробу (COMPLETED) і окреме поле result.
+ */
+export const AttemptApiStatus = {
+  IN_PROGRESS: 'IN_PROGRESS',
+  COMPLETED: 'COMPLETED',
+  EXPIRED: 'EXPIRED',
+} as const;
+
+export type AttemptApiStatus =
+  (typeof AttemptApiStatus)[keyof typeof AttemptApiStatus];
+
+export const AttemptApiResult = {
+  PASSED: 'PASSED',
+  FAILED: 'FAILED',
+} as const;
+
+export type AttemptApiResult =
+  (typeof AttemptApiResult)[keyof typeof AttemptApiResult];
+
+export function attemptApiStatus(
+  status: TheoryTestAttemptStatus,
+): AttemptApiStatus {
+  switch (status) {
+    case TheoryTestAttemptStatus.IN_PROGRESS:
+      return AttemptApiStatus.IN_PROGRESS;
+    case TheoryTestAttemptStatus.EXPIRED:
+      return AttemptApiStatus.EXPIRED;
+    default:
+      return AttemptApiStatus.COMPLETED;
+  }
+}
+
+/** PASSED або FAILED лише для перевіреної спроби. IN_PROGRESS і EXPIRED результату не мають. */
+export function attemptApiResult(
+  status: TheoryTestAttemptStatus,
+): AttemptApiResult | null {
+  if (status === TheoryTestAttemptStatus.PASSED) {
+    return AttemptApiResult.PASSED;
+  }
+  if (status === TheoryTestAttemptStatus.FAILED) {
+    return AttemptApiResult.FAILED;
+  }
+  return null;
+}
+
+/**
  * Дедлайн спроби. null — тест без ліміту, і час ніколи не «закінчується».
  * Момент expiresAt уже прострочений: студент не встигає submit в ту саму мілісекунду.
  */
@@ -56,9 +103,13 @@ export function shuffleInPlace<T>(
   return copy;
 }
 
+/** Тип питання береться зі знімка питання: правила відповіді в кожного питання свої. */
 export function selectionErrors(
-  format: TheoryTestFormat,
-  questions: Array<{ id: string; options: Array<{ id: string }> }>,
+  questions: Array<{
+    id: string;
+    type: TheoryTestFormat;
+    options: Array<{ id: string }>;
+  }>,
   answers: AnswerSelection[],
 ): FieldError[] {
   const errors: FieldError[] = [];
@@ -103,7 +154,7 @@ export function selectionErrors(
       }
       selected.add(optionId);
     });
-    if (isExclusiveFormat(format) && answer.optionIds.length > 1) {
+    if (isExclusiveFormat(question.type) && answer.optionIds.length > 1) {
       errors.push({
         field: `${field}.optionIds`,
         message: SINGLE_OPTION_MESSAGE,
@@ -113,15 +164,29 @@ export function selectionErrors(
   return errors;
 }
 
+export type AttemptGrade = {
+  /** Відсоток правильних відповідей, ціле 0–100. */
+  score: number;
+  passed: boolean;
+  /** Скільки питань відповідено точно. */
+  correctCount: number;
+  totalQuestions: number;
+  /** Кожне питання варте одного бала: earnedPoints = correctCount. */
+  earnedPoints: number;
+  /** maxPoints = totalQuestions. */
+  maxPoints: number;
+};
+
 /**
  * Питання зараховане, коли обраний набір варіантів збігається з правильним.
  * Пропущене питання — неправильне. Відсоток округлюється до цілого.
+ * Усе рахує сервер: клієнт не передає ні бали, ні результат.
  */
 export function gradeAttempt(
   questions: GradedQuestion[],
   answers: AnswerSelection[],
   passingScore: number,
-): { score: number; passed: boolean } {
+): AttemptGrade {
   const selectedByQuestion = new Map(
     answers.map((answer) => [answer.questionId, answer.optionIds]),
   );
@@ -141,14 +206,21 @@ export function gradeAttempt(
   }
   const score =
     questions.length === 0 ? 0 : Math.round((correct / questions.length) * 100);
-  return { score, passed: score >= passingScore };
+  return {
+    score,
+    passed: score >= passingScore,
+    correctCount: correct,
+    totalQuestions: questions.length,
+    earnedPoints: correct,
+    maxPoints: questions.length,
+  };
 }
 
 /**
  * Чому наступну спробу почати не можна.
  * IN_PROGRESS — уже є відкрита і ще не прострочена.
  * ALREADY_PASSED — цей тест уже складено.
- * ATTEMPTS_EXHAUSTED — витрачено maxAttempts.
+ * ATTEMPTS_EXHAUSTED — витрачено maxAttempts поточного циклу.
  * TEST_UNAVAILABLE — тест або курс зараз не можна проходити.
  */
 export const NextAttemptBlockReason = {
@@ -156,7 +228,6 @@ export const NextAttemptBlockReason = {
   ALREADY_PASSED: 'ALREADY_PASSED',
   ATTEMPTS_EXHAUSTED: 'ATTEMPTS_EXHAUSTED',
   TEST_UNAVAILABLE: 'TEST_UNAVAILABLE',
-  LESSON_NOT_COMPLETED: 'LESSON_NOT_COMPLETED',
 } as const;
 
 export type NextAttemptBlockReason =
@@ -166,10 +237,16 @@ export type AttemptHistoryItem = {
   id: string;
   status: TheoryTestAttemptStatus;
   expiresAt: Date | null;
+  /** Цикл спроби. Без нього спроба рахується в будь-якому циклі. */
+  cycle?: number;
 };
 
 export type NextAttemptDecision = {
+  /** Витрачено: PASSED, FAILED, EXPIRED і прострочена IN_PROGRESS. Відкрита спроба сюди не входить. */
   attemptsUsed: number;
+  /** Витрачено плюс відкрита: стільки слотів поточного циклу вже зайнято. */
+  attemptsStarted: number;
+  /** Скільки спроб ще можна почати після зайнятих слотів. null — без ліміту. */
   attemptsRemaining: number | null;
   nextAttemptAvailable: boolean;
   unavailableReason: NextAttemptBlockReason | null;
@@ -191,16 +268,24 @@ function isSpent(status: TheoryTestAttemptStatus): boolean {
  * Відкрита і ще жива спроба займає слот і не дає почати другу.
  * Після PASSED нова спроба цього тесту недоступна, навіть якщо ліміт ще не вичерпано.
  * maxAttempts null — кількості немає, лишаються лише правила статусу.
+ *
+ * cycle обмежує підрахунок однією серією спроб: коли студент вичерпав ліміт і пройшов урок знову,
+ * починається наступний цикл із нульовим лічильником, а історія попередніх циклів лишається.
+ * Без cycle рахуються всі передані спроби.
  */
 export function nextAttemptAvailability(
   maxAttempts: number | null,
   attempts: AttemptHistoryItem[],
   now: Date,
+  cycle?: number,
 ): NextAttemptDecision {
   let open: AttemptHistoryItem | null = null;
   let passed = false;
   let used = 0;
   for (const attempt of attempts) {
+    if (cycle !== undefined && (attempt.cycle ?? 1) !== cycle) {
+      continue;
+    }
     if (attempt.status === TheoryTestAttemptStatus.IN_PROGRESS) {
       if (isAttemptExpired(attempt.expiresAt, now)) {
         used += 1;
@@ -216,13 +301,17 @@ export function nextAttemptAvailability(
       used += 1;
     }
   }
-  const openSlot = open ? 1 : 0;
+  const attemptsStarted = used + (open ? 1 : 0);
   const attemptsRemaining =
-    maxAttempts === null ? null : Math.max(0, maxAttempts - used - openSlot);
+    maxAttempts === null ? null : Math.max(0, maxAttempts - attemptsStarted);
+  const base = {
+    attemptsUsed: used,
+    attemptsStarted,
+    attemptsRemaining,
+  };
   if (open) {
     return {
-      attemptsUsed: used,
-      attemptsRemaining,
+      ...base,
       nextAttemptAvailable: false,
       unavailableReason: NextAttemptBlockReason.IN_PROGRESS,
       openAttemptId: open.id,
@@ -230,8 +319,7 @@ export function nextAttemptAvailability(
   }
   if (passed) {
     return {
-      attemptsUsed: used,
-      attemptsRemaining,
+      ...base,
       nextAttemptAvailable: false,
       unavailableReason: NextAttemptBlockReason.ALREADY_PASSED,
       openAttemptId: null,
@@ -239,16 +327,14 @@ export function nextAttemptAvailability(
   }
   if (maxAttempts !== null && used >= maxAttempts) {
     return {
-      attemptsUsed: used,
-      attemptsRemaining,
+      ...base,
       nextAttemptAvailable: false,
       unavailableReason: NextAttemptBlockReason.ATTEMPTS_EXHAUSTED,
       openAttemptId: null,
     };
   }
   return {
-    attemptsUsed: used,
-    attemptsRemaining,
+    ...base,
     nextAttemptAvailable: true,
     unavailableReason: null,
     openAttemptId: null,

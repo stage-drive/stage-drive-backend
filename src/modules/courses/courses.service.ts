@@ -22,8 +22,12 @@ import {
   UpdateCoursePublicationDto,
 } from './courses.dto';
 
-export const COURSE_LIST_ROLES = [UserRole.ADMIN] as const;
-export const COURSE_MANAGE_ROLES = COURSE_LIST_ROLES;
+export const COURSE_LIST_ROLES = [UserRole.ADMIN, UserRole.TEACHER] as const;
+/** Створення, назва і публікація курсу своєї організації. Архів лишається в ADMIN. */
+export const COURSE_WRITE_ROLES = [UserRole.ADMIN, UserRole.TEACHER] as const;
+export const COURSE_ARCHIVE_ROLES = [UserRole.ADMIN] as const;
+/** Структура курсу: ADMIN або TEACHER тієї самої організації. */
+export const COURSE_CONTENT_ROLES = [UserRole.ADMIN, UserRole.TEACHER] as const;
 export const COURSE_STUDENT_ROLES = [UserRole.STUDENT] as const;
 
 export const COURSE_NOT_FOUND_MESSAGE = 'Course not found';
@@ -53,8 +57,14 @@ function assertCanListCourses(actor: User): void {
   }
 }
 
-function assertCanManageCourses(actor: User): void {
-  if (!(COURSE_MANAGE_ROLES as readonly UserRole[]).includes(actor.role)) {
+function assertCanWriteCourses(actor: User): void {
+  if (!(COURSE_WRITE_ROLES as readonly UserRole[]).includes(actor.role)) {
+    throw new ForbiddenException('Insufficient permissions');
+  }
+}
+
+function assertCanArchiveCourses(actor: User): void {
+  if (!(COURSE_ARCHIVE_ROLES as readonly UserRole[]).includes(actor.role)) {
     throw new ForbiddenException('Insufficient permissions');
   }
 }
@@ -84,7 +94,10 @@ export class CoursesService {
 
   constructor(private readonly prisma: PrismaService) {}
 
-  /** Курси своєї організації, і ACTIVE, і ARCHIVED, за назвою. */
+  /**
+   * Курси своєї організації, і ACTIVE, і ARCHIVED, за назвою.
+   * ADMIN і TEACHER бачать увесь каталог автошколи, без курсів інших організацій.
+   */
   async list(actor: User): Promise<CourseListDto> {
     assertCanListCourses(actor);
     await this.requireOrganization(actor.organizationId);
@@ -111,7 +124,7 @@ export class CoursesService {
   }
 
   async create(actor: User, payload: CreateCourseDto): Promise<CourseDto> {
-    assertCanManageCourses(actor);
+    assertCanWriteCourses(actor);
     await this.requireOrganization(actor.organizationId);
 
     const created = await this.prisma.$transaction(async (tx) => {
@@ -139,7 +152,7 @@ export class CoursesService {
     courseId: string,
     payload: UpdateCourseDto,
   ): Promise<CourseDto> {
-    assertCanManageCourses(actor);
+    assertCanWriteCourses(actor);
     await this.requireOrganization(actor.organizationId);
     if (payload.name === undefined && payload.description === undefined) {
       throw fieldError('body', NO_COURSE_FIELDS_MESSAGE);
@@ -192,7 +205,7 @@ export class CoursesService {
     courseId: string,
     payload: UpdateCoursePublicationDto,
   ): Promise<CourseDto> {
-    assertCanManageCourses(actor);
+    assertCanWriteCourses(actor);
     await this.requireOrganization(actor.organizationId);
 
     let changed = false;
@@ -229,7 +242,7 @@ export class CoursesService {
    * а студенти перестають бачити контент, навіть якщо publicationStatus лишається PUBLISHED.
    */
   async archive(actor: User, courseId: string): Promise<CourseDto> {
-    assertCanManageCourses(actor);
+    assertCanArchiveCourses(actor);
     await this.requireOrganization(actor.organizationId);
 
     let changed = false;

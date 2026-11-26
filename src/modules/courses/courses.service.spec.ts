@@ -158,17 +158,32 @@ describe('CoursesService', () => {
     });
   });
 
-  it.each([
-    UserRole.OWNER,
-    UserRole.TEACHER,
-    UserRole.INSTRUCTOR,
-    UserRole.STUDENT,
-  ])('forbids %s without touching the database', async (role) => {
-    await expect(
-      service.list({ ...admin, role } as never),
-    ).rejects.toBeInstanceOf(ForbiddenException);
-    expect(prisma.organization.findUnique).not.toHaveBeenCalled();
-    expect(prisma.course.findMany).not.toHaveBeenCalled();
+  it.each([UserRole.OWNER, UserRole.INSTRUCTOR, UserRole.STUDENT])(
+    'forbids %s without touching the database',
+    async (role) => {
+      await expect(
+        service.list({ ...admin, role } as never),
+      ).rejects.toBeInstanceOf(ForbiddenException);
+      expect(prisma.organization.findUnique).not.toHaveBeenCalled();
+      expect(prisma.course.findMany).not.toHaveBeenCalled();
+    },
+  );
+
+  it('lists every course of the teacher organization', async () => {
+    const teacher = { ...admin, id: 'teacher-1', role: UserRole.TEACHER };
+
+    await service.list(teacher as never);
+
+    expect(prisma.course.findMany).toHaveBeenCalledWith({
+      where: { organizationId: 'org-1' },
+      select: {
+        id: true,
+        name: true,
+        status: true,
+        publicationStatus: true,
+      },
+      orderBy: [{ name: 'asc' }, { id: 'asc' }],
+    });
   });
 
   it.each([null, { ...organization, deletedAt: new Date() }])(
@@ -267,18 +282,33 @@ describe('CoursesService', () => {
       ]);
     });
 
-    it.each([
-      UserRole.OWNER,
-      UserRole.TEACHER,
-      UserRole.INSTRUCTOR,
-      UserRole.STUDENT,
-    ])('forbids %s before touching the database', async (role) => {
+    it('lets a TEACHER create a course in their organization', async () => {
       await expect(
-        service.create({ ...admin, role } as never, payload),
-      ).rejects.toBeInstanceOf(ForbiddenException);
-      expect(prisma.organization.findUnique).not.toHaveBeenCalled();
-      expect(prisma.$transaction).not.toHaveBeenCalled();
+        service.create(
+          { ...admin, id: 'teacher-1', role: UserRole.TEACHER } as never,
+          payload,
+        ),
+      ).resolves.toMatchObject({
+        id: 'course-2',
+        name: payload.name,
+      });
+      expect(prisma.course.create).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: expect.objectContaining({ organizationId: 'org-1' }),
+        }),
+      );
     });
+
+    it.each([UserRole.OWNER, UserRole.INSTRUCTOR, UserRole.STUDENT])(
+      'forbids %s before touching the database',
+      async (role) => {
+        await expect(
+          service.create({ ...admin, role } as never, payload),
+        ).rejects.toBeInstanceOf(ForbiddenException);
+        expect(prisma.organization.findUnique).not.toHaveBeenCalled();
+        expect(prisma.$transaction).not.toHaveBeenCalled();
+      },
+    );
 
     it('returns 404 when the organization is soft-deleted', async () => {
       prisma.organization.findUnique.mockResolvedValue({
@@ -429,20 +459,28 @@ describe('CoursesService', () => {
       );
     });
 
-    it.each([
-      UserRole.OWNER,
-      UserRole.TEACHER,
-      UserRole.INSTRUCTOR,
-      UserRole.STUDENT,
-    ])('forbids %s before touching the database', async (role) => {
+    it('lets a TEACHER rename a course of their organization', async () => {
       await expect(
-        service.update({ ...admin, role } as never, 'course-1', {
-          name: 'Інша',
-        }),
-      ).rejects.toBeInstanceOf(ForbiddenException);
-      expect(prisma.organization.findUnique).not.toHaveBeenCalled();
-      expect(prisma.$transaction).not.toHaveBeenCalled();
+        service.update(
+          { ...admin, id: 'teacher-1', role: UserRole.TEACHER } as never,
+          'course-1',
+          { name: 'Інша' },
+        ),
+      ).resolves.toMatchObject({ name: 'Інша' });
     });
+
+    it.each([UserRole.OWNER, UserRole.INSTRUCTOR, UserRole.STUDENT])(
+      'forbids %s before touching the database',
+      async (role) => {
+        await expect(
+          service.update({ ...admin, role } as never, 'course-1', {
+            name: 'Інша',
+          }),
+        ).rejects.toBeInstanceOf(ForbiddenException);
+        expect(prisma.organization.findUnique).not.toHaveBeenCalled();
+        expect(prisma.$transaction).not.toHaveBeenCalled();
+      },
+    );
 
     it('returns 404 when the organization is soft-deleted', async () => {
       prisma.organization.findUnique.mockResolvedValue({
@@ -569,20 +607,28 @@ describe('CoursesService', () => {
       expect(prisma.course.update).not.toHaveBeenCalled();
     });
 
-    it.each([
-      UserRole.OWNER,
-      UserRole.TEACHER,
-      UserRole.INSTRUCTOR,
-      UserRole.STUDENT,
-    ])('forbids %s before touching the database', async (role) => {
-      await expect(
-        service.changePublication({ ...admin, role } as never, 'course-1', {
-          publicationStatus: CoursePublicationStatus.PUBLISHED,
-        }),
-      ).rejects.toBeInstanceOf(ForbiddenException);
-      expect(prisma.organization.findUnique).not.toHaveBeenCalled();
-      expect(prisma.$transaction).not.toHaveBeenCalled();
+    it('lets a TEACHER publish a course of their organization', async () => {
+      const result = await service.changePublication(
+        { ...admin, id: 'teacher-1', role: UserRole.TEACHER } as never,
+        'course-1',
+        { publicationStatus: CoursePublicationStatus.PUBLISHED },
+      );
+
+      expect(result.publicationStatus).toBe(CoursePublicationStatus.PUBLISHED);
     });
+
+    it.each([UserRole.OWNER, UserRole.INSTRUCTOR, UserRole.STUDENT])(
+      'forbids %s before touching the database',
+      async (role) => {
+        await expect(
+          service.changePublication({ ...admin, role } as never, 'course-1', {
+            publicationStatus: CoursePublicationStatus.PUBLISHED,
+          }),
+        ).rejects.toBeInstanceOf(ForbiddenException);
+        expect(prisma.organization.findUnique).not.toHaveBeenCalled();
+        expect(prisma.$transaction).not.toHaveBeenCalled();
+      },
+    );
 
     it('returns 404 when the organization is soft-deleted', async () => {
       prisma.organization.findUnique.mockResolvedValue({

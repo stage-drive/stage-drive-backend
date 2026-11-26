@@ -1,10 +1,14 @@
 import { TheoryTestAttemptStatus, TheoryTestFormat } from '@prisma/client';
 import {
+  AttemptApiResult,
+  AttemptApiStatus,
   DUPLICATE_QUESTION_MESSAGE,
   NextAttemptBlockReason,
   SINGLE_OPTION_MESSAGE,
   UNKNOWN_OPTION_MESSAGE,
   UNKNOWN_QUESTION_MESSAGE,
+  attemptApiResult,
+  attemptApiStatus,
   attemptDeadline,
   gradeAttempt,
   isAttemptExpired,
@@ -73,23 +77,22 @@ describe('shuffleInPlace', () => {
 });
 
 describe('selectionErrors', () => {
-  const visible = questions.map((question) => ({
-    id: question.id,
-    options: question.options.map((option) => ({ id: option.id })),
-  }));
+  const visible = (index: number, type: TheoryTestFormat) => ({
+    id: questions[index].id,
+    type,
+    options: questions[index].options.map((option) => ({ id: option.id })),
+  });
 
   it('accepts one option for a single-choice question and several for multiple', () => {
     expect(
       selectionErrors(
-        TheoryTestFormat.SINGLE_CHOICE,
-        [visible[0]],
+        [visible(0, TheoryTestFormat.SINGLE_CHOICE)],
         [{ questionId: 'q1', optionIds: ['b'] }],
       ),
     ).toEqual([]);
     expect(
       selectionErrors(
-        TheoryTestFormat.MULTIPLE_CHOICE,
-        [visible[1]],
+        [visible(1, TheoryTestFormat.MULTIPLE_CHOICE)],
         [{ questionId: 'q2', optionIds: ['c', 'd'] }],
       ),
     ).toEqual([]);
@@ -98,10 +101,25 @@ describe('selectionErrors', () => {
   it('rejects a second option on a single-choice or true/false question', () => {
     expect(
       selectionErrors(
-        TheoryTestFormat.TRUE_FALSE,
-        [visible[0]],
+        [visible(0, TheoryTestFormat.TRUE_FALSE)],
         [{ questionId: 'q1', optionIds: ['a', 'b'] }],
       ),
+    ).toEqual([
+      { field: 'answers[0].optionIds', message: SINGLE_OPTION_MESSAGE },
+    ]);
+  });
+
+  it('applies the type of each question, not one type for the whole test', () => {
+    const mixed = [
+      visible(0, TheoryTestFormat.SINGLE_CHOICE),
+      visible(1, TheoryTestFormat.MULTIPLE_CHOICE),
+    ];
+
+    expect(
+      selectionErrors(mixed, [
+        { questionId: 'q1', optionIds: ['a', 'b'] },
+        { questionId: 'q2', optionIds: ['c', 'd'] },
+      ]),
     ).toEqual([
       { field: 'answers[0].optionIds', message: SINGLE_OPTION_MESSAGE },
     ]);
@@ -110,8 +128,7 @@ describe('selectionErrors', () => {
   it('rejects a question or option that is not part of the attempt', () => {
     expect(
       selectionErrors(
-        TheoryTestFormat.SINGLE_CHOICE,
-        [visible[0]],
+        [visible(0, TheoryTestFormat.SINGLE_CHOICE)],
         [
           { questionId: 'other', optionIds: [] },
           { questionId: 'q1', optionIds: ['missing'] },
@@ -137,7 +154,14 @@ describe('gradeAttempt', () => {
         ],
         67,
       ),
-    ).toEqual({ score: 67, passed: true });
+    ).toEqual({
+      score: 67,
+      passed: true,
+      correctCount: 2,
+      totalQuestions: 3,
+      earnedPoints: 2,
+      maxPoints: 3,
+    });
   });
 
   it('fails when the score is below the threshold or a multiple-choice set is incomplete', () => {
@@ -151,19 +175,68 @@ describe('gradeAttempt', () => {
         ],
         90,
       ),
-    ).toEqual({ score: 67, passed: false });
+    ).toMatchObject({
+      score: 67,
+      passed: false,
+      correctCount: 2,
+      totalQuestions: 3,
+    });
   });
 
   it('counts a missing question as wrong', () => {
     expect(
       gradeAttempt(questions, [{ questionId: 'q1', optionIds: ['b'] }], 50),
-    ).toEqual({ score: 33, passed: false });
+    ).toMatchObject({
+      score: 33,
+      passed: false,
+      correctCount: 1,
+      totalQuestions: 3,
+    });
   });
 
   it('passes when the score is equal to the threshold', () => {
     expect(
       gradeAttempt(questions, [{ questionId: 'q1', optionIds: ['b'] }], 33),
-    ).toEqual({ score: 33, passed: true });
+    ).toMatchObject({ score: 33, passed: true });
+  });
+
+  it('scores an attempt without answers as zero', () => {
+    expect(gradeAttempt(questions, [], 1)).toEqual({
+      score: 0,
+      passed: false,
+      correctCount: 0,
+      totalQuestions: 3,
+      earnedPoints: 0,
+      maxPoints: 3,
+    });
+  });
+});
+
+describe('attempt status for the API', () => {
+  it('shows a graded attempt as COMPLETED with a separate result', () => {
+    expect(attemptApiStatus(TheoryTestAttemptStatus.PASSED)).toBe(
+      AttemptApiStatus.COMPLETED,
+    );
+    expect(attemptApiStatus(TheoryTestAttemptStatus.FAILED)).toBe(
+      AttemptApiStatus.COMPLETED,
+    );
+    expect(attemptApiResult(TheoryTestAttemptStatus.PASSED)).toBe(
+      AttemptApiResult.PASSED,
+    );
+    expect(attemptApiResult(TheoryTestAttemptStatus.FAILED)).toBe(
+      AttemptApiResult.FAILED,
+    );
+  });
+
+  it('gives no result to an open or expired attempt', () => {
+    expect(attemptApiStatus(TheoryTestAttemptStatus.IN_PROGRESS)).toBe(
+      AttemptApiStatus.IN_PROGRESS,
+    );
+    expect(attemptApiStatus(TheoryTestAttemptStatus.EXPIRED)).toBe(
+      AttemptApiStatus.EXPIRED,
+    );
+    expect(attemptApiResult(TheoryTestAttemptStatus.IN_PROGRESS)).toBeNull();
+    expect(attemptApiResult(TheoryTestAttemptStatus.EXPIRED)).toBeNull();
   });
 });
 
@@ -206,6 +279,7 @@ describe('nextAttemptAvailability', () => {
       ),
     ).toEqual({
       attemptsUsed: 0,
+      attemptsStarted: 1,
       attemptsRemaining: 2,
       nextAttemptAvailable: false,
       unavailableReason: NextAttemptBlockReason.IN_PROGRESS,
@@ -272,6 +346,82 @@ describe('nextAttemptAvailability', () => {
       attemptsUsed: 2,
       nextAttemptAvailable: false,
       unavailableReason: NextAttemptBlockReason.ATTEMPTS_EXHAUSTED,
+    });
+  });
+
+  describe('cycles', () => {
+    const history = [
+      {
+        id: 'c1-1',
+        status: TheoryTestAttemptStatus.FAILED,
+        expiresAt: null,
+        cycle: 1,
+      },
+      {
+        id: 'c1-2',
+        status: TheoryTestAttemptStatus.FAILED,
+        expiresAt: null,
+        cycle: 1,
+      },
+      {
+        id: 'c1-3',
+        status: TheoryTestAttemptStatus.EXPIRED,
+        expiresAt: null,
+        cycle: 1,
+      },
+    ];
+
+    it('is exhausted in the cycle where all attempts were spent', () => {
+      expect(nextAttemptAvailability(3, history, now, 1)).toMatchObject({
+        attemptsUsed: 3,
+        attemptsStarted: 3,
+        attemptsRemaining: 0,
+        nextAttemptAvailable: false,
+        unavailableReason: NextAttemptBlockReason.ATTEMPTS_EXHAUSTED,
+      });
+    });
+
+    it('starts the next cycle from zero and keeps the old history out of the count', () => {
+      expect(nextAttemptAvailability(3, history, now, 2)).toMatchObject({
+        attemptsUsed: 0,
+        attemptsStarted: 0,
+        attemptsRemaining: 3,
+        nextAttemptAvailable: true,
+        unavailableReason: null,
+      });
+    });
+
+    it('counts only attempts of the requested cycle', () => {
+      const withNewCycle = [
+        ...history,
+        {
+          id: 'c2-1',
+          status: TheoryTestAttemptStatus.FAILED,
+          expiresAt: null,
+          cycle: 2,
+        },
+        {
+          id: 'c2-2',
+          status: TheoryTestAttemptStatus.IN_PROGRESS,
+          expiresAt: new Date('2026-11-21T12:20:00.000Z'),
+          cycle: 2,
+        },
+      ];
+
+      expect(nextAttemptAvailability(3, withNewCycle, now, 2)).toMatchObject({
+        attemptsUsed: 1,
+        attemptsStarted: 2,
+        attemptsRemaining: 1,
+        unavailableReason: NextAttemptBlockReason.IN_PROGRESS,
+        openAttemptId: 'c2-2',
+      });
+    });
+
+    it('counts every attempt when no cycle is given', () => {
+      expect(nextAttemptAvailability(3, history, now)).toMatchObject({
+        attemptsUsed: 3,
+        unavailableReason: NextAttemptBlockReason.ATTEMPTS_EXHAUSTED,
+      });
     });
   });
 });

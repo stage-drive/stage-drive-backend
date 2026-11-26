@@ -25,7 +25,7 @@ import { AuthGuard } from '../auth/auth.guard';
 import { CurrentUser } from '../auth/current-user.decorator';
 import { Roles } from '../auth/roles.decorator';
 import { RolesGuard } from '../auth/roles.guard';
-import { COURSE_MANAGE_ROLES } from '../courses/courses.service';
+import { COURSE_CONTENT_ROLES } from '../courses/courses.service';
 import { CreateLessonTestDto, TestDto } from './tests.dto';
 import { TestsService } from './tests.service';
 
@@ -40,16 +40,17 @@ export class LessonTestsController {
   constructor(private readonly tests: TestsService) {}
 
   @Post(':courseId/chapters/:chapterId/lessons/:lessonId/test')
-  @Roles(...COURSE_MANAGE_ROLES)
+  @Roles(...COURSE_CONTENT_ROLES)
   @HttpCode(HttpStatus.CREATED)
   @ApiOperation({
     summary: 'Створити тест уроку теоретичного курсу',
     description:
-      'ADMIN створює тест, прив’язаний до уроку з адреси. organizationId і courseId з тіла не беруться. ' +
+      'ADMIN або TEACHER групи з цим курсом створює тест, прив’язаний до уроку з адреси. organizationId і courseId з тіла не беруться. ' +
       'maxAttempts завжди 3 і окремо не передається. Новий тест — DRAFT, доки його не опублікують ' +
-      'через PATCH /tests/{testId}/publication. Другий тест того самого уроку — 409. ' +
-      'Після провалу студент бачить «Пройдіть урок ще раз.» і має знову позначити урок пройденим. ' +
-      'Наступний урок не віддає матеріали, доки цей не пройдено і тест не складено.',
+      'через PATCH /tests/{testId}/publication. Другий не архівний тест того самого уроку — 409. ' +
+      'Це те саме, що POST /tests із lessonId. Студент має 3 спроби на цикл: коли всі витрачено без PASSED, ' +
+      'він бачить «Пройдіть урок ще раз.» і після повторного проходження уроку отримує ще 3 спроби. ' +
+      'Наступний урок не віддає матеріали, доки цей тест не складено.',
   })
   @ApiParam({ name: 'courseId', format: 'uuid' })
   @ApiParam({ name: 'chapterId', format: 'uuid' })
@@ -59,7 +60,8 @@ export class LessonTestsController {
     description: 'Некоректне тіло. Тіло містить errors: [{ field, message }].',
   })
   @ApiForbiddenResponse({
-    description: 'Створювати тест уроку може лише ADMIN.',
+    description:
+      'Створювати тест уроку може ADMIN або TEACHER групи, якій призначено цей курс.',
   })
   @ApiNotFoundResponse({
     description: 'Курс, розділ або урок не знайдено в цій автошколі.',

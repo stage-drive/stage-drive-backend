@@ -9,6 +9,7 @@ import {
   CourseStatus,
   EnrollmentStatus,
   Prisma,
+  TheoryTestAttemptStatus,
   UserRole,
 } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
@@ -19,6 +20,7 @@ import {
   CourseProgressService,
   progressPercent,
 } from './course-progress.service';
+import { LESSON_LOCKED_MESSAGE, LESSON_RETRY_MESSAGE } from './lesson-gate';
 import {
   COURSE_NOT_FOUND_MESSAGE,
   COURSE_NOT_PUBLISHED_MESSAGE,
@@ -36,6 +38,7 @@ async function caught(promise: Promise<unknown>): Promise<HttpException> {
 const courseId = 'course-1';
 const completedAt = new Date('2026-11-01T10:00:00.000Z');
 const updatedAt = new Date('2026-11-07T10:00:00.000Z');
+const passedAt = new Date('2026-11-05T10:00:00.000Z');
 
 const signs = {
   id: 'lesson-signs',
@@ -106,13 +109,14 @@ describe('CourseProgressService', () => {
       findUnique: jest.fn(),
       findMany: jest.fn(),
       create: jest.fn(),
+      update: jest.fn(),
     },
     courseProgress: { findUnique: jest.fn(), upsert: jest.fn() },
     student: { findUnique: jest.fn() },
     lesson: { findMany: jest.fn() },
-    theoryTest: { findMany: jest.fn() },
+    theoryTest: { findMany: jest.fn(), count: jest.fn() },
     theoryTestAttempt: { findMany: jest.fn() },
-    theoryTestResult: { findUnique: jest.fn() },
+    theoryTestResult: { findUnique: jest.fn(), upsert: jest.fn() },
     $queryRaw: jest.fn(),
     $transaction: jest.fn(),
   };
@@ -144,6 +148,40 @@ describe('CourseProgressService', () => {
     prisma.courseLesson.findMany.mockResolvedValue(lessons);
   }
 
+  const lessonTest = {
+    id: 'test-1',
+    courseLessonId: control.id,
+    maxAttempts: 3,
+  };
+
+  /** Перший урок курсу має опублікований тест; attempts — історія спроб студента. */
+  function givenLessonTest(
+    attempts: Array<{
+      status: TheoryTestAttemptStatus;
+      cycle?: number;
+      expiresAt?: Date | null;
+    }> = [],
+  ) {
+    prisma.theoryTest.findMany.mockResolvedValue([lessonTest]);
+    const rows = attempts.map((attempt, index) => ({
+      id: `attempt-${index + 1}`,
+      testId: lessonTest.id,
+      cycle: 1,
+      expiresAt: null,
+      submittedAt: passedAt,
+      ...attempt,
+    }));
+    // Той самий мок обслуговує і стан тесту (усі спроби), і дату складання (лише PASSED).
+    prisma.theoryTestAttempt.findMany.mockImplementation(
+      ({ where }: { where: { status?: TheoryTestAttemptStatus } }) =>
+        Promise.resolve(
+          where.status
+            ? rows.filter((row) => row.status === where.status)
+            : rows,
+        ),
+    );
+  }
+
   beforeEach(() => {
     jest.clearAllMocks();
     prisma.organization.findUnique.mockResolvedValue({
@@ -162,6 +200,7 @@ describe('CourseProgressService', () => {
     prisma.student.findUnique.mockResolvedValue(null);
     prisma.lesson.findMany.mockResolvedValue([]);
     prisma.theoryTest.findMany.mockResolvedValue([]);
+    prisma.theoryTest.count.mockResolvedValue(0);
     prisma.theoryTestAttempt.findMany.mockResolvedValue([]);
     prisma.theoryTestResult.findUnique.mockResolvedValue(null);
     prisma.courseProgress.upsert.mockResolvedValue({ updatedAt });
@@ -299,6 +338,7 @@ describe('CourseProgressService', () => {
               passed: false,
               hasTest: false,
               retryMessage: null,
+              test: null,
               sessions: [],
             },
             {
@@ -313,6 +353,7 @@ describe('CourseProgressService', () => {
               passed: false,
               hasTest: false,
               retryMessage: null,
+              test: null,
               sessions: [],
             },
             {
@@ -327,6 +368,7 @@ describe('CourseProgressService', () => {
               passed: false,
               hasTest: false,
               retryMessage: null,
+              test: null,
               sessions: [],
             },
           ],
@@ -420,6 +462,140 @@ describe('CourseProgressService', () => {
       await expect(
         service.getOwn(student as never, courseId),
       ).resolves.toMatchObject({ test: null });
+    });
+
+    it('completes a lesson with a published test only by a PASSED attempt and opens the next lesson', async () => {
+      allowStudentCourse();
+      givenLessons();
+      givenLessonTest([
+        { status: TheoryTestAttemptStatus.FAILED },
+        { status: TheoryTestAttemptStatus.PASSED },
+      ]);
+
+      const result = await service.getOwn(student as never, courseId);
+
+      expect(result).toMatchObject({
+        completedLessonCount: 1,
+        totalLessonCount: 3,
+        percent: 33,
+      });
+      const [first, second, third] = result.lessons;
+      expect(first).toMatchObject({
+        lessonId: control.id,
+        completed: true,
+        completedAt: passedAt,
+        passed: true,
+        hasTest: true,
+        locked: false,
+        retryMessage: null,
+        test: {
+          id: 'test-1',
+          status: 'PUBLISHED',
+          passed: true,
+          attemptsUsed: 2,
+          attemptsLeft: 1,
+          maxAttempts: 3,
+          openAttemptId: null,
+          nextAttemptAvailable: false,
+          lockedNextUntilPassed: false,
+        },
+      });
+      expect(second).toMatchObject({
+        lessonId: signs.id,
+        locked: false,
+        test: null,
+      });
+      expect(third).toMatchObject({ lessonId: engine.id, locked: true });
+    });
+
+    it('does not count a lesson as done while its test is not passed, even with a completion mark', async () => {
+      allowStudentCourse();
+      givenLessons();
+      prisma.courseLessonCompletion.findMany.mockResolvedValue([
+        { lessonId: control.id, testCycle: 1, completedAt },
+      ]);
+      givenLessonTest([{ status: TheoryTestAttemptStatus.FAILED }]);
+
+      const result = await service.getOwn(student as never, courseId);
+
+      expect(result).toMatchObject({
+        completedLessonCount: 0,
+        percent: 0,
+        updatedAt: null,
+      });
+      const [first, second] = result.lessons;
+      expect(first).toMatchObject({
+        lessonId: control.id,
+        completed: false,
+        completedAt: null,
+        passed: false,
+        hasTest: true,
+        retryMessage: null,
+        test: {
+          passed: false,
+          attemptsUsed: 1,
+          attemptsLeft: 2,
+          nextAttemptAvailable: true,
+          lockedNextUntilPassed: true,
+        },
+      });
+      expect(second).toMatchObject({ lessonId: signs.id, locked: true });
+      expect(prisma.courseProgress.upsert).not.toHaveBeenCalled();
+    });
+
+    it('asks to pass the lesson again once all attempts are spent', async () => {
+      allowStudentCourse();
+      givenLessons();
+      givenLessonTest([
+        { status: TheoryTestAttemptStatus.FAILED },
+        { status: TheoryTestAttemptStatus.FAILED },
+        { status: TheoryTestAttemptStatus.EXPIRED },
+      ]);
+
+      const result = await service.getOwn(student as never, courseId);
+
+      expect(result.lessons[0]).toMatchObject({
+        lessonId: control.id,
+        completed: false,
+        retryMessage: LESSON_RETRY_MESSAGE,
+        test: {
+          attemptsUsed: 3,
+          attemptsLeft: 0,
+          nextAttemptAvailable: false,
+          lockedNextUntilPassed: true,
+        },
+      });
+      expect(result.lessons[1]).toMatchObject({ locked: true });
+    });
+
+    it('gives a fresh counter in a new cycle and keeps the old attempts out of it', async () => {
+      allowStudentCourse();
+      givenLessons();
+      prisma.courseLessonCompletion.findMany.mockResolvedValue([
+        { lessonId: control.id, testCycle: 2, completedAt },
+      ]);
+      givenLessonTest([
+        { status: TheoryTestAttemptStatus.FAILED },
+        { status: TheoryTestAttemptStatus.FAILED },
+        { status: TheoryTestAttemptStatus.FAILED },
+        {
+          status: TheoryTestAttemptStatus.IN_PROGRESS,
+          cycle: 2,
+          expiresAt: new Date(Date.now() + 60 * 60_000),
+        },
+      ]);
+
+      const result = await service.getOwn(student as never, courseId);
+
+      expect(result.lessons[0]).toMatchObject({
+        retryMessage: null,
+        test: {
+          attemptsUsed: 1,
+          attemptsLeft: 2,
+          openAttemptId: 'attempt-4',
+          nextAttemptAvailable: false,
+        },
+      });
     });
 
     it('reads the published course of the latest active enrollment', async () => {
@@ -677,6 +853,121 @@ describe('CourseProgressService', () => {
           }),
         }),
       );
+    });
+  });
+
+  describe('completing a lesson that has a test', () => {
+    beforeEach(() => {
+      allowStudentCourse();
+      givenLessons();
+      prisma.courseLesson.findFirst.mockResolvedValue({ id: control.id });
+    });
+
+    const spent = [
+      { status: TheoryTestAttemptStatus.FAILED },
+      { status: TheoryTestAttemptStatus.FAILED },
+      { status: TheoryTestAttemptStatus.FAILED },
+    ];
+
+    it('keeps the next lesson locked behind a test that is not passed, even if the previous lesson is marked as done', async () => {
+      prisma.courseLesson.findFirst.mockResolvedValue({ id: signs.id });
+      prisma.courseLessonCompletion.findMany.mockResolvedValue([
+        { lessonId: control.id, testCycle: 1, completedAt },
+      ]);
+      givenLessonTest([{ status: TheoryTestAttemptStatus.FAILED }]);
+
+      const error = await caught(
+        service.completeLesson(student as never, courseId, signs.id),
+      );
+
+      expect(error).toBeInstanceOf(ForbiddenException);
+      expect(error.message).toBe(LESSON_LOCKED_MESSAGE);
+      expect(prisma.courseLessonCompletion.create).not.toHaveBeenCalled();
+      expect(prisma.courseLessonCompletion.update).not.toHaveBeenCalled();
+    });
+
+    it('opens the next test cycle on the existing mark once all attempts are spent', async () => {
+      prisma.courseLessonCompletion.findUnique.mockResolvedValue({
+        courseId,
+        organizationId: 'org-1',
+        testCycle: 1,
+      });
+      givenLessonTest(spent);
+
+      await service.completeLesson(student as never, courseId, control.id);
+
+      expect(prisma.courseLessonCompletion.update).toHaveBeenCalledWith({
+        where: {
+          studentId_lessonId: { studentId: 'student-1', lessonId: control.id },
+        },
+        data: { testCycle: 2 },
+      });
+      expect(prisma.courseLessonCompletion.create).not.toHaveBeenCalled();
+    });
+
+    it('does not move the cycle back or forward when the mark is already in the next cycle', async () => {
+      prisma.courseLessonCompletion.findUnique.mockResolvedValue({
+        courseId,
+        organizationId: 'org-1',
+        testCycle: 2,
+      });
+      // Цикл 1 вичерпано, але студент уже у циклі 2 і має там спробу в запасі.
+      prisma.courseLessonCompletion.findMany.mockResolvedValue([
+        { lessonId: control.id, testCycle: 2, completedAt },
+      ]);
+      givenLessonTest(spent);
+
+      await service.completeLesson(student as never, courseId, control.id);
+
+      expect(prisma.courseLessonCompletion.update).not.toHaveBeenCalled();
+      expect(prisma.courseLessonCompletion.create).not.toHaveBeenCalled();
+    });
+
+    it('creates the mark directly in the next cycle when there was none', async () => {
+      givenLessonTest(spent);
+
+      await service.completeLesson(student as never, courseId, control.id);
+
+      expect(prisma.courseLessonCompletion.create).toHaveBeenCalledWith({
+        data: {
+          organizationId: 'org-1',
+          courseId,
+          lessonId: control.id,
+          studentId: 'student-1',
+          testCycle: 2,
+        },
+      });
+    });
+
+    it('keeps the cycle while attempts are left', async () => {
+      prisma.courseLessonCompletion.findUnique.mockResolvedValue({
+        courseId,
+        organizationId: 'org-1',
+        testCycle: 1,
+      });
+      givenLessonTest([{ status: TheoryTestAttemptStatus.FAILED }]);
+
+      await service.completeLesson(student as never, courseId, control.id);
+
+      expect(prisma.courseLessonCompletion.update).not.toHaveBeenCalled();
+      expect(prisma.courseLessonCompletion.create).not.toHaveBeenCalled();
+    });
+
+    it('does not open a new cycle after the test is passed', async () => {
+      prisma.courseLessonCompletion.findUnique.mockResolvedValue({
+        courseId,
+        organizationId: 'org-1',
+        testCycle: 1,
+      });
+      givenLessonTest([
+        { status: TheoryTestAttemptStatus.FAILED },
+        { status: TheoryTestAttemptStatus.FAILED },
+        { status: TheoryTestAttemptStatus.PASSED },
+      ]);
+
+      await service.completeLesson(student as never, courseId, control.id);
+
+      expect(prisma.courseLessonCompletion.update).not.toHaveBeenCalled();
     });
   });
 

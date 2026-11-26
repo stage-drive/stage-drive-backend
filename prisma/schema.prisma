@@ -112,7 +112,8 @@ enum TheoryTestStatus {
   FAILED
 }
 
-/// Формат питань теоретичного тесту.
+/// Тип питання теоретичного тесту (TheoryQuestion.type). У TheoryTest.format лишається типом за замовчуванням
+/// для нових питань.
 /// SINGLE_CHOICE — рівно одна правильна відповідь і щонайменше два варіанти.
 /// MULTIPLE_CHOICE — хоча б одна правильна і хоча б одна неправильна відповідь.
 /// TRUE_FALSE — рівно два варіанти і рівно одна правильна відповідь.
@@ -123,9 +124,12 @@ enum TheoryTestFormat {
 }
 
 /// Чернетка не показується як готовий тест. PUBLISHED дозволено лише після перевірки структури.
+/// ARCHIVED — тест виведено з обігу: його не бачать студенти, а в уроку можна створити новий тест.
+/// Історія спроб архівного тесту лишається.
 enum TheoryTestPublicationStatus {
   DRAFT
   PUBLISHED
+  ARCHIVED
 }
 
 /// Спроба проходження тесту. Кожен старт — окремий рядок, не перезапис TheoryTestResult.
@@ -140,6 +144,13 @@ enum TheoryTestAttemptStatus {
 enum Transmission {
   MANUAL
   AUTOMATIC
+}
+
+/// Як проходить теоретичне заняття групи.
+/// CLASSROOM — офлайн в аудиторії. ONLINE — урок на YouTube.
+enum TheoryDelivery {
+  CLASSROOM
+  ONLINE
 }
 
 /// Статус заняття — спільний для теорії (Lesson) і практики (DrivingLesson).
@@ -536,17 +547,17 @@ model CourseChapter {
 /// Урок теоретичного курсу. Це не заняття групи (модель Lesson).
 /// courseId збігається з курсом розділу: складений ключ не дає прив’язати урок до чужого розділу.
 model CourseLesson {
-  id               String                   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  courseId         String                   @map("course_id") @db.Uuid
-  course           Course                   @relation(fields: [courseId], references: [id], onDelete: Cascade)
-  chapterId        String                   @map("chapter_id") @db.Uuid
-  chapter          CourseChapter            @relation(fields: [chapterId, courseId], references: [id, courseId], onDelete: Cascade)
-  title             String                         @db.VarChar(200)
+  id                String                        @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  courseId          String                        @map("course_id") @db.Uuid
+  course            Course                        @relation(fields: [courseId], references: [id], onDelete: Cascade)
+  chapterId         String                        @map("chapter_id") @db.Uuid
+  chapter           CourseChapter                 @relation(fields: [chapterId, courseId], references: [id, courseId], onDelete: Cascade)
+  title             String                        @db.VarChar(200)
   description       String?
   position          Int
-  publicationStatus CourseLessonPublicationStatus  @default(DRAFT) @map("publication_status")
-  createdAt         DateTime                       @default(now()) @map("created_at")
-  updatedAt         DateTime                       @updatedAt @map("updated_at")
+  publicationStatus CourseLessonPublicationStatus @default(DRAFT) @map("publication_status")
+  createdAt         DateTime                      @default(now()) @map("created_at")
+  updatedAt         DateTime                      @updatedAt @map("updated_at")
   materials         CourseMaterial[]
   completions       CourseLessonCompletion[]
   scheduledLessons  Lesson[]
@@ -590,6 +601,9 @@ model CourseLessonCompletion {
   studentId      String       @map("student_id") @db.Uuid
   student        User         @relation("StudentCourseLessonCompletions", fields: [studentId], references: [id], onDelete: Cascade)
   completedAt    DateTime     @default(now()) @map("completed_at")
+  /// Поточний цикл спроб тесту цього уроку. Збільшується, коли студент проходить урок повторно
+  /// після вичерпаних спроб: тоді лічильник спроб починається з нуля, історія лишається.
+  testCycle      Int          @default(1) @map("test_cycle")
 
   @@unique([studentId, lessonId])
   @@index([organizationId])
@@ -649,7 +663,10 @@ model TheoryTestResult {
 
 /// Теоретичний тест курсу автошколи. Це зміст тесту, а не спроба студента (TheoryTestResult).
 /// organizationId збігається з автошколою курсу: складений FK не дає прив’язати тест до чужого курсу.
-/// Новий тест завжди DRAFT. PUBLISHED лише коли кожне питання відповідає format.
+/// Новий тест завжди DRAFT. PUBLISHED лише коли кожне питання відповідає своєму type.
+/// Тест уроку (courseLessonId) — основний сценарій MVP 2.1; тест без уроку лишився для сумісності.
+/// Частковий унікальний індекс «один не-ARCHIVED тест на урок» живе в міграції:
+/// у Prisma-схемі частковий індекс не описується.
 model TheoryTest {
   id                String                      @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   organizationId    String                      @map("organization_id") @db.Uuid
@@ -662,6 +679,7 @@ model TheoryTest {
   courseLesson      CourseLesson?               @relation(fields: [courseLessonId, courseId], references: [id, courseId], onDelete: Cascade)
   name              String                      @db.VarChar(200)
   description       String?
+  /// Тип за замовчуванням для нових питань. Тип кожного питання зберігається в TheoryQuestion.type.
   format            TheoryTestFormat
   /// Поріг складання у відсотках, від 1 до 100.
   passingScore      Int                         @map("passing_score")
@@ -679,18 +697,19 @@ model TheoryTest {
   results           TheoryTestResult[]
 
   @@unique([id, organizationId])
-  @@unique([courseLessonId])
+  @@index([courseLessonId])
   @@index([organizationId])
   @@index([courseId])
   @@map("theory_tests")
 }
 
-/// Питання тесту. Порядок усередині тесту задає position.
+/// Питання тесту. Порядок усередині тесту задає position, правила відповідей — type.
 model TheoryQuestion {
   id             String               @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   testId         String               @map("test_id") @db.Uuid
   organizationId String               @map("organization_id") @db.Uuid
   test           TheoryTest           @relation(fields: [testId, organizationId], references: [id, organizationId], onDelete: Cascade)
+  type           TheoryTestFormat
   text           String               @db.VarChar(2000)
   position       Int
   createdAt      DateTime             @default(now()) @map("created_at")
@@ -738,12 +757,21 @@ model TheoryTestAttempt {
   student          User                        @relation("StudentTheoryTestAttempts", fields: [studentId, organizationId], references: [id, organizationId], onDelete: Cascade)
   status           TheoryTestAttemptStatus     @default(IN_PROGRESS)
   format           TheoryTestFormat
+  /// Цикл спроб: після вичерпаних спроб і повторного проходження уроку починається наступний цикл.
+  /// Ліміт maxAttempts рахується в межах поточного циклу, історія попередніх циклів лишається.
+  cycle            Int                         @default(1)
+  /// Номер спроби в її циклі, з 1.
+  attemptNumber    Int                         @default(1) @map("attempt_number")
   startedAt        DateTime                    @map("started_at")
   /// null — у тесті не було ліміту. Інакше startedAt + timeLimitMinutes. Перевіряє лише сервер.
   expiresAt        DateTime?                   @map("expires_at")
   submittedAt      DateTime?                   @map("submitted_at")
   /// Відсоток після перевірки. null, доки спроба IN_PROGRESS або EXPIRED.
   score            Int?
+  /// Скільки питань відповідено точно. Заповнюється разом із score.
+  correctCount     Int?                        @map("correct_count")
+  /// Скільки питань було в знімку спроби. Заповнюється разом із score.
+  totalQuestions   Int?                        @map("total_questions")
   passingScore     Int                         @map("passing_score")
   timeLimitMinutes Int?                        @map("time_limit_minutes")
   createdAt        DateTime                    @default(now()) @map("created_at")
@@ -764,6 +792,8 @@ model TheoryTestAttemptQuestion {
   attemptId        String                    @map("attempt_id") @db.Uuid
   sourceQuestionId String                    @map("source_question_id") @db.Uuid
   attempt          TheoryTestAttempt         @relation(fields: [attemptId], references: [id], onDelete: Cascade)
+  /// Тип питання на момент старту: правки питання не змінюють правил уже початої спроби.
+  type             TheoryTestFormat
   text             String                    @db.VarChar(2000)
   /// Порядок показу в цій спробі, з 1. Якщо тест перемішує питання — порядок фіксується тут.
   position         Int
@@ -904,6 +934,11 @@ model Lesson {
   groupId            String             @map("group_id") @db.Uuid
   group              Group              @relation(fields: [groupId, organizationId], references: [id, organizationId], onDelete: Cascade)
   topic              String             @db.VarChar(200)
+  /// CLASSROOM — аудиторія в classroom. ONLINE — посилання на YouTube в onlineLink.
+  /// Старі рядки лишаються CLASSROOM без аудиторії: CHECK це дозволяє.
+  delivery           TheoryDelivery     @default(CLASSROOM)
+  classroom          String?            @db.VarChar(120)
+  onlineLink         String?            @map("online_link") @db.VarChar(500)
   scheduledAt        DateTime           @map("scheduled_at")
   durationMin        Int                @default(90) @map("duration_min")
   status             LessonStatus       @default(SCHEDULED)

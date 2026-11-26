@@ -1,10 +1,10 @@
-import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
+import { ApiProperty } from '@nestjs/swagger';
 import {
   AttendanceStatus,
   LessonStatus,
+  TheoryTestPublicationStatus,
   TheoryTestStatus,
 } from '@prisma/client';
-import { IsEnum, IsInt, IsOptional, Max, Min } from 'class-validator';
 
 /** Очне заняття групи, прив’язане до уроку курсу, і відмітка цього студента. */
 export class LinkedTheorySessionDto {
@@ -33,6 +33,77 @@ export class LinkedTheorySessionDto {
   attendance: AttendanceStatus | null;
 }
 
+/** Стан опублікованого тесту уроку для цього студента в поточному циклі спроб. */
+export class LessonTestProgressDto {
+  @ApiProperty({
+    example: '91919191-9191-4919-8919-919191919191',
+    description:
+      'Id тесту. Далі: GET /lessons/{lessonId}/test і POST /tests/{id}/attempts.',
+  })
+  id: string;
+
+  @ApiProperty({
+    enum: TheoryTestPublicationStatus,
+    example: TheoryTestPublicationStatus.PUBLISHED,
+    description:
+      'Студент бачить лише опублікований тест, тож тут завжди PUBLISHED.',
+  })
+  status: TheoryTestPublicationStatus;
+
+  @ApiProperty({
+    example: false,
+    description:
+      'Тест складено (PASSED). Лише це відкриває наступний урок; перегляд матеріалів не обов’язковий.',
+  })
+  passed: boolean;
+
+  @ApiProperty({
+    example: 1,
+    description:
+      'Скільки спроб поточного циклу вже зайнято: витрачені та відкрита (IN_PROGRESS).',
+  })
+  attemptsUsed: number;
+
+  @ApiProperty({
+    type: Number,
+    nullable: true,
+    example: 2,
+    description:
+      'Скільки спроб ще можна почати в поточному циклі. 0 — вичерпано, «Пройдіть урок ще раз.».',
+  })
+  attemptsLeft: number | null;
+
+  @ApiProperty({
+    type: Number,
+    nullable: true,
+    example: 3,
+    description: 'Скільки спроб дає цикл. У тесту уроку їх 3.',
+  })
+  maxAttempts: number | null;
+
+  @ApiProperty({
+    type: String,
+    format: 'uuid',
+    nullable: true,
+    description:
+      'Відкрита спроба, яку можна продовжити (GET /tests/attempts/{id}).',
+  })
+  openAttemptId: string | null;
+
+  @ApiProperty({
+    example: true,
+    description: 'Чи можна зараз почати нову спробу.',
+  })
+  nextAttemptAvailable: boolean;
+
+  @ApiProperty({
+    example: true,
+    description:
+      'Наступний урок закритий, доки тест не складено (passed = false).',
+  })
+  lockedNextUntilPassed: boolean;
+}
+
 export class CourseLessonProgressDto {
   @ApiProperty({ example: '61616161-6161-4616-8616-616161616161' })
   lessonId: string;
@@ -59,14 +130,16 @@ export class CourseLessonProgressDto {
 
   @ApiProperty({
     example: true,
-    description: 'true, якщо студент уже пройшов цей урок.',
+    description:
+      'true, якщо урок завершено: тест уроку складено (PASSED), а коли опублікованого тесту немає — урок позначено пройденим. ' +
+      'Лише позначка «пройдено» при наявному тесті урок не завершує.',
   })
   completed: boolean;
 
   @ApiProperty({
     example: false,
     description:
-      'true, коли попередній опублікований урок ще не пройдено або його тест не складено. Контент такого уроку не віддається.',
+      'true, коли попередній опублікований урок ще не завершено: тест не складено або, без тесту, урок не позначено пройденим. Контент такого уроку не віддається.',
   })
   locked: boolean;
 
@@ -84,11 +157,20 @@ export class CourseLessonProgressDto {
   hasTest: boolean;
 
   @ApiProperty({
+    type: LessonTestProgressDto,
+    nullable: true,
+    description:
+      'Тест уроку і стан спроб поточного циклу. null, якщо в уроку немає опублікованого тесту.',
+  })
+  test: LessonTestProgressDto | null;
+
+  @ApiProperty({
     type: String,
     nullable: true,
     example: 'Пройдіть урок ще раз.',
     description:
-      'Після провалу тесту уроку, доки його не складено. null — повторювати урок не потрібно.',
+      'Є, коли всі спроби тесту уроку витрачено без PASSED. Нові 3 спроби відкриваються після повторного проходження уроку ' +
+      '(POST /courses/{courseId}/lessons/{lessonId}/complete). null — повторювати урок не потрібно.',
   })
   retryMessage: string | null;
 
@@ -96,7 +178,8 @@ export class CourseLessonProgressDto {
     type: String,
     format: 'date-time',
     nullable: true,
-    description: 'Коли урок пройдено вперше. null, якщо ще не пройдено.',
+    description:
+      'Коли урок завершено вперше: час першого PASSED тесту уроку або, без тесту, час позначки «пройдено». null, якщо ще не завершено.',
   })
   completedAt: Date | null;
 
@@ -191,33 +274,11 @@ export class CourseProgressDto {
   @ApiProperty({
     type: TheoryTestResultDto,
     nullable: true,
+    deprecated: true,
     description:
-      'Актуальний результат тесту цього курсу. null, якщо студент ще не здавав тест.',
+      'Застарілий результат тесту всього курсу: старий тест без уроку або запис, зроблений вручну. ' +
+      'Результати тестів уроків дивіться в lessons[].test, а їхні спроби — у GET /tests/{testId}/attempts/me. ' +
+      'null, якщо такого результату немає.',
   })
   test: TheoryTestResultDto | null;
-}
-
-export class SubmitTheoryTestDto {
-  @ApiProperty({
-    enum: TheoryTestStatus,
-    example: TheoryTestStatus.PASSED,
-    description:
-      'PASSED закриває теорію разом із проходженням усіх уроків курсу.',
-  })
-  @IsEnum(TheoryTestStatus, {
-    message: 'status має бути PASSED або FAILED.',
-  })
-  status: TheoryTestStatus;
-
-  @ApiPropertyOptional({
-    minimum: 0,
-    maximum: 100,
-    example: 86,
-    description: 'Бал від 0 до 100. Можна не передавати.',
-  })
-  @IsOptional()
-  @IsInt({ message: 'score має бути цілим числом.' })
-  @Min(0, { message: 'score має бути не менше 0.' })
-  @Max(100, { message: 'score має бути не більше 100.' })
-  score?: number;
 }
