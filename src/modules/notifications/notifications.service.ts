@@ -5,17 +5,22 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import {
+  CoursePublicationStatus,
+  CourseStatus,
   EnrollmentStatus,
+  NotificationEntityType,
   NotificationReadStatus,
   NotificationType,
   PaymentStatus,
   Prisma,
+  TheoryTestPublicationStatus,
   User,
   UserRole,
   UserStatus,
 } from '@prisma/client';
 import { isUniqueConstraintOn } from '../../common/prisma/unique-constraint';
 import { PrismaService } from '../../prisma/prisma.service';
+import { paymentVisibility } from '../payments/payment-roles';
 import {
   clipNotificationText,
   formatNotificationWhen,
@@ -24,8 +29,11 @@ import {
 } from './notification-events';
 import {
   ListNotificationsQueryDto,
+  MarkAllNotificationsReadDto,
   NotificationDto,
+  NotificationEntityDto,
   NotificationListDto,
+  NotificationStatusDto,
   UnreadNotificationCountDto,
 } from './notifications.dto';
 
@@ -39,6 +47,8 @@ const notificationSelect = {
   readStatus: true,
   createdAt: true,
   readAt: true,
+  entityType: true,
+  entityId: true,
 } satisfies Prisma.NotificationSelect;
 
 type NotificationRow = Prisma.NotificationGetPayload<{
@@ -50,9 +60,22 @@ type Draft = {
   type: NotificationType;
   text: string;
   dedupeKey: string;
+  entityType: NotificationEntityType;
+  entityId: string;
 };
 
 export const NOTIFICATION_NOT_FOUND_MESSAGE = 'Сповіщення не знайдено.';
+export const RELATED_ENTITY_MISSING_MESSAGE =
+  'Сповіщення не містить пов’язаної сутності.';
+export const RELATED_ENTITY_NOT_FOUND_MESSAGE =
+  'Пов’язану сутність не знайдено.';
+
+function toEntity(row: NotificationRow): NotificationEntityDto | null {
+  if (!row.entityType || !row.entityId) {
+    return null;
+  }
+  return { type: row.entityType, id: row.entityId };
+}
 
 function toDto(row: NotificationRow): NotificationDto {
   return {
@@ -62,6 +85,7 @@ function toDto(row: NotificationRow): NotificationDto {
     readStatus: row.readStatus,
     createdAt: row.createdAt,
     readAt: row.readAt,
+    entity: toEntity(row),
   };
 }
 
@@ -123,7 +147,11 @@ export class NotificationsService {
     }
   }
 
-  /** Свої сповіщення поточної автошколи, від нових до старих. */
+  /**
+   * Свої сповіщення поточної автошколи, від нових до старих.
+   * Той самий список годує dropdown (малий limit) і Notification Center (сторінки й фільтр).
+   * unreadCount — індикатор на цей момент, навіть якщо сторінка порожня.
+   */
   async list(
     actor: User,
     query: ListNotificationsQueryDto = {},
@@ -136,7 +164,7 @@ export class NotificationsService {
       recipientId: actor.id,
       ...(query.readStatus ? { readStatus: query.readStatus } : {}),
     };
-    const [total, rows] = await Promise.all([
+    const [total, rows, unreadCount] = await Promise.all([
       this.prisma.notification.count({ where }),
       this.prisma.notification.findMany({
         where,
@@ -145,6 +173,7 @@ export class NotificationsService {
         skip: (page - 1) * limit,
         take: limit,
       }),
+      this.countUnread(actor.organizationId, actor.id),
     ]);
     return {
       items: rows.map(toDto),
@@ -154,29 +183,74 @@ export class NotificationsService {
         total,
         totalPages: total === 0 ? 0 : Math.ceil(total / limit),
       },
+      unreadCount,
     };
   }
 
   async unreadCount(actor: User): Promise<UnreadNotificationCountDto> {
     await this.requireOrganization(actor.organizationId);
-    const count = await this.prisma.notification.count({
+    return {
+      count: await this.countUnread(actor.organizationId, actor.id),
+    };
+  }
+
+  /**
+   * Позначає своє сповіщення прочитаним. Чуже або з іншої автошколи — 404.
+   * Повторний виклик не змінює readAt. unreadCount уже після запису.
+   */
+  async markRead(
+    actor: User,
+    notificationId: string,
+  ): Promise<NotificationStatusDto> {
+    return this.setReadStatus(
+      actor,
+      notificationId,
+      NotificationReadStatus.READ,
+    );
+  }
+
+  /**
+   * Повертає своє сповіщення в непрочитані і прибирає readAt.
+   * Повторний виклик нічого не змінює. Чуже сповіщення — 404.
+   */
+  async markUnread(
+    actor: User,
+    notificationId: string,
+  ): Promise<NotificationStatusDto> {
+    return this.setReadStatus(
+      actor,
+      notificationId,
+      NotificationReadStatus.UNREAD,
+    );
+  }
+
+  /**
+   * Позначає всі свої непрочитані прочитаними. Чужі рядки не чіпає.
+   * unreadCount читається після запису, тож лічильник уже враховує зміну.
+   */
+  async markAllRead(actor: User): Promise<MarkAllNotificationsReadDto> {
+    await this.requireOrganization(actor.organizationId);
+    const now = new Date();
+    const updated = await this.prisma.notification.updateMany({
       where: {
         organizationId: actor.organizationId,
         recipientId: actor.id,
         readStatus: NotificationReadStatus.UNREAD,
       },
+      data: { readStatus: NotificationReadStatus.READ, readAt: now },
     });
-    return { count };
+    return {
+      updated: updated.count,
+      unreadCount: await this.countUnread(actor.organizationId, actor.id),
+    };
   }
 
-  /**
-   * Позначає своє сповіщення прочитаним. Чуже або з іншої автошколи — 404.
-   * Повторний виклик не змінює readAt.
-   */
-  async markRead(
+  /** Своє сповіщення. Чуже або з іншої автошколи для цього запиту не існує. */
+  private async setReadStatus(
     actor: User,
     notificationId: string,
-  ): Promise<NotificationDto> {
+    readStatus: NotificationReadStatus,
+  ): Promise<NotificationStatusDto> {
     await this.requireOrganization(actor.organizationId);
     const existing = await this.prisma.notification.findFirst({
       where: {
@@ -189,15 +263,59 @@ export class NotificationsService {
     if (!existing) {
       throw new NotFoundException(NOTIFICATION_NOT_FOUND_MESSAGE);
     }
-    if (existing.readStatus === NotificationReadStatus.READ) {
-      return toDto(existing);
-    }
-    const saved = await this.prisma.notification.update({
-      where: { id: existing.id },
-      data: { readStatus: NotificationReadStatus.READ, readAt: new Date() },
-      select: notificationSelect,
+    const saved =
+      existing.readStatus === readStatus
+        ? existing
+        : await this.prisma.notification.update({
+            where: { id: existing.id },
+            data:
+              readStatus === NotificationReadStatus.READ
+                ? { readStatus, readAt: new Date() }
+                : { readStatus, readAt: null },
+            select: notificationSelect,
+          });
+    return {
+      ...toDto(saved),
+      unreadCount: await this.countUnread(actor.organizationId, actor.id),
+    };
+  }
+
+  private countUnread(organizationId: string, recipientId: string) {
+    return this.prisma.notification.count({
+      where: {
+        organizationId,
+        recipientId,
+        readStatus: NotificationReadStatus.UNREAD,
+      },
     });
-    return toDto(saved);
+  }
+
+  /**
+   * Тип і id сутності свого сповіщення, якщо вона ще існує і роль може її відкрити.
+   * Чуже сповіщення — 404. Сутності немає або її видалено — 404. Немає прав — 403.
+   */
+  async target(
+    actor: User,
+    notificationId: string,
+  ): Promise<NotificationEntityDto> {
+    await this.requireOrganization(actor.organizationId);
+    const notification = await this.prisma.notification.findFirst({
+      where: {
+        id: notificationId,
+        organizationId: actor.organizationId,
+        recipientId: actor.id,
+      },
+      select: { entityType: true, entityId: true },
+    });
+    if (!notification) {
+      throw new NotFoundException(NOTIFICATION_NOT_FOUND_MESSAGE);
+    }
+    if (!notification.entityType || !notification.entityId) {
+      throw new NotFoundException(RELATED_ENTITY_MISSING_MESSAGE);
+    }
+    const entity = { type: notification.entityType, id: notification.entityId };
+    await this.assertEntityAccess(actor, entity);
+    return entity;
   }
 
   private async drafts(
@@ -230,6 +348,8 @@ export class NotificationsService {
                 ? `Практичне заняття ${when(event.scheduledAt)} проведено.`
                 : `Зафіксовано неявку на практичне заняття ${when(event.scheduledAt)}.`,
             dedupeKey: `practice:${event.lessonId}:outcome:${event.outcome}`,
+            entityType: NotificationEntityType.PRACTICE_LESSON,
+            entityId: event.lessonId,
           },
         ];
       case 'test.published':
@@ -278,6 +398,8 @@ export class NotificationsService {
       type,
       text,
       dedupeKey,
+      entityType: NotificationEntityType.THEORY_LESSON,
+      entityId: event.lessonId,
     }));
   }
 
@@ -305,6 +427,8 @@ export class NotificationsService {
             type: NotificationType.PRACTICE_BOOKED,
             text: `Новий запит на практичне заняття ${when}. Потрібне підтвердження.`,
             dedupeKey: `practice:${event.lessonId}:booked`,
+            entityType: NotificationEntityType.PRACTICE_LESSON,
+            entityId: event.lessonId,
           },
         ];
       case 'practice.assigned':
@@ -313,6 +437,8 @@ export class NotificationsService {
           type: NotificationType.PRACTICE_ASSIGNED,
           text: `Призначено практичне заняття на ${when}.`,
           dedupeKey: `practice:${event.lessonId}:assigned`,
+          entityType: NotificationEntityType.PRACTICE_LESSON,
+          entityId: event.lessonId,
         }));
       case 'practice.confirmed':
         return [
@@ -321,6 +447,8 @@ export class NotificationsService {
             type: NotificationType.PRACTICE_CONFIRMED,
             text: `Практичне заняття ${when} підтверджено.`,
             dedupeKey: `practice:${event.lessonId}:confirmed`,
+            entityType: NotificationEntityType.PRACTICE_LESSON,
+            entityId: event.lessonId,
           },
         ];
       case 'practice.rejected':
@@ -330,6 +458,8 @@ export class NotificationsService {
             type: NotificationType.PRACTICE_REJECTED,
             text: `Запит на практичне заняття ${when} відхилено.`,
             dedupeKey: `practice:${event.lessonId}:rejected`,
+            entityType: NotificationEntityType.PRACTICE_LESSON,
+            entityId: event.lessonId,
           },
         ];
       case 'practice.cancelled':
@@ -338,6 +468,8 @@ export class NotificationsService {
           type: NotificationType.PRACTICE_CANCELLED,
           text: `Практичне заняття ${when} скасовано.`,
           dedupeKey: `practice:${event.lessonId}:cancelled`,
+          entityType: NotificationEntityType.PRACTICE_LESSON,
+          entityId: event.lessonId,
         }));
       case 'practice.rescheduled':
         return both.map((recipientId) => ({
@@ -347,6 +479,8 @@ export class NotificationsService {
             ? `Практичне заняття перенесено на ${when}. Потрібне підтвердження.`
             : `Практичне заняття перенесено на ${when}.`,
           dedupeKey: `practice:${event.lessonId}:rescheduled:${event.scheduledAt.toISOString()}`,
+          entityType: NotificationEntityType.PRACTICE_LESSON,
+          entityId: event.lessonId,
         }));
     }
   }
@@ -375,7 +509,9 @@ export class NotificationsService {
       recipientId: enrollment.studentId,
       type: NotificationType.TEST_PUBLISHED,
       text: `Опубліковано тест «${quoteLabel(event.name)}».`,
-      dedupeKey: `test:${event.testId}:published`,
+      dedupeKey: `test:${event.testId}:published:${event.publishedAt.toISOString()}`,
+      entityType: NotificationEntityType.TEST,
+      entityId: event.testId,
     }));
   }
 
@@ -397,6 +533,8 @@ export class NotificationsService {
           ? `Тест «${name}» складено: ${event.correctCount} з ${event.totalQuestions}.`
           : `Тест «${name}» не складено: ${event.correctCount} з ${event.totalQuestions}.`,
         dedupeKey: `attempt:${event.attemptId}:result`,
+        entityType: NotificationEntityType.TEST_ATTEMPT,
+        entityId: event.attemptId,
       },
     ];
   }
@@ -417,6 +555,8 @@ export class NotificationsService {
           ? `Оплату «${purpose}» на суму ${event.amount} ${event.currency} підтверджено.`
           : `Зафіксовано оплату «${purpose}» на суму ${event.amount} ${event.currency}. Статус: не оплачено.`,
         dedupeKey: `payment:${event.paymentId}:recorded`,
+        entityType: NotificationEntityType.PAYMENT,
+        entityId: event.paymentId,
       };
     }
     return {
@@ -426,6 +566,8 @@ export class NotificationsService {
         ? `Статус оплати «${purpose}» змінено: оплачено (${event.amount} ${event.currency}).`
         : `Статус оплати «${purpose}» змінено: не оплачено.`,
       dedupeKey: `payment:${event.paymentId}:status:${event.status}`,
+      entityType: NotificationEntityType.PAYMENT,
+      entityId: event.paymentId,
     };
   }
 
@@ -536,6 +678,8 @@ export class NotificationsService {
           text,
           readStatus: NotificationReadStatus.UNREAD,
           dedupeKey: draft.dedupeKey,
+          entityType: draft.entityType,
+          entityId: draft.entityId,
         },
       });
       return true;
@@ -547,6 +691,204 @@ export class NotificationsService {
         return false;
       }
       throw error;
+    }
+  }
+
+  /** 403, коли рядок сутності є, але ця роль його не відкриває. */
+  private denyTarget(actor: User, reason: string): never {
+    this.logger.warn(
+      `Notification target denied reason=${reason} actorId=${actor.id} organizationId=${actor.organizationId}`,
+    );
+    throw new ForbiddenException('Insufficient permissions');
+  }
+
+  private async assertEntityAccess(
+    actor: User,
+    entity: NotificationEntityDto,
+  ): Promise<void> {
+    switch (entity.type) {
+      case NotificationEntityType.THEORY_LESSON:
+        return this.assertTheoryLesson(actor, entity.id);
+      case NotificationEntityType.PRACTICE_LESSON:
+        return this.assertPracticeLesson(actor, entity.id);
+      case NotificationEntityType.TEST:
+        return this.assertTest(actor, entity.id);
+      case NotificationEntityType.TEST_ATTEMPT:
+        return this.assertTestAttempt(actor, entity.id);
+      case NotificationEntityType.PAYMENT:
+        return this.assertPayment(actor, entity.id);
+    }
+  }
+
+  /**
+   * Те саме коло, що бачить заняття в розкладі: ADMIN — будь-яке своєї автошколи,
+   * TEACHER — своєї групи, STUDENT — групи зі своїм зарахуванням.
+   * Завершене зарахування лишає лише історію, як у персональному розкладі.
+   */
+  private async assertTheoryLesson(
+    actor: User,
+    lessonId: string,
+  ): Promise<void> {
+    const lesson = await this.prisma.lesson.findFirst({
+      where: { id: lessonId, organizationId: actor.organizationId },
+      select: {
+        groupId: true,
+        scheduledAt: true,
+        group: { select: { teacherId: true } },
+      },
+    });
+    if (!lesson) {
+      throw new NotFoundException(RELATED_ENTITY_NOT_FOUND_MESSAGE);
+    }
+    if (actor.role === UserRole.ADMIN) {
+      return;
+    }
+    if (actor.role === UserRole.TEACHER) {
+      if (lesson.group.teacherId !== actor.id) {
+        this.denyTarget(actor, 'theory_lesson');
+      }
+      return;
+    }
+    if (actor.role === UserRole.STUDENT) {
+      const statuses =
+        lesson.scheduledAt.getTime() <= Date.now()
+          ? [EnrollmentStatus.ACTIVE, EnrollmentStatus.COMPLETED]
+          : [EnrollmentStatus.ACTIVE];
+      const enrollment = await this.prisma.enrollment.findFirst({
+        where: {
+          studentId: actor.id,
+          groupId: lesson.groupId,
+          status: { in: statuses },
+        },
+        select: { id: true },
+      });
+      if (!enrollment) {
+        this.denyTarget(actor, 'theory_lesson');
+      }
+      return;
+    }
+    this.denyTarget(actor, 'theory_lesson');
+  }
+
+  /** ADMIN — будь-яке практичне своєї автошколи, INSTRUCTOR і STUDENT — лише своє. */
+  private async assertPracticeLesson(
+    actor: User,
+    lessonId: string,
+  ): Promise<void> {
+    const lesson = await this.prisma.drivingLesson.findFirst({
+      where: { id: lessonId, organizationId: actor.organizationId },
+      select: { studentId: true, instructorId: true },
+    });
+    if (!lesson) {
+      throw new NotFoundException(RELATED_ENTITY_NOT_FOUND_MESSAGE);
+    }
+    if (actor.role === UserRole.ADMIN) {
+      return;
+    }
+    if (
+      actor.role === UserRole.INSTRUCTOR &&
+      lesson.instructorId === actor.id
+    ) {
+      return;
+    }
+    if (actor.role === UserRole.STUDENT && lesson.studentId === actor.id) {
+      return;
+    }
+    this.denyTarget(actor, 'practice_lesson');
+  }
+
+  /**
+   * ADMIN — будь-який тест автошколи. TEACHER — тест курсу своєї групи.
+   * STUDENT — лише опублікований тест опублікованого активного курсу,
+   * до якого є активне зарахування.
+   */
+  private async assertTest(actor: User, testId: string): Promise<void> {
+    const test = await this.prisma.theoryTest.findFirst({
+      where: { id: testId, organizationId: actor.organizationId },
+      select: { courseId: true, publicationStatus: true },
+    });
+    if (!test) {
+      throw new NotFoundException(RELATED_ENTITY_NOT_FOUND_MESSAGE);
+    }
+    if (actor.role === UserRole.ADMIN) {
+      return;
+    }
+    if (actor.role === UserRole.TEACHER) {
+      const group = await this.prisma.group.findFirst({
+        where: {
+          organizationId: actor.organizationId,
+          teacherId: actor.id,
+          courseId: test.courseId,
+        },
+        select: { id: true },
+      });
+      if (!group) {
+        this.denyTarget(actor, 'test');
+      }
+      return;
+    }
+    if (actor.role !== UserRole.STUDENT) {
+      this.denyTarget(actor, 'test');
+    }
+    if (test.publicationStatus !== TheoryTestPublicationStatus.PUBLISHED) {
+      this.denyTarget(actor, 'test_not_published');
+    }
+    const course = await this.prisma.course.findFirst({
+      where: { id: test.courseId, organizationId: actor.organizationId },
+      select: { status: true, publicationStatus: true },
+    });
+    if (
+      !course ||
+      course.status !== CourseStatus.ACTIVE ||
+      course.publicationStatus !== CoursePublicationStatus.PUBLISHED
+    ) {
+      this.denyTarget(actor, 'test_course');
+    }
+    const enrollment = await this.prisma.enrollment.findFirst({
+      where: {
+        studentId: actor.id,
+        status: EnrollmentStatus.ACTIVE,
+        group: {
+          organizationId: actor.organizationId,
+          courseId: test.courseId,
+        },
+      },
+      select: { id: true },
+    });
+    if (!enrollment) {
+      this.denyTarget(actor, 'test');
+    }
+  }
+
+  /** Спробу відкриває лише студент, який її проходив. */
+  private async assertTestAttempt(
+    actor: User,
+    attemptId: string,
+  ): Promise<void> {
+    const attempt = await this.prisma.theoryTestAttempt.findFirst({
+      where: { id: attemptId, organizationId: actor.organizationId },
+      select: { studentId: true },
+    });
+    if (!attempt) {
+      throw new NotFoundException(RELATED_ENTITY_NOT_FOUND_MESSAGE);
+    }
+    if (actor.role === UserRole.STUDENT && attempt.studentId === actor.id) {
+      return;
+    }
+    this.denyTarget(actor, 'test_attempt');
+  }
+
+  /** OWNER і ADMIN бачать оплату автошколи, студент — лише свою. */
+  private async assertPayment(actor: User, paymentId: string): Promise<void> {
+    const payment = await this.prisma.payment.findFirst({
+      where: { id: paymentId, organizationId: actor.organizationId },
+      select: { studentId: true },
+    });
+    if (!payment) {
+      throw new NotFoundException(RELATED_ENTITY_NOT_FOUND_MESSAGE);
+    }
+    if (paymentVisibility(actor, payment.studentId) === 'hidden') {
+      this.denyTarget(actor, 'payment');
     }
   }
 

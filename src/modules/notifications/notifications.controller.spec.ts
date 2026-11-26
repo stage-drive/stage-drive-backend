@@ -7,6 +7,9 @@ describe('NotificationsController', () => {
     list: jest.fn(),
     unreadCount: jest.fn(),
     markRead: jest.fn(),
+    markUnread: jest.fn(),
+    markAllRead: jest.fn(),
+    target: jest.fn(),
   };
   const controller = new NotificationsController(
     notifications as unknown as NotificationsService,
@@ -33,11 +36,42 @@ describe('NotificationsController', () => {
   });
 
   it('marks a notification read', async () => {
-    notifications.markRead.mockResolvedValue({ id: 'n-1' });
+    notifications.markRead.mockResolvedValue({ id: 'n-1', unreadCount: 1 });
 
     await expect(controller.markRead(user, 'n-1')).resolves.toEqual({
       id: 'n-1',
+      unreadCount: 1,
     });
     expect(notifications.markRead).toHaveBeenCalledWith(user, 'n-1');
+  });
+
+  it('marks a notification unread', async () => {
+    notifications.markUnread.mockResolvedValue({ id: 'n-1', unreadCount: 2 });
+
+    await expect(controller.markUnread(user, 'n-1')).resolves.toEqual({
+      id: 'n-1',
+      unreadCount: 2,
+    });
+    expect(notifications.markUnread).toHaveBeenCalledWith(user, 'n-1');
+  });
+
+  it('marks every notification of the current user as read', async () => {
+    notifications.markAllRead.mockResolvedValue({ updated: 2, unreadCount: 0 });
+
+    await expect(controller.markAllRead(user)).resolves.toEqual({
+      updated: 2,
+      unreadCount: 0,
+    });
+    expect(notifications.markAllRead).toHaveBeenCalledWith(user);
+  });
+
+  it('returns the related entity of the current user notification', async () => {
+    notifications.target.mockResolvedValue({ type: 'PAYMENT', id: 'pay-1' });
+
+    await expect(controller.target(user, 'n-1')).resolves.toEqual({
+      type: 'PAYMENT',
+      id: 'pay-1',
+    });
+    expect(notifications.target).toHaveBeenCalledWith(user, 'n-1');
   });
 });

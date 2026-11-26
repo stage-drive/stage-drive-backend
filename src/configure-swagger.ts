@@ -26,7 +26,7 @@ export function configureSwagger(app: INestApplication) {
     )
     .addTag(
       'notifications',
-      'Сповіщення поточного користувача: розклад, практика, тести й оплати',
+      'Сповіщення поточного користувача: індикатор, dropdown, Notification Center, статуси read/unread і перехід до пов’язаної сутності',
     )
     .addBearerAuth()
     .build();

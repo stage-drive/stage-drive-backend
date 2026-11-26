@@ -758,6 +758,7 @@ export class TestsService {
         testId: saved.id,
         courseId: saved.courseId,
         name: saved.name,
+        publishedAt: saved.updatedAt,
       });
     }
     return toTest(saved);
