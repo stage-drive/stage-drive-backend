@@ -7,6 +7,7 @@ import { ROLES_KEY } from '../auth/roles.decorator';
 import { RolesGuard } from '../auth/roles.guard';
 import { CourseStructureController } from './course-structure.controller';
 import { CourseStructureService } from './course-structure.service';
+import { COURSE_CONTENT_ROLES } from './courses.service';
 
 describe('CourseStructureController', () => {
   const user = { id: 'admin-1', organizationId: 'org-1' };
@@ -45,14 +46,14 @@ describe('CourseStructureController', () => {
     'deleteChapter',
     'deleteLesson',
     'uploadMaterial',
-  ] as const)('restricts %s to ADMIN', (method) => {
+  ] as const)('restricts %s to ADMIN and TEACHER', (method) => {
     const roles = new Reflector().get<UserRole[]>(
       ROLES_KEY,
       // eslint-disable-next-line @typescript-eslint/unbound-method -- only reads decorator metadata, never invoked
       CourseStructureController.prototype[method],
     );
 
-    expect(roles).toEqual([UserRole.ADMIN]);
+    expect(roles).toEqual([...COURSE_CONTENT_ROLES]);
   });
 
   it.each(['createChapter', 'createLesson', 'createMaterial'] as const)(

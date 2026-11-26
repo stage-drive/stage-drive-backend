@@ -9,6 +9,7 @@ import {
   ParseUUIDPipe,
   Patch,
   Post,
+  Query,
   UseGuards,
 } from '@nestjs/common';
 import {
@@ -30,11 +31,17 @@ import { CurrentUser } from '../auth/current-user.decorator';
 import { Roles } from '../auth/roles.decorator';
 import { RolesGuard } from '../auth/roles.guard';
 import {
+  AttemptClosedDto,
   AttemptConflictDto,
-  AttemptDetailDto,
+  OwnTestAttemptsDto,
+  SaveAttemptAnswersDto,
+  StaffAllTestAttemptsQueryDto,
+  StaffTestAttemptListDto,
+  StaffTestAttemptsQueryDto,
   StaffTestResultDto,
   StaffTestResultListDto,
   SubmitAttemptDto,
+  TestAttemptDto,
   TestOutcomeDto,
 } from './test-attempts.dto';
 import {
@@ -52,6 +59,7 @@ import {
   TestDetailDto,
   TestDto,
   TestListDto,
+  TestListQueryDto,
   UpdateAnswerOptionDto,
   UpdateQuestionDto,
   UpdateTestDto,
@@ -111,36 +119,54 @@ export class TestsController {
   @ApiOperation({
     summary: 'Список теоретичних тестів своєї автошколи',
     description:
-      'Усі тести організації поточного ADMIN: назва, курс, формат, поріг, ліміт часу, ' +
-      'перемішування, статус публікації і кількість питань. Тести інших організацій не повертаються.',
+      'ADMIN бачить усі тести організації. TEACHER — тести курсів, призначених групам, які він веде. ' +
+      'Фільтри: courseId (курс), lessonId (урок програми курсу, CourseLesson), publicationStatus (DRAFT, PUBLISHED або ARCHIVED). ' +
+      'Для викладача курс (або курс уроку) має бути курсом його групи, інакше 403. ' +
+      'Чужий або неіснуючий курс чи урок — 404. Без publicationStatus повертаються всі тести, включно з ARCHIVED. ' +
+      'У відповіді назва, урок, курс, формат, поріг, ліміт часу, ліміт спроб, ' +
+      'перемішування, статус публікації і кількість питань. INSTRUCTOR доступу не має.',
   })
   @ApiOkResponse({ type: TestListDto })
-  @ApiForbiddenResponse({ description: 'Список тестів доступний лише ADMIN.' })
-  @ApiNotFoundResponse({
-    description: 'Автошколу не знайдено або її видалено.',
+  @ApiBadRequestResponse({
+    description:
+      'courseId або lessonId не UUID, або publicationStatus не DRAFT, PUBLISHED, ARCHIVED. Тіло містить errors: [{ field, message }].',
   })
-  list(@CurrentUser() user: User) {
-    return this.testsService.list(user);
+  @ApiForbiddenResponse({
+    description:
+      'Список тестів доступний ADMIN і TEACHER. Викладач чужого курсу отримує 403.',
+  })
+  @ApiNotFoundResponse({
+    description:
+      'Автошколу не знайдено або її видалено. Також якщо courseId або lessonId не знайдено в цій автошколі.',
+  })
+  list(@CurrentUser() user: User, @Query() query: TestListQueryDto) {
+    return this.testsService.list(user, query);
   }
 
   @Post()
   @Roles(...TEST_MANAGE_ROLES)
   @HttpCode(HttpStatus.CREATED)
   @ApiOperation({
-    summary: 'Створити теоретичний тест',
+    summary: 'Створити теоретичний тест уроку',
     description:
-      'ADMIN створює тест у своїй організації. organizationId береться з access token і не приймається в тілі. ' +
-      'courseId має належати цій автошколі. Новий тест завжди DRAFT. ' +
-      'Зберігаються назва, опис, формат (SINGLE_CHOICE, MULTIPLE_CHOICE, TRUE_FALSE), ' +
-      'поріг складання у відсотках, ліміт часу, ліміт спроб і прапорець перемішування питань. ' +
-      'Назва унікальна в автошколі без урахування регістру.',
+      'ADMIN або TEACHER групи з курсом цього уроку створює тест у своїй організації. organizationId береться з access token і не приймається в тілі. ' +
+      'Тест прив’язується до уроку програми курсу (lessonId = CourseLesson): курс береться з уроку, а не з тіла. ' +
+      'У уроку може бути лише один не архівний тест (409), maxAttempts тесту уроку завжди 3. ' +
+      'Новий тест завжди DRAFT, опублікувати його можна лише через PATCH /tests/{testId}/publication після перевірки. ' +
+      'Зберігаються назва, опис, поріг складання у відсотках, ліміт часу (timeLimitMinutes, необов’язково) і прапорець перемішування питань. ' +
+      'Тип кожного питання (SINGLE_CHOICE, MULTIPLE_CHOICE, TRUE_FALSE) задається в самому питанні. ' +
+      'Застарілий формат: лише courseId без lessonId створює тест курсу без уроку, який не публікується, доки його не прив’язано до уроку. ' +
+      'Назва унікальна в автошколі без урахування регістру (архівні тести не рахуються). INSTRUCTOR доступу не має.',
   })
   @ApiCreatedResponse({ type: TestDto })
   @ApiBadRequestResponse({
     description:
       'Некоректне тіло запиту. Тіло містить errors: [{ field, message }].',
   })
-  @ApiForbiddenResponse({ description: 'Створювати тести може лише ADMIN.' })
+  @ApiForbiddenResponse({
+    description:
+      'Створювати тести може ADMIN або TEACHER групи, якій призначено курс.',
+  })
   @ApiNotFoundResponse({
     description:
       'Курс не знайдено або він чужої автошколи. Також якщо автошколу видалено.',
@@ -175,6 +201,168 @@ export class TestsController {
   })
   listCurrent(@CurrentUser() user: User) {
     return this.testsService.listCurrent(user);
+  }
+
+  @Get('attempts')
+  @Roles(...TEST_RESULT_STAFF_ROLES)
+  @ApiOperation({
+    summary: 'Спроби студентів по всіх тестах для викладача і адміністратора',
+    description:
+      'ADMIN бачить спроби студентів своєї автошколи. TEACHER — лише студентів своїх груп на курсах цих груп. ' +
+      'Фільтри: groupId (TEACHER може вказати лише свою групу, інакше 403), studentId, testId, ' +
+      'status (IN_PROGRESS, COMPLETED, EXPIRED) і result (PASSED, FAILED). ' +
+      'Кожен рядок: студент, група, тест, номер спроби в циклі, статус, результат, scorePercent, correctCount і час. ' +
+      'Питання і isCorrect не входять. Від новішої, зі сторінками page і limit. INSTRUCTOR доступу не має. ' +
+      'Прострочені відкриті спроби перед читанням закриваються як EXPIRED.',
+  })
+  @ApiOkResponse({ type: StaffTestAttemptListDto })
+  @ApiBadRequestResponse({
+    description:
+      'Фільтр не UUID або не з дозволених значень, page чи limit поза межами. Тіло містить errors: [{ field, message }].',
+  })
+  @ApiForbiddenResponse({
+    description:
+      'Ендпоінт для ADMIN і TEACHER. TEACHER отримує 403, якщо вказав чужу групу або тест курсу, якого немає в його групах.',
+  })
+  @ApiNotFoundResponse({
+    description:
+      'Група або тест не знайдені в цій автошколі, або автошколу видалено.',
+  })
+  listAttempts(
+    @CurrentUser() user: User,
+    @Query() query: StaffAllTestAttemptsQueryDto,
+  ) {
+    return this.attemptsService.listAttempts(user, query);
+  }
+
+  @Get('attempts/:attemptId')
+  @Roles(...TEST_STUDENT_ROLES)
+  @ApiOperation({
+    summary: 'Спроба студента: питання, варіанти і збережені відповіді',
+    description:
+      'STUDENT отримує лише свою спробу і за цим запитом продовжує її після перезавантаження: у відповіді питання, варіанти і answers, що вже збережені. ' +
+      'Поки статус IN_PROGRESS, у варіантах немає isCorrect, а бали й result порожні. ' +
+      'expiresAt — дедлайн сервера (startedAt + timeLimitMinutes). Якщо він уже настав, спроба тут же закривається як EXPIRED, правильні відповіді не відкриваються. ' +
+      'Після перевірки (status = COMPLETED) з’являються result, scorePercent, correctCount, isCorrect і selected. ' +
+      'Чужа або неіснуюча спроба — 404. Поки спроба триває, неопублікований тест або курс і втрачене зарахування дають 403.',
+  })
+  @ApiParam(attemptIdParam)
+  @ApiOkResponse({ type: TestAttemptDto })
+  @ApiBadRequestResponse({ description: 'attemptId не UUID.' })
+  @ApiForbiddenResponse({
+    description:
+      'Ендпоінт лише для STUDENT. 403, якщо триваюча спроба більше недоступна: тест або курс знято з публікації, курс архівовано, або зарахування не активне.',
+  })
+  @ApiNotFoundResponse({
+    description: 'Спроба не знайдена, вона чужа, або автошколу видалено.',
+  })
+  getAttemptById(
+    @CurrentUser() user: User,
+    @Param('attemptId', uuidPipe) attemptId: string,
+  ) {
+    return this.attemptsService.get(user, attemptId);
+  }
+
+  @Patch('attempts/:attemptId/answers')
+  @Roles(...TEST_STUDENT_ROLES)
+  @ApiOperation({
+    summary: 'Зберегти проміжні відповіді спроби',
+    description:
+      'STUDENT зберігає вибір у відкритій спробі, щоб не втратити його при перезавантаженні. ' +
+      'Для кожного питання зі списку збережений вибір замінюється, порожній optionIds його очищає, інші питання лишаються як були. ' +
+      'Правильність не перевіряється і не повертається: isCorrect у відповіді немає. ' +
+      'Для SINGLE_CHOICE і TRUE_FALSE можна обрати лише один варіант. ' +
+      'Спроба, яка вже завершена або в якої вийшов час, відповідей не приймає (409). ' +
+      'Час перевіряє лише сервер за startedAt і timeLimitMinutes.',
+  })
+  @ApiParam(attemptIdParam)
+  @ApiOkResponse({ type: TestAttemptDto })
+  @ApiBadRequestResponse({
+    description:
+      'attemptId не UUID, відповіді не належать цій спробі, дубль питання або кілька варіантів там, де дозволено один. ' +
+      'Тіло містить errors: [{ field, message }].',
+  })
+  @ApiForbiddenResponse({
+    description:
+      'Ендпоінт лише для STUDENT. 403, якщо тест або курс уже недоступні для проходження.',
+  })
+  @ApiNotFoundResponse({
+    description: 'Спроба не знайдена, вона чужа, або автошколу видалено.',
+  })
+  @ApiConflictResponse({
+    type: AttemptClosedDto,
+    description:
+      'Спроба вже не приймає відповіді: status = COMPLETED або EXPIRED. Якщо дедлайн минув саме зараз, спроба стає EXPIRED.',
+  })
+  saveAnswers(
+    @CurrentUser() user: User,
+    @Param('attemptId', uuidPipe) attemptId: string,
+    @Body() body: SaveAttemptAnswersDto,
+  ) {
+    return this.attemptsService.saveAnswers(user, attemptId, body);
+  }
+
+  @Post('attempts/:attemptId/submit')
+  @Roles(...TEST_STUDENT_ROLES)
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({
+    summary: 'Здати спробу на перевірку',
+    description:
+      'Сервер сам звіряє відповіді зі знімком спроби і ставить result = PASSED або FAILED за passingScore: бал не нижчий за поріг дає PASSED. ' +
+      'Питання вважається правильним, лише коли обрано точно набір правильних варіантів, пропущене — неправильне. ' +
+      'Клієнт не передає ні бали, ні result, ні passed: такі поля в тілі відхиляються. ' +
+      'answers у тілі замінюють усі збережені відповіді; без answers перевіряється те, що збережено через PATCH answers. ' +
+      'Відповідь: status = COMPLETED, result, scorePercent, earnedPoints, maxPoints, correctCount, totalQuestions, attemptNumber, attemptsLeft і правильні відповіді (isCorrect, selected). ' +
+      'Тест уроку: PASSED відкриває наступний урок. FAILED не закриває спробу «урок пройдено»: можна починати наступну, поки attemptsLeft > 0. ' +
+      'Коли всі 3 спроби витрачено без PASSED, у відповіді message «Пройдіть урок ще раз.». ' +
+      'Повторний submit тієї самої спроби повертає вже збережений результат і нічого не пише. ' +
+      'Якщо expiresAt уже настав, відповіді не зберігаються, а спроба стає EXPIRED без оцінки. Чужа спроба — 404.',
+  })
+  @ApiParam(attemptIdParam)
+  @ApiOkResponse({ type: TestAttemptDto })
+  @ApiBadRequestResponse({
+    description:
+      'attemptId не UUID, відповіді не належать цій спробі, дубль питання, кілька варіантів там, де дозволено один, або зайві поля в тілі. ' +
+      'Тіло містить errors: [{ field, message }].',
+  })
+  @ApiForbiddenResponse({
+    description:
+      'Ендпоінт лише для STUDENT. 403, якщо на момент вчасної здачі тест або курс уже недоступні.',
+  })
+  @ApiNotFoundResponse({
+    description: 'Спроба не знайдена, вона чужа, або автошколу видалено.',
+  })
+  submitAttemptById(
+    @CurrentUser() user: User,
+    @Param('attemptId', uuidPipe) attemptId: string,
+    @Body() body: SubmitAttemptDto,
+  ) {
+    return this.attemptsService.submit(user, attemptId, body);
+  }
+
+  @Post('attempts/:attemptId/expire')
+  @Roles(...TEST_STUDENT_ROLES)
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({
+    summary: 'Закрити спробу, якщо вийшов час',
+    description:
+      'Клієнт викликає це, коли його таймер дійшов до нуля. Рішення за сервером: спроба стає EXPIRED лише коли expiresAt справді минув, ' +
+      'без оцінки і без правильних відповідей, а витрачений слот лишається витраченим. ' +
+      'Якщо дедлайн ще не настав (годинник клієнта поспішає) або ліміту часу немає, спроба повертається без змін зі status = IN_PROGRESS. ' +
+      'Уже закрита спроба повертається як є. Сервер і сам закриває прострочені спроби при будь-якому зверненні до них.',
+  })
+  @ApiParam(attemptIdParam)
+  @ApiOkResponse({ type: TestAttemptDto })
+  @ApiBadRequestResponse({ description: 'attemptId не UUID.' })
+  @ApiForbiddenResponse({ description: 'Ендпоінт лише для STUDENT.' })
+  @ApiNotFoundResponse({
+    description: 'Спроба не знайдена, вона чужа, або автошколу видалено.',
+  })
+  expireAttempt(
+    @CurrentUser() user: User,
+    @Param('attemptId', uuidPipe) attemptId: string,
+  ) {
+    return this.attemptsService.expire(user, attemptId);
   }
 
   @Get(':testId/content')
@@ -214,26 +402,28 @@ export class TestsController {
   @ApiOperation({
     summary: 'Почати спробу проходження тесту',
     description:
-      'STUDENT створює окремий запис спроби для опублікованого тесту свого курсу. ' +
-      'Зберігаються студент, тест, час старту за годинником сервера і статус IN_PROGRESS. ' +
-      'Якщо в тесті є ліміт, сервер записує expiresAt = startedAt + timeLimitMinutes. ' +
+      'STUDENT створює нову спробу (status = IN_PROGRESS) опублікованого тесту свого уроку. ' +
+      'Тест доступний лише через ланцюжок студент → група → курс → урок → опублікований тест своєї автошколи. ' +
+      'Переглядати матеріали уроку не обов’язково: тест відкривається, коли відкритий сам урок, тобто попередній урок складено. ' +
+      'У відповіді питання з типом (type) і варіантами без isCorrect, attemptNumber, attemptsUsed, attemptsLeft і expiresAt. ' +
+      'Якщо в тесті є ліміт, сервер записує expiresAt = startedAt + timeLimitMinutes, і правду про час знає лише він. ' +
       'Питання копіюються в спробу. Якщо тест їх перемішує, порядок фіксується тут і далі не змінюється. ' +
-      'У відповіді немає isCorrect. ' +
-      'Повторний старт, поки попередня спроба ще IN_PROGRESS і час не вийшов, повертає 409 і id тієї спроби. ' +
+      'Повторний старт, поки попередня спроба ще IN_PROGRESS і час не вийшов, повертає 409 з reason = IN_PROGRESS і attemptId тієї спроби. ' +
       'Прострочена відкрита спроба закривається як EXPIRED і вже рахується витраченою. ' +
-      'Нова спроба недоступна, якщо тест уже PASSED або витрачено maxAttempts. null у maxAttempts ліміту кількості не ставить. ' +
-      'Тест іншої автошколи або неіснуючий — 404. Курс не призначено, не опубліковано або архівовано — 403. ' +
-      'Неопублікований тест — 403.',
+      'Тест уроку дає 3 спроби на цикл. Після PASSED або після 3 витрачених спроб нова спроба — 409 (ALREADY_PASSED, ATTEMPTS_EXHAUSTED з «Пройдіть урок ще раз.»). ' +
+      'Нові 3 спроби відкриваються, коли студент пройде урок ще раз (POST /courses/{courseId}/lessons/{lessonId}/complete); історія старих спроб лишається. ' +
+      'Тест іншої автошколи або неіснуючий — 404. Курс не призначено, не опубліковано або архівовано, урок закритий — 403. ' +
+      'Неопублікований або архівований тест — 403. INSTRUCTOR доступу не має.',
   })
   @ApiParam(testIdParam)
-  @ApiCreatedResponse({ type: AttemptDetailDto })
+  @ApiCreatedResponse({ type: TestAttemptDto })
   @ApiBadRequestResponse({
     description:
       'testId не UUID або в тесті немає питань. Тіло містить errors: [{ field, message }].',
   })
   @ApiForbiddenResponse({
     description:
-      'Ендпоінт лише для STUDENT. 403, якщо тест або курс не опубліковано, курс архівовано, або студентові не призначено цей курс.',
+      'Ендпоінт лише для STUDENT. 403, якщо тест або курс не опубліковано, курс архівовано, урок ще закритий попереднім, або студентові не призначено цей курс.',
   })
   @ApiNotFoundResponse({
     description:
@@ -251,78 +441,66 @@ export class TestsController {
     return this.attemptsService.start(user, testId);
   }
 
-  @Get(':testId/attempts/:attemptId')
-  @Roles(...TEST_STUDENT_ROLES)
+  @Get(':testId/attempts')
+  @Roles(...TEST_RESULT_STAFF_ROLES)
   @ApiOperation({
-    summary: 'Питання і варіанти поточної спроби',
+    summary: 'Спроби студентів цього тесту',
     description:
-      'STUDENT отримує лише свою спробу цього тесту. ' +
-      'Поки статус IN_PROGRESS, у варіантах немає isCorrect. ' +
-      'expiresAt — дедлайн сервера. Якщо він уже настав, спроба закривається як EXPIRED, ' +
-      'правильні відповіді при цьому не відкриваються. ' +
-      'Після перевірки (PASSED або FAILED) відповідь містить isCorrect і selected. ' +
-      'Чужа, чужого тесту або неіснуюча спроба — 404. ' +
-      'Поки спроба триває, неопублікований тест або курс і втрачене зарахування дають 403.',
+      'ADMIN бачить спроби студентів своєї автошколи. TEACHER — лише студентів своїх груп на курсі цього тесту; ' +
+      'якщо курс не призначено жодній його групі, 403. ' +
+      'Фільтри groupId, studentId, status (IN_PROGRESS, COMPLETED, EXPIRED) і result (PASSED, FAILED). Від новішої, зі сторінками page і limit. ' +
+      'Кожен рядок: студент, група, номер спроби в циклі, статус, результат, scorePercent, correctCount, totalQuestions і час. ' +
+      'Питання і isCorrect не входять. INSTRUCTOR доступу не має.',
   })
   @ApiParam(testIdParam)
-  @ApiParam(attemptIdParam)
-  @ApiOkResponse({ type: AttemptDetailDto })
-  @ApiBadRequestResponse({ description: 'testId або attemptId не UUID.' })
-  @ApiForbiddenResponse({
-    description:
-      'Ендпоінт лише для STUDENT. 403, якщо триваюча спроба більше недоступна: тест або курс знято з публікації, курс архівовано, або зарахування не активне.',
-  })
-  @ApiNotFoundResponse({
-    description:
-      'Спроба не знайдена, вона чужа, від іншого тесту, або автошколу видалено.',
-  })
-  getAttempt(
-    @CurrentUser() user: User,
-    @Param('testId', uuidPipe) testId: string,
-    @Param('attemptId', uuidPipe) attemptId: string,
-  ) {
-    return this.attemptsService.get(user, testId, attemptId);
-  }
-
-  @Post(':testId/attempts/:attemptId/submit')
-  @Roles(...TEST_STUDENT_ROLES)
-  @HttpCode(HttpStatus.OK)
-  @ApiOperation({
-    summary: 'Відправити відповіді спроби на перевірку',
-    description:
-      'Сервер сам звіряє відповіді зі знімком спроби і ставить PASSED або FAILED за passingScore. ' +
-      'Пропущене питання вважається неправильним. ' +
-      'Сервер порівнює відсоток із passingScore спроби: бал не нижчий за поріг дає PASSED, інакше FAILED. ' +
-      'Актуальний результат курсу перезаписується і вказує на цього студента, цей тест і цю спробу. Другий рядок результату не створюється. ' +
-      'Повторний submit тієї самої спроби повертає вже збережений результат і не додає відповіді. ' +
-      'Якщо expiresAt вже настав, відповіді цього запиту не зберігаються, спроба стає EXPIRED, а результат курсу не змінюється. ' +
-      'Час перевіряється лише на сервері. ' +
-      'Після PASSED або FAILED у відповіді з’являються isCorrect і selected. Після EXPIRED правильні відповіді не відкриваються. ' +
-      'Чужа спроба — 404.',
-  })
-  @ApiParam(testIdParam)
-  @ApiParam(attemptIdParam)
-  @ApiOkResponse({ type: AttemptDetailDto })
+  @ApiOkResponse({ type: StaffTestAttemptListDto })
   @ApiBadRequestResponse({
     description:
-      'id не UUID або відповіді не належать цій спробі. Для SINGLE_CHOICE і TRUE_FALSE можна обрати лише один варіант. ' +
-      'Тіло містить errors: [{ field, message }].',
+      'testId або фільтр не UUID чи не з дозволених значень. Тіло містить errors: [{ field, message }].',
   })
   @ApiForbiddenResponse({
     description:
-      'Ендпоінт лише для STUDENT. 403, якщо на момент вчасної здачі тест або курс уже недоступні.',
+      'Ендпоінт для ADMIN і TEACHER. TEACHER отримує 403, якщо вказав чужу групу або курсу цього тесту немає в його групах.',
   })
   @ApiNotFoundResponse({
     description:
-      'Спроба не знайдена, вона чужа, від іншого тесту, або автошколу видалено.',
+      'Тест або група не знайдені в цій автошколі, або автошколу видалено.',
   })
-  submitAttempt(
+  listTestAttempts(
     @CurrentUser() user: User,
     @Param('testId', uuidPipe) testId: string,
-    @Param('attemptId', uuidPipe) attemptId: string,
-    @Body() body: SubmitAttemptDto,
+    @Query() query: StaffTestAttemptsQueryDto,
   ) {
-    return this.attemptsService.submit(user, testId, attemptId, body);
+    return this.attemptsService.listForTest(user, testId, query);
+  }
+
+  @Get(':testId/attempts/me')
+  @Roles(...TEST_STUDENT_ROLES)
+  @ApiOperation({
+    summary: 'Мої спроби цього тесту',
+    description:
+      'STUDENT бачить історію своїх спроб цього тесту за всі цикли (від новішої) і стан поточного циклу: ' +
+      'passed, attemptsUsed, attemptsLeft, nextAttemptAvailable з unavailableReason та openAttemptId відкритої спроби. ' +
+      'Питання і правильні відповіді сюди не входять: їх відкриває GET /tests/attempts/{attemptId} для перевіреної спроби. ' +
+      'Якщо спроб ще не було, доступ той самий, що й для старту: чужий тест — 404, не призначений або не опублікований курс чи тест — 403. ' +
+      'Уже збережена історія лишається видимою.',
+  })
+  @ApiParam(testIdParam)
+  @ApiOkResponse({ type: OwnTestAttemptsDto })
+  @ApiBadRequestResponse({ description: 'testId не UUID.' })
+  @ApiForbiddenResponse({
+    description:
+      'Ендпоінт лише для STUDENT. 403, якщо спроб ще немає, а тест або курс зараз недоступні.',
+  })
+  @ApiNotFoundResponse({
+    description:
+      'Тест не знайдено, він чужої автошколи, або автошколу видалено.',
+  })
+  listOwnAttempts(
+    @CurrentUser() user: User,
+    @Param('testId', uuidPipe) testId: string,
+  ) {
+    return this.attemptsService.listOwn(user, testId);
   }
 
   @Get(':testId/result')
@@ -419,14 +597,19 @@ export class TestsController {
   @ApiOperation({
     summary: 'Тест із питаннями і варіантами відповідей',
     description:
-      'ADMIN отримує тест своєї автошколи разом із питаннями і варіантами за position. ' +
+      'ADMIN отримує будь-який тест своєї автошколи. TEACHER — тест курсу своєї групи. ' +
+      'Відповідь містить питання і варіанти за position. ' +
       'isCorrect показує правильну відповідь відповідно до формату. ' +
       'Студент цей запит не викликає: йому доступні GET /tests/current і GET /tests/{testId}/content, без isCorrect. ' +
-      'Тест іншої автошколи повертає 404. Порожній тест має questions: [].',
+      'Тест іншої автошколи повертає 404. Тест своєї автошколи з чужого для викладача курсу — 403. ' +
+      'Порожній тест має questions: [].',
   })
   @ApiParam(testIdParam)
   @ApiOkResponse({ type: TestDetailDto })
-  @ApiForbiddenResponse({ description: 'Тест бачить лише ADMIN.' })
+  @ApiForbiddenResponse({
+    description:
+      'Тест бачить ADMIN або TEACHER групи, якій призначено курс цього тесту.',
+  })
   @ApiNotFoundResponse({
     description:
       'Тест не знайдено, він чужої автошколи, або автошколу видалено.',
@@ -440,27 +623,31 @@ export class TestsController {
   @ApiOperation({
     summary: 'Редагувати назву і параметри тесту',
     description:
-      'ADMIN змінює name, description, courseId, format, passingScore, timeLimitMinutes, maxAttempts або shuffleQuestions. ' +
-      'null у description очищає опис, null у timeLimitMinutes знімає ліміт часу. ' +
-      'Зміна format у чернетці відхиляється, якщо в питанні вже кілька правильних відповідей, а новий формат дозволяє лише одну. ' +
-      'В опублікованого тесту новий format має одразу проходити перевірку структури. ' +
-      'Опублікований тест не можна перенести на архівований курс. Тест іншої автошколи повертає 404.',
+      'ADMIN або TEACHER групи з курсом тесту змінює name, description, lessonId, passingScore, timeLimitMinutes, maxAttempts або shuffleQuestions. ' +
+      'lessonId прив’язує чернетку до уроку курсу тесту (лише DRAFT, 409 якщо в уроку вже є не архівний тест). ' +
+      'maxAttempts тесту уроку завжди 3. null у description очищає опис, null у timeLimitMinutes знімає ліміт часу. ' +
+      'format — лише тип за замовчуванням для нових питань; тип кожного питання змінюється в самому питанні. ' +
+      'Опублікований тест після зміни має одразу проходити перевірку публікації. Архівований тест не редагується (409). ' +
+      'Тест іншої автошколи повертає 404.',
   })
   @ApiParam(testIdParam)
   @ApiOkResponse({ type: TestDto })
   @ApiBadRequestResponse({
     description:
-      'Некоректне тіло, порожнє тіло, id не UUID або формат не збігається з відповідями. ' +
+      'Некоректне тіло, порожнє тіло, id не UUID або опублікований тест після зміни перестає відповідати вимогам публікації. ' +
       'Тіло містить errors: [{ field, message }].',
   })
-  @ApiForbiddenResponse({ description: 'Редагувати тести може лише ADMIN.' })
+  @ApiForbiddenResponse({
+    description:
+      'Редагувати тести може ADMIN або TEACHER групи, якій призначено курс.',
+  })
   @ApiNotFoundResponse({
     description:
-      'Тест або курс не знайдено, або вони чужої автошколи. Також якщо автошколу видалено.',
+      'Тест, курс або урок не знайдено, або вони чужої автошколи. Також якщо автошколу видалено.',
   })
   @ApiConflictResponse({
     description:
-      'Тест з такою назвою вже є, або опублікований тест переносять на архівований курс.',
+      'Тест з такою назвою вже є, у уроку вже є не архівний тест, урок опублікованого тесту не змінюється, тест архівований або курс архівований.',
   })
   update(
     @CurrentUser() user: User,
@@ -475,25 +662,29 @@ export class TestsController {
   @ApiOperation({
     summary: 'Опублікувати або зняти з публікації теоретичний тест',
     description:
-      'ADMIN зберігає publicationStatus тесту своєї автошколи. ' +
-      'PUBLISHED перевіряє структуру: є хоча б одне питання, і кожне відповідає format. ' +
+      'ADMIN або TEACHER групи з курсом тесту зберігає publicationStatus тесту своєї автошколи (DRAFT або PUBLISHED; архів — PATCH /tests/{testId}/archive). ' +
+      'PUBLISHED можливий лише після перевірки UC-003: є назва, тест прив’язаний до уроку, поріг складання заданий, ' +
+      'ліміт спроб більший за 0 (у тесту уроку їх 3), є хоча б одне питання, а в кожного питання є варіанти і правильні відповіді за його типом. ' +
       'SINGLE_CHOICE — щонайменше два варіанти і рівно одна правильна відповідь. ' +
       'MULTIPLE_CHOICE — щонайменше два варіанти, хоча б одна правильна і хоча б одна неправильна. ' +
       'TRUE_FALSE — рівно два варіанти і рівно одна правильна відповідь. ' +
+      'Усі знайдені проблеми повертаються разом у errors[{ field, message }]. ' +
       'Курс тесту має бути ACTIVE. Опублікований тест стає доступний студенту з активним зарахуванням ' +
       'на цей курс, якщо сам курс теж ACTIVE і PUBLISHED. ' +
       'DRAFT знімає публікацію без перевірки структури, і студенти знову не бачать тест. ' +
+      'Зняти опублікований тест опублікованого уроку не можна: спершу урок повертають у DRAFT. ' +
       'Повтор того самого статусу нічого не записує. Відповідь містить збережений publicationStatus.',
   })
   @ApiParam(testIdParam)
   @ApiOkResponse({ type: TestDto })
   @ApiBadRequestResponse({
     description:
-      'id не UUID, publicationStatus не DRAFT і не PUBLISHED, або структура тесту не готова до публікації. ' +
+      'id не UUID, publicationStatus не DRAFT і не PUBLISHED, або тест не проходить перевірку публікації (UC-003). ' +
       'Тіло містить errors: [{ field, message }].',
   })
   @ApiForbiddenResponse({
-    description: 'Змінювати публікацію тесту може лише ADMIN.',
+    description:
+      'Змінювати публікацію тесту може ADMIN або TEACHER групи, якій призначено курс.',
   })
   @ApiNotFoundResponse({
     description:
@@ -501,7 +692,8 @@ export class TestsController {
   })
   @ApiConflictResponse({
     description:
-      'Архівований курс не можна використати для опублікованого тесту.',
+      'Архівований курс не можна використати для опублікованого тесту. Архівований тест не публікується. ' +
+      'Опублікований тест опублікованого уроку не знімається з публікації.',
   })
   changePublication(
     @CurrentUser() user: User,
@@ -509,6 +701,39 @@ export class TestsController {
     @Body() body: UpdateTestPublicationDto,
   ) {
     return this.testsService.changePublication(user, testId, body);
+  }
+
+  @Patch(':testId/archive')
+  @Roles(...TEST_MANAGE_ROLES)
+  @ApiOperation({
+    summary: 'Архівувати тест',
+    description:
+      'Переводить тест у ARCHIVED: студенти його більше не бачать і не можуть почати спробу, а в уроку з’являється місце для нового тесту. ' +
+      'Історія спроб і результатів лишається, її бачать ADMIN і TEACHER. Відкриті спроби цього тесту закриваються як EXPIRED. ' +
+      'Архівований тест не редагується і не публікується. Повторний виклик нічого не змінює. ' +
+      'Опублікований тест опублікованого уроку не архівується, доки урок опублікований. ' +
+      'ADMIN архівує будь-який тест своєї автошколи, TEACHER — тест курсу своєї групи.',
+  })
+  @ApiParam(testIdParam)
+  @ApiOkResponse({ type: TestDto })
+  @ApiBadRequestResponse({ description: 'testId не UUID.' })
+  @ApiForbiddenResponse({
+    description:
+      'Архівувати може ADMIN або TEACHER групи, якій призначено курс тесту.',
+  })
+  @ApiNotFoundResponse({
+    description:
+      'Тест не знайдено, він чужої автошколи, або автошколу видалено.',
+  })
+  @ApiConflictResponse({
+    description:
+      'Опублікований тест опублікованого уроку не архівується, доки урок опублікований.',
+  })
+  archive(
+    @CurrentUser() user: User,
+    @Param('testId', uuidPipe) testId: string,
+  ) {
+    return this.testsService.archive(user, testId);
   }
 
   @Post(':testId/questions')
@@ -529,7 +754,10 @@ export class TestsController {
       'Некоректне тіло, position поза діапазоном або відповіді не відповідають формату. ' +
       'Тіло містить errors: [{ field, message }].',
   })
-  @ApiForbiddenResponse({ description: 'Додавати питання може лише ADMIN.' })
+  @ApiForbiddenResponse({
+    description:
+      'Додавати питання може ADMIN або TEACHER групи, якій призначено курс.',
+  })
   @ApiNotFoundResponse({
     description: 'Тест не знайдено або він належить іншій автошколі.',
   })
@@ -556,7 +784,10 @@ export class TestsController {
     description:
       'Некоректне тіло, порожнє тіло або id не UUID. Тіло містить errors: [{ field, message }].',
   })
-  @ApiForbiddenResponse({ description: 'Редагувати питання може лише ADMIN.' })
+  @ApiForbiddenResponse({
+    description:
+      'Редагувати питання може ADMIN або TEACHER групи, якій призначено курс.',
+  })
   @ApiNotFoundResponse({
     description: 'Тест або питання не знайдено в цій автошколі.',
   })
@@ -585,7 +816,10 @@ export class TestsController {
     description:
       'id не UUID або це останнє питання опублікованого тесту. Тіло містить errors: [{ field, message }].',
   })
-  @ApiForbiddenResponse({ description: 'Видаляти питання може лише ADMIN.' })
+  @ApiForbiddenResponse({
+    description:
+      'Видаляти питання може ADMIN або TEACHER групи, якій призначено курс.',
+  })
   @ApiNotFoundResponse({
     description: 'Тест або питання не знайдено в цій автошколі.',
   })
@@ -616,7 +850,8 @@ export class TestsController {
       'Тіло містить errors: [{ field, message }].',
   })
   @ApiForbiddenResponse({
-    description: 'Додавати варіанти може лише ADMIN.',
+    description:
+      'Додавати варіанти може ADMIN або TEACHER групи, якій призначено курс.',
   })
   @ApiNotFoundResponse({
     description: 'Тест або питання не знайдено в цій автошколі.',
@@ -649,7 +884,8 @@ export class TestsController {
       'Тіло містить errors: [{ field, message }].',
   })
   @ApiForbiddenResponse({
-    description: 'Редагувати варіанти може лише ADMIN.',
+    description:
+      'Редагувати варіанти може ADMIN або TEACHER групи, якій призначено курс.',
   })
   @ApiNotFoundResponse({
     description: 'Тест, питання або варіант не знайдено в цій автошколі.',
@@ -689,7 +925,8 @@ export class TestsController {
       'Тіло містить errors: [{ field, message }].',
   })
   @ApiForbiddenResponse({
-    description: 'Видаляти варіанти може лише ADMIN.',
+    description:
+      'Видаляти варіанти може ADMIN або TEACHER групи, якій призначено курс.',
   })
   @ApiNotFoundResponse({
     description: 'Тест, питання або варіант не знайдено в цій автошколі.',

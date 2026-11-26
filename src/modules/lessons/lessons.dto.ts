@@ -10,12 +10,14 @@ import {
   LessonStatus,
   LicenseCategory,
   PaymentStatus,
+  TheoryDelivery,
   Transmission,
 } from '@prisma/client';
 import { Transform } from 'class-transformer';
 import {
   IsBoolean,
   IsDefined,
+  IsEnum,
   IsIn,
   IsISO8601,
   IsInt,
@@ -27,9 +29,14 @@ import {
   Max,
   MaxLength,
   Min,
+  ValidateBy,
   ValidateIf,
+  ValidationArguments,
 } from 'class-validator';
-import { IsPlainText } from '../../common/validators/plain-text.decorator';
+import {
+  IsPlainText,
+  UNSAFE_TEXT_MESSAGE,
+} from '../../common/validators/plain-text.decorator';
 
 /** Межі збігаються з CHECK на duration_min у міграції add_lesson_scheduling_fields. */
 export const LESSON_MIN_DURATION_MIN = 15;
@@ -39,6 +46,10 @@ export const LESSON_TOPIC_MAX_LENGTH = 200;
 export const CANCELLATION_REASON_MAX_LENGTH = 500;
 /** Збігається з VarChar(255) колонки meeting_place. */
 export const MEETING_PLACE_MAX_LENGTH = 255;
+/** Збігається з VarChar(120) колонки lessons.classroom. */
+export const CLASSROOM_MAX_LENGTH = 120;
+/** Збігається з VarChar(500) колонки lessons.online_link. */
+export const ONLINE_LINK_MAX_LENGTH = 500;
 /** Збігається з VarChar(1000) колонки instructor_comment. */
 export const INSTRUCTOR_COMMENT_MAX_LENGTH = 1000;
 
@@ -70,6 +81,22 @@ export const LESSON_TOPIC_LENGTH_MESSAGE = `Тема має містити не 
 export const CANCELLATION_REASON_LENGTH_MESSAGE = `Причина має містити не більше ${CANCELLATION_REASON_MAX_LENGTH} символів.`;
 export const MEETING_PLACE_LENGTH_MESSAGE = `Місце зустрічі має містити не більше ${MEETING_PLACE_MAX_LENGTH} символів.`;
 export const MEETING_PLACE_TYPE_MESSAGE = 'meetingPlace має бути рядком.';
+export const THEORY_DELIVERY_MESSAGE =
+  'delivery має бути CLASSROOM або ONLINE.';
+export const CLASSROOM_REQUIRED_MESSAGE =
+  'Для офлайн-заняття вкажіть аудиторію.';
+export const CLASSROOM_LENGTH_MESSAGE = `Аудиторія має містити не більше ${CLASSROOM_MAX_LENGTH} символів.`;
+export const CLASSROOM_TYPE_MESSAGE = 'classroom має бути рядком.';
+export const THEORY_CLASSROOM_FORBIDDEN_MESSAGE =
+  'Для YouTube-уроку аудиторію не передають.';
+export const ONLINE_LINK_REQUIRED_MESSAGE =
+  'Для онлайн-уроку вкажіть посилання на YouTube.';
+export const ONLINE_LINK_LENGTH_MESSAGE = `Посилання має містити не більше ${ONLINE_LINK_MAX_LENGTH} символів.`;
+export const ONLINE_LINK_MESSAGE =
+  'onlineLink має бути посиланням https на YouTube.';
+export const THEORY_ONLINE_LINK_FORBIDDEN_MESSAGE =
+  'Для заняття в аудиторії посилання на YouTube не передають.';
+export const ONLINE_LINK_TYPE_MESSAGE = 'onlineLink має бути рядком.';
 export const LESSON_DURATION_MESSAGE = `Тривалість має бути цілим числом хвилин від ${LESSON_MIN_DURATION_MIN} до ${LESSON_MAX_DURATION_MIN}.`;
 export const SCHEDULED_AT_FORMAT_MESSAGE =
   'scheduledAt має бути датою й часом ISO 8601 з часовим зсувом, наприклад 2026-11-03T10:00:00+02:00.';
@@ -107,6 +134,151 @@ const TIMING_DESCRIPTION =
 
 export function trimString({ value }: { value: unknown }): unknown {
   return typeof value === 'string' ? value.trim() : value;
+}
+
+const YOUTUBE_ID = /^[\w-]{6,}$/;
+
+type TheoryPlaceBody = {
+  delivery?: TheoryDelivery;
+  classroom?: unknown;
+  onlineLink?: unknown;
+};
+
+/** https-посилання на ролик, Shorts, трансляцію або embed YouTube. */
+export function isYoutubeUrl(value: string): boolean {
+  let url: URL;
+  try {
+    url = new URL(value);
+  } catch {
+    return false;
+  }
+  if (url.protocol !== 'https:') {
+    return false;
+  }
+  const host = url.hostname.toLowerCase();
+  if (host === 'youtu.be') {
+    const id = url.pathname.slice(1);
+    return YOUTUBE_ID.test(id) && !id.includes('/');
+  }
+  const youtubeHosts = new Set([
+    'youtube.com',
+    'www.youtube.com',
+    'm.youtube.com',
+    'youtube-nocookie.com',
+    'www.youtube-nocookie.com',
+  ]);
+  if (!youtubeHosts.has(host)) {
+    return false;
+  }
+  if (url.pathname === '/watch') {
+    return YOUTUBE_ID.test(url.searchParams.get('v') ?? '');
+  }
+  const parts = url.pathname.split('/').filter((part) => part.length > 0);
+  return (
+    parts.length === 2 &&
+    (parts[0] === 'embed' || parts[0] === 'shorts' || parts[0] === 'live') &&
+    YOUTUBE_ID.test(parts[1])
+  );
+}
+
+function classroomProblem(
+  value: unknown,
+  body: object,
+  mode: 'create' | 'update',
+): string | null {
+  const dto = body as TheoryPlaceBody;
+  const online =
+    dto.delivery === TheoryDelivery.ONLINE ||
+    (mode === 'update' && dto.onlineLink !== undefined);
+  if (dto.delivery === TheoryDelivery.ONLINE || online) {
+    return value === undefined ? null : THEORY_CLASSROOM_FORBIDDEN_MESSAGE;
+  }
+  if (value === undefined) {
+    return mode === 'create' ? CLASSROOM_REQUIRED_MESSAGE : null;
+  }
+  if (typeof value !== 'string') {
+    return CLASSROOM_TYPE_MESSAGE;
+  }
+  if (value.length === 0) {
+    return CLASSROOM_REQUIRED_MESSAGE;
+  }
+  if (value.length > CLASSROOM_MAX_LENGTH) {
+    return CLASSROOM_LENGTH_MESSAGE;
+  }
+  if (/[<>]/u.test(value)) {
+    return UNSAFE_TEXT_MESSAGE;
+  }
+  return null;
+}
+
+function onlineLinkProblem(
+  value: unknown,
+  body: object,
+  mode: 'create' | 'update',
+): string | null {
+  const dto = body as TheoryPlaceBody;
+  const classroom =
+    dto.delivery === TheoryDelivery.CLASSROOM ||
+    (mode === 'create' && dto.delivery === undefined) ||
+    (mode === 'update' &&
+      dto.delivery !== TheoryDelivery.ONLINE &&
+      dto.classroom !== undefined);
+  if (classroom) {
+    return value === undefined ? null : THEORY_ONLINE_LINK_FORBIDDEN_MESSAGE;
+  }
+  if (value === undefined) {
+    if (mode === 'create' && dto.delivery === TheoryDelivery.ONLINE) {
+      return ONLINE_LINK_REQUIRED_MESSAGE;
+    }
+    return null;
+  }
+  if (typeof value !== 'string') {
+    return ONLINE_LINK_TYPE_MESSAGE;
+  }
+  if (value.length === 0) {
+    return ONLINE_LINK_REQUIRED_MESSAGE;
+  }
+  if (value.length > ONLINE_LINK_MAX_LENGTH) {
+    return ONLINE_LINK_LENGTH_MESSAGE;
+  }
+  if (!isYoutubeUrl(value)) {
+    return ONLINE_LINK_MESSAGE;
+  }
+  return null;
+}
+
+function IsTheoryClassroom(mode: 'create' | 'update') {
+  return ValidateBy({
+    name: 'theoryClassroom',
+    validator: {
+      validate(value: unknown, args: ValidationArguments): boolean {
+        return classroomProblem(value, args.object, mode) === null;
+      },
+      defaultMessage(args: ValidationArguments): string {
+        return (
+          classroomProblem(args.value, args.object, mode) ??
+          CLASSROOM_REQUIRED_MESSAGE
+        );
+      },
+    },
+  });
+}
+
+function IsTheoryOnlineLink(mode: 'create' | 'update') {
+  return ValidateBy({
+    name: 'theoryOnlineLink',
+    validator: {
+      validate(value: unknown, args: ValidationArguments): boolean {
+        return onlineLinkProblem(value, args.object, mode) === null;
+      },
+      defaultMessage(args: ValidationArguments): string {
+        return (
+          onlineLinkProblem(args.value, args.object, mode) ??
+          ONLINE_LINK_REQUIRED_MESSAGE
+        );
+      },
+    },
+  });
 }
 
 /**
@@ -193,6 +365,40 @@ export class UpdateTheoryLessonDto {
   @ValidateIf((_, value) => value !== undefined && value !== null)
   @IsUUID('4', { message: 'courseLessonId має бути UUID або null.' })
   courseLessonId?: string | null;
+
+  @ApiPropertyOptional({
+    enum: TheoryDelivery,
+    example: TheoryDelivery.ONLINE,
+    description:
+      'CLASSROOM — офлайн в аудиторії, ONLINE — урок на YouTube. ' +
+      'Разом з classroom перемикає заняття в аудиторію і прибирає посилання. ' +
+      'Разом з onlineLink перемикає на YouTube і прибирає аудиторію.',
+  })
+  @ValidateIf((_, value) => value !== undefined)
+  @IsEnum(TheoryDelivery, { message: THEORY_DELIVERY_MESSAGE })
+  delivery?: TheoryDelivery;
+
+  @ApiPropertyOptional({
+    example: 'Аудиторія 12',
+    maxLength: CLASSROOM_MAX_LENGTH,
+    description:
+      'Аудиторія офлайн-заняття. Пробіли по краях обрізаються. ' +
+      'Не передають разом з onlineLink і для delivery ONLINE.',
+  })
+  @Transform(trimString)
+  @IsTheoryClassroom('update')
+  classroom?: string;
+
+  @ApiPropertyOptional({
+    example: 'https://www.youtube.com/watch?v=abc123XYZ_-',
+    maxLength: ONLINE_LINK_MAX_LENGTH,
+    description:
+      'Посилання https на YouTube: watch, youtu.be, embed, shorts або live. ' +
+      'Не передають разом з classroom і для delivery CLASSROOM.',
+  })
+  @Transform(trimString)
+  @IsTheoryOnlineLink('update')
+  onlineLink?: string;
 }
 
 export class UpdatePracticeLessonDto {
@@ -382,6 +588,34 @@ export class TheoryLessonDto {
 
   @ApiProperty({ example: 'Дорожні знаки' })
   topic: string;
+
+  @ApiProperty({
+    enum: TheoryDelivery,
+    example: TheoryDelivery.CLASSROOM,
+    description:
+      'CLASSROOM — офлайн в аудиторії. ONLINE — урок на YouTube. ' +
+      'Після заняття студент складає опублікований тест уроку курсу.',
+  })
+  delivery: TheoryDelivery;
+
+  @ApiProperty({
+    type: String,
+    nullable: true,
+    example: 'Аудиторія 12',
+    maxLength: CLASSROOM_MAX_LENGTH,
+    description: 'Аудиторія офлайн-заняття. null, якщо delivery = ONLINE.',
+  })
+  classroom: string | null;
+
+  @ApiProperty({
+    type: String,
+    nullable: true,
+    example: null,
+    maxLength: ONLINE_LINK_MAX_LENGTH,
+    description:
+      'Посилання на YouTube-урок. null, якщо delivery = CLASSROOM.',
+  })
+  onlineLink: string | null;
 
   @ApiProperty({ example: '2026-11-03T16:00:00.000Z' })
   scheduledAt: Date;
@@ -783,6 +1017,38 @@ export class CreateTheoryLessonDto {
   @IsString({ message: 'topic має бути рядком.' })
   @IsDefined({ message: REQUIRED_FIELD_MESSAGE })
   topic: string;
+
+  @ApiPropertyOptional({
+    enum: TheoryDelivery,
+    default: TheoryDelivery.CLASSROOM,
+    description:
+      'CLASSROOM — офлайн в аудиторії (потрібен classroom). ' +
+      'ONLINE — урок на YouTube (потрібен onlineLink). Без поля — CLASSROOM.',
+  })
+  @ValidateIf((_, value) => value !== undefined)
+  @IsEnum(TheoryDelivery, { message: THEORY_DELIVERY_MESSAGE })
+  delivery?: TheoryDelivery;
+
+  @ApiPropertyOptional({
+    example: 'Аудиторія 12',
+    maxLength: CLASSROOM_MAX_LENGTH,
+    description:
+      'Обов’язкова для CLASSROOM. Пробіли по краях обрізаються. Для ONLINE не передають.',
+  })
+  @Transform(trimString)
+  @IsTheoryClassroom('create')
+  classroom?: string;
+
+  @ApiPropertyOptional({
+    example: 'https://youtu.be/abc123XYZ_-',
+    maxLength: ONLINE_LINK_MAX_LENGTH,
+    description:
+      'Обов’язкове для ONLINE: https на YouTube (watch, youtu.be, embed, shorts, live). ' +
+      'Для CLASSROOM не передають.',
+  })
+  @Transform(trimString)
+  @IsTheoryOnlineLink('create')
+  onlineLink?: string;
 
   @ApiProperty({
     format: 'date-time',

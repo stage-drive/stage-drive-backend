@@ -194,6 +194,9 @@ describe('LessonsService', () => {
       id: 'lesson-t1',
       groupId: 'group-1',
       topic: 'Дорожні знаки',
+      delivery: 'CLASSROOM' as const,
+      classroom: 'Аудиторія 12',
+      onlineLink: null as string | null,
       scheduledAt: new Date('2026-11-03T16:00:00.000Z'),
       durationMin: 90,
       status: LessonStatus.SCHEDULED as LessonStatus,
@@ -1114,7 +1117,21 @@ describe('LessonsService', () => {
   });
 
   describe('theory', () => {
-    it('lets the group teacher change only the topic without schedule checks', async () => {
+      it('switches an offline lesson to a YouTube lesson and clears the classroom', async () => {
+        const link = 'https://youtu.be/abc123XYZ_-';
+
+        await service.updateTheory(teacherActor as never, 'lesson-t1', {
+          onlineLink: link,
+        });
+
+        expect(updateData(prisma.lesson.update)).toEqual({
+          delivery: 'ONLINE',
+          classroom: null,
+          onlineLink: link,
+        });
+      });
+
+      it('lets the group teacher change only the topic without schedule checks', async () => {
       const result = await service.updateTheory(
         teacherActor as never,
         'lesson-t1',
@@ -1134,6 +1151,9 @@ describe('LessonsService', () => {
         scheduledAt: new Date('2026-11-03T16:00:00.000Z'),
         endsAt: new Date('2026-11-03T17:30:00.000Z'),
         durationMin: 90,
+        delivery: 'CLASSROOM',
+        classroom: 'Аудиторія 12',
+        onlineLink: null,
         group: { id: 'group-1', name: 'ПДР — Група А' },
         teacher: { id: 'teacher-1', firstName: 'Ірина', lastName: 'Мельник' },
         courseLesson: null,
@@ -2110,6 +2130,7 @@ describe('LessonsService', () => {
       const payload = {
         groupId: 'group-1',
         topic: 'Дорожні знаки',
+        classroom: 'Аудиторія 12',
         scheduledAt: '2026-11-03T18:00:00+02:00',
       };
 
@@ -2120,6 +2141,9 @@ describe('LessonsService', () => {
           organizationId: 'org-1',
           groupId: 'group-1',
           topic: 'Дорожні знаки',
+          delivery: 'CLASSROOM',
+          classroom: 'Аудиторія 12',
+          onlineLink: null,
           scheduledAt: new Date('2026-11-03T16:00:00.000Z'),
           durationMin: 90,
         });
@@ -2128,6 +2152,9 @@ describe('LessonsService', () => {
           type: 'THEORY',
           status: LessonStatus.SCHEDULED,
           topic: 'Дорожні знаки',
+          delivery: 'CLASSROOM',
+          classroom: 'Аудиторія 12',
+          onlineLink: null,
           scheduledAt: new Date('2026-11-03T16:00:00.000Z'),
           endsAt: new Date('2026-11-03T17:30:00.000Z'),
           durationMin: 90,
@@ -2535,7 +2562,7 @@ describe('LessonsService', () => {
 
         expect(log).toHaveBeenCalledWith(
           'Lesson created type=THEORY lessonId=lesson-new groupId=group-1 ' +
-            'scheduledAt=2026-11-03T16:00:00.000Z durationMin=90 actorId=admin-1 organizationId=org-1',
+            'delivery=CLASSROOM scheduledAt=2026-11-03T16:00:00.000Z durationMin=90 actorId=admin-1 organizationId=org-1',
         );
         const logged = log.mock.calls.flat().join(' ');
         expect(logged).not.toContain('Дорожні знаки');

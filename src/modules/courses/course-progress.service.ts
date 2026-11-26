@@ -10,6 +10,7 @@ import {
   CourseStatus,
   EnrollmentStatus,
   Prisma,
+  TheoryTestAttemptStatus,
   User,
   UserRole,
 } from '@prisma/client';
@@ -18,7 +19,6 @@ import {
   CourseLessonProgressDto,
   CourseProgressDto,
   LinkedTheorySessionDto,
-  SubmitTheoryTestDto,
   TheoryTestResultDto,
 } from './course-progress.dto';
 import { LESSON_NOT_FOUND_MESSAGE } from './course-structure.service';
@@ -26,6 +26,7 @@ import {
   LESSON_LOCKED_MESSAGE,
   LESSON_RETRY_MESSAGE,
   loadLessonGate,
+  toLessonTestProgress,
 } from './lesson-gate';
 import {
   COURSE_NOT_FOUND_MESSAGE,
@@ -221,7 +222,14 @@ export class CourseProgressService {
       if (gate.locked.has(lessonId)) {
         throw new ForbiddenException(LESSON_LOCKED_MESSAGE);
       }
-      await this.markCompleted(tx, actor, courseId, lessonId);
+      const testState = gate.tests.get(lessonId);
+      await this.markCompleted(
+        tx,
+        actor,
+        courseId,
+        lessonId,
+        testState?.exhausted ? testState.cycle + 1 : null,
+      );
       const progress = await this.syncProgress(
         tx,
         actor.organizationId,
@@ -237,56 +245,6 @@ export class CourseProgressService {
       `Course progress saved courseId=${courseId} lessonId=${lessonId} studentId=${actor.id} completedLessonCount=${progress.completedLessonCount} totalLessonCount=${progress.totalLessonCount} percent=${progress.percent} organizationId=${actor.organizationId} actorId=${actor.id}`,
     );
     return progress;
-  }
-
-  /**
-   * Зберігає актуальний результат тесту курсу і, якщо всі уроки вже пройдені
-   * і результат PASSED, переводить навчальний статус в THEORY_COMPLETED.
-   */
-  async submitTest(
-    actor: User,
-    courseId: string,
-    payload: SubmitTheoryTestDto,
-  ): Promise<TheoryTestResultDto> {
-    assertStudent(actor);
-    await this.requireOrganization(actor.organizationId);
-    await this.requireAssignedPublishedCourse(this.prisma, actor, courseId);
-
-    const saved = await this.prisma.$transaction(async (tx) => {
-      await lockCourse(tx, courseId, actor.organizationId);
-      await this.requireAssignedPublishedCourse(tx, actor, courseId);
-      const result = await tx.theoryTestResult.upsert({
-        where: { studentId_courseId: { studentId: actor.id, courseId } },
-        create: {
-          organizationId: actor.organizationId,
-          courseId,
-          studentId: actor.id,
-          status: payload.status,
-          score: payload.score ?? null,
-        },
-        update: {
-          status: payload.status,
-          score: payload.score ?? null,
-          takenAt: new Date(),
-        },
-        select: {
-          id: true,
-          courseId: true,
-          testId: true,
-          studentId: true,
-          status: true,
-          score: true,
-          takenAt: true,
-        },
-      });
-      await syncTheoryCompletion(tx, actor.id, actor.organizationId);
-      return result;
-    });
-
-    this.logger.log(
-      `Theory test saved courseId=${courseId} studentId=${actor.id} status=${saved.status} organizationId=${actor.organizationId}`,
-    );
-    return saved;
   }
 
   /**
@@ -413,15 +371,21 @@ export class CourseProgressService {
     );
   }
 
+  /**
+   * Пише проходження уроку. nextCycle задають, коли спроби тесту цього уроку вичерпано:
+   * тоді починається новий цикл із нульовим лічильником, а історія спроб лишається.
+   * Повтор без nextCycle нічого не змінює і не чіпає completedAt.
+   */
   private async markCompleted(
     tx: Prisma.TransactionClient,
     actor: User,
     courseId: string,
     lessonId: string,
+    nextCycle: number | null,
   ): Promise<void> {
     const existing = await tx.courseLessonCompletion.findUnique({
       where: { studentId_lessonId: { studentId: actor.id, lessonId } },
-      select: { courseId: true, organizationId: true },
+      select: { courseId: true, organizationId: true, testCycle: true },
     });
     if (existing) {
       if (
@@ -429,6 +393,12 @@ export class CourseProgressService {
         existing.organizationId !== actor.organizationId
       ) {
         throw new NotFoundException(LESSON_NOT_FOUND_MESSAGE);
+      }
+      if (nextCycle !== null && nextCycle > existing.testCycle) {
+        await tx.courseLessonCompletion.update({
+          where: { studentId_lessonId: { studentId: actor.id, lessonId } },
+          data: { testCycle: nextCycle },
+        });
       }
       return;
     }
@@ -440,6 +410,7 @@ export class CourseProgressService {
           courseId,
           lessonId,
           studentId: actor.id,
+          ...(nextCycle !== null ? { testCycle: nextCycle } : {}),
         },
       });
     } catch (error) {
@@ -485,11 +456,30 @@ export class CourseProgressService {
             },
             select: { lessonId: true, completedAt: true },
           });
-    const completedAtByLesson = new Map(
+    const markedAtByLesson = new Map(
       completions.map((row) => [row.lessonId, row.completedAt]),
     );
+    const passedAtByTest = await this.loadPassedAt(
+      tx,
+      organizationId,
+      studentId,
+      [...gate.testsByLesson.values()],
+    );
+    const completedAtByLesson = new Map<string, Date>();
+    for (const lesson of lessons) {
+      if (!gate.cleared.has(lesson.id)) {
+        continue;
+      }
+      const testId = gate.testsByLesson.get(lesson.id);
+      const clearedAt = testId
+        ? passedAtByTest.get(testId)
+        : markedAtByLesson.get(lesson.id);
+      if (clearedAt) {
+        completedAtByLesson.set(lesson.id, clearedAt);
+      }
+    }
     const completedLessonCount = lessons.filter((lesson) =>
-      completedAtByLesson.has(lesson.id),
+      gate.cleared.has(lesson.id),
     ).length;
     const totalLessonCount = lessons.length;
     const percent = progressPercent(completedLessonCount, totalLessonCount);
@@ -541,6 +531,36 @@ export class CourseProgressService {
         .sort(byCourseOrder),
       test,
     };
+  }
+
+  /** Коли студент уперше склав кожен із цих тестів. Тест без PASSED у мапі відсутній. */
+  private async loadPassedAt(
+    tx: Prisma.TransactionClient,
+    organizationId: string,
+    studentId: string,
+    testIds: string[],
+  ): Promise<Map<string, Date>> {
+    const passedAt = new Map<string, Date>();
+    if (testIds.length === 0) {
+      return passedAt;
+    }
+    const attempts = await tx.theoryTestAttempt.findMany({
+      where: {
+        organizationId,
+        studentId,
+        status: TheoryTestAttemptStatus.PASSED,
+        testId: { in: testIds },
+        submittedAt: { not: null },
+      },
+      select: { testId: true, submittedAt: true },
+      orderBy: { submittedAt: 'asc' },
+    });
+    for (const attempt of attempts) {
+      if (attempt.submittedAt && !passedAt.has(attempt.testId)) {
+        passedAt.set(attempt.testId, attempt.submittedAt);
+      }
+    }
+    return passedAt;
   }
 
   /** Очні заняття груп студента, прив’язані до уроків цього курсу, і його відмітка. */
@@ -711,20 +731,20 @@ function toLessonProgress(
   sessions: LinkedTheorySessionDto[],
   gate: Awaited<ReturnType<typeof loadLessonGate>>,
 ): CourseLessonProgressDto {
+  const testState = gate.tests.get(lesson.id);
   return {
     lessonId: lesson.id,
     chapterId: lesson.chapterId,
     title: lesson.title,
     position: lesson.position,
     chapterPosition: lesson.chapter.position,
-    completed: completedAtByLesson.has(lesson.id),
+    completed: gate.cleared.has(lesson.id),
     completedAt: completedAtByLesson.get(lesson.id) ?? null,
     locked: gate.locked.has(lesson.id),
     passed: gate.passed.has(lesson.id),
     hasTest: gate.testsByLesson.has(lesson.id),
-    retryMessage: gate.failedWithoutPass.has(lesson.id)
-      ? LESSON_RETRY_MESSAGE
-      : null,
+    test: testState ? toLessonTestProgress(testState) : null,
+    retryMessage: gate.exhausted.has(lesson.id) ? LESSON_RETRY_MESSAGE : null,
     sessions,
   };
 }

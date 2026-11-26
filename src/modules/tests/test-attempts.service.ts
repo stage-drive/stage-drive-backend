@@ -29,17 +29,33 @@ import {
   COURSE_NOT_PUBLISHED_MESSAGE,
 } from '../courses/courses.service';
 import {
-  AttemptDetailDto,
+  AttemptAnswerDto,
   AttemptOptionDto,
   AttemptQuestionDto,
+  AttemptSummaryDto,
+  MyAttemptSummaryDto,
+  MyTestAttemptListDto,
+  MyTestAttemptsQueryDto,
+  OwnTestAttemptsDto,
+  SaveAttemptAnswersDto,
+  StaffAllTestAttemptsQueryDto,
   StaffAttemptSummaryDto,
+  StaffTestAttemptDto,
+  StaffTestAttemptListDto,
+  StaffTestAttemptsQueryDto,
   StaffTestResultDto,
   StaffTestResultListDto,
   SubmitAttemptDto,
+  TestAttemptDto,
   TestOutcomeDto,
   TestScoreDto,
 } from './test-attempts.dto';
 import {
+  AnswerSelection,
+  attemptApiResult,
+  AttemptApiResult,
+  attemptApiStatus,
+  AttemptApiStatus,
   attemptDeadline,
   gradeAttempt,
   isAttemptExpired,
@@ -63,12 +79,20 @@ export const ATTEMPT_NO_QUESTIONS_MESSAGE =
 export const ALREADY_PASSED_MESSAGE =
   'Тест уже складено. Нова спроба недоступна.';
 export const ATTEMPTS_EXHAUSTED_MESSAGE = 'Ліміт спроб цього тесту вичерпано.';
+export const ATTEMPT_EXPIRED_MESSAGE =
+  'Час спроби вийшов. Відповіді не збережено.';
+export const ATTEMPT_COMPLETED_MESSAGE =
+  'Спробу вже завершено. Відповіді змінити не можна.';
 export const TEST_RESULT_NOT_FOUND_MESSAGE = 'Test result not found';
+export const GROUP_NOT_FOUND_MESSAGE = 'Group not found';
 
 export const TEST_RESULT_STAFF_ROLES = [
   UserRole.ADMIN,
   UserRole.TEACHER,
 ] as const;
+
+const DEFAULT_PAGE = 1;
+const DEFAULT_LIMIT = 20;
 
 const VISIBLE_ENROLLMENT = [
   EnrollmentStatus.ACTIVE,
@@ -89,6 +113,7 @@ const catalogSelect = {
     orderBy: { position: 'asc' as const },
     select: {
       id: true,
+      type: true,
       text: true,
       position: true,
       options: {
@@ -110,18 +135,23 @@ const attemptSelect = {
   courseId: true,
   studentId: true,
   status: true,
-  format: true,
+  cycle: true,
+  attemptNumber: true,
   startedAt: true,
   expiresAt: true,
   submittedAt: true,
   score: true,
+  correctCount: true,
+  totalQuestions: true,
   passingScore: true,
   timeLimitMinutes: true,
+  test: { select: { courseLessonId: true, maxAttempts: true } },
   questions: {
     orderBy: { position: 'asc' as const },
     select: {
       id: true,
       sourceQuestionId: true,
+      type: true,
       text: true,
       position: true,
       options: {
@@ -159,11 +189,25 @@ const historySelect = {
   startedAt: true,
   submittedAt: true,
   expiresAt: true,
+  cycle: true,
+  attemptNumber: true,
+  correctCount: true,
+  totalQuestions: true,
+  _count: { select: { questions: true } },
+} satisfies Prisma.TheoryTestAttemptSelect;
+
+const listSelect = {
+  ...historySelect,
+  testId: true,
+  courseId: true,
+  test: { select: { name: true, courseLessonId: true, maxAttempts: true } },
+  student: { select: { firstName: true, lastName: true } },
 } satisfies Prisma.TheoryTestAttemptSelect;
 
 const outcomeSelect = {
   id: true,
   courseId: true,
+  courseLessonId: true,
   passingScore: true,
   maxAttempts: true,
   publicationStatus: true,
@@ -173,14 +217,25 @@ const outcomeSelect = {
 type HistoryRow = Prisma.TheoryTestAttemptGetPayload<{
   select: typeof historySelect;
 }>;
+type ListRow = Prisma.TheoryTestAttemptGetPayload<{
+  select: typeof listSelect;
+}>;
 type OutcomeTest = Prisma.TheoryTestGetPayload<{
   select: typeof outcomeSelect;
 }>;
+type Db = Prisma.TransactionClient | PrismaService;
 type VisibleStudent = {
   firstName: string;
   lastName: string;
   active: boolean;
 };
+type AttemptSlot = { cycle: number; attemptNumber: number };
+type SummaryContext = {
+  testId: string;
+  courseId: string;
+  lessonId: string | null;
+};
+type SaveOutcome = { closed: AttemptApiStatus } | { attempt: TestAttemptDto };
 
 function assertStudent(actor: User): void {
   if (!(TEST_STUDENT_ROLES as readonly UserRole[]).includes(actor.role)) {
@@ -194,6 +249,7 @@ function assertCanReadResults(actor: User): void {
   }
 }
 
+/** Правильні відповіді відкриває лише перевірена спроба. IN_PROGRESS і EXPIRED їх не бачать. */
 function revealsAnswers(status: TheoryTestAttemptStatus): boolean {
   return (
     status === TheoryTestAttemptStatus.PASSED ||
@@ -211,8 +267,7 @@ function attemptConflict(
       ? ATTEMPT_IN_PROGRESS_MESSAGE
       : reason === NextAttemptBlockReason.ALREADY_PASSED
         ? ALREADY_PASSED_MESSAGE
-        : reason === NextAttemptBlockReason.LESSON_NOT_COMPLETED ||
-            (lessonTest && reason === NextAttemptBlockReason.ATTEMPTS_EXHAUSTED)
+        : lessonTest && reason === NextAttemptBlockReason.ATTEMPTS_EXHAUSTED
           ? LESSON_RETRY_MESSAGE
           : ATTEMPTS_EXHAUSTED_MESSAGE;
   return new ConflictException({
@@ -264,14 +319,24 @@ function toAttemptSummaries(history: HistoryRow[]): StaffAttemptSummaryDto[] {
     }));
 }
 
+/**
+ * Результат студента для старих ендпоінтів /result і /results.
+ * cycle обмежує лічильник спроб поточним циклом уроку; для тесту без уроку cycle не задається.
+ */
 function toOutcome(
   test: OutcomeTest,
   studentId: string,
   history: HistoryRow[],
   now: Date,
   canTake: boolean,
+  cycle?: number,
 ): TestOutcomeDto {
-  const decision = nextAttemptAvailability(test.maxAttempts, history, now);
+  const decision = nextAttemptAvailability(
+    test.maxAttempts,
+    history,
+    now,
+    cycle,
+  );
   const blocked =
     !canTake &&
     (decision.unavailableReason === null ||
@@ -310,6 +375,63 @@ function isDuplicateOpenAttempt(error: unknown): boolean {
   );
 }
 
+/**
+ * Фільтр за статусом API. COMPLETED у базі — це PASSED і FAILED, а result звужує їх до одного.
+ * Порожній перетин (наприклад, EXPIRED + PASSED) не віддає нічого.
+ */
+function statusFilter(
+  status?: AttemptApiStatus,
+  result?: AttemptApiResult,
+): Prisma.TheoryTestAttemptWhereInput {
+  if (!status && !result) {
+    return {};
+  }
+  let allowed: TheoryTestAttemptStatus[] = Object.values(
+    TheoryTestAttemptStatus,
+  );
+  if (status) {
+    allowed = allowed.filter((value) => attemptApiStatus(value) === status);
+  }
+  if (result) {
+    allowed = allowed.filter((value) => attemptApiResult(value) === result);
+  }
+  return { status: { in: allowed } };
+}
+
+/** Вибір студента в тих самих id, що бачить клієнт: питання і варіанти каталогу, не знімка. */
+function savedAnswers(attempt: AttemptRow): AnswerSelection[] {
+  const answers: AnswerSelection[] = [];
+  for (const question of attempt.questions) {
+    const selected = new Set(
+      question.answers.flatMap((answer) =>
+        answer.selections.map((selection) => selection.optionId),
+      ),
+    );
+    if (selected.size === 0) {
+      continue;
+    }
+    answers.push({
+      questionId: question.sourceQuestionId,
+      optionIds: question.options
+        .filter((option) => selected.has(option.id))
+        .map((option) => option.sourceOptionId),
+    });
+  }
+  return answers;
+}
+
+/** Знімок питань спроби в тому вигляді, який потрібен перевірці й валідації відповідей. */
+function snapshotQuestions(attempt: AttemptRow) {
+  return attempt.questions.map((question) => ({
+    id: question.sourceQuestionId,
+    type: question.type,
+    options: question.options.map((option) => ({
+      id: option.sourceOptionId,
+      isCorrect: option.isCorrect,
+    })),
+  }));
+}
+
 function toOption(
   option: AttemptRow['questions'][number]['options'][number],
   reveal: boolean,
@@ -343,6 +465,7 @@ function toQuestion(
     : null;
   return {
     id: question.sourceQuestionId,
+    type: question.type,
     text: question.text,
     position: question.position,
     options: question.options.map((option) =>
@@ -351,27 +474,101 @@ function toQuestion(
   };
 }
 
-/** До PASSED/FAILED студент не бачить isCorrect і власні позначки. */
-function toAttempt(attempt: AttemptRow, message?: string): AttemptDetailDto {
+/** До перевірки студент не бачить isCorrect, бали й результат. Збережені вибори він бачить завжди. */
+function toTestAttempt(
+  attempt: AttemptRow,
+  counters: { attemptsUsed: number; attemptsLeft: number | null },
+  message?: string,
+): TestAttemptDto {
   const reveal = revealsAnswers(attempt.status);
+  const total = attempt.totalQuestions ?? attempt.questions.length;
+  const answers: AttemptAnswerDto[] = savedAnswers(attempt).map((answer) => ({
+    questionId: answer.questionId,
+    optionIds: answer.optionIds,
+  }));
   return {
     id: attempt.id,
     testId: attempt.testId,
+    lessonId: attempt.test.courseLessonId,
     courseId: attempt.courseId,
     studentId: attempt.studentId,
-    status: attempt.status,
-    format: attempt.format,
+    status: attemptApiStatus(attempt.status),
+    result: attemptApiResult(attempt.status),
+    cycle: attempt.cycle,
+    attemptNumber: attempt.attemptNumber,
+    maxAttempts: attempt.test.maxAttempts,
+    attemptsUsed: counters.attemptsUsed,
+    attemptsLeft: counters.attemptsLeft,
     startedAt: attempt.startedAt,
     expiresAt: attempt.expiresAt,
     submittedAt: attempt.submittedAt,
-    score: reveal ? attempt.score : null,
-    passingScore: attempt.passingScore,
     timeLimitMinutes: attempt.timeLimitMinutes,
+    passingScore: attempt.passingScore,
+    scorePercent: reveal ? attempt.score : null,
+    earnedPoints: reveal ? attempt.correctCount : null,
+    maxPoints: total,
+    correctCount: reveal ? attempt.correctCount : null,
+    totalQuestions: total,
     questions: attempt.questions.map((question) =>
       toQuestion(question, reveal),
     ),
+    answers,
     ...(message ? { message } : {}),
   };
+}
+
+function toSummary(
+  row: HistoryRow,
+  context: SummaryContext,
+): AttemptSummaryDto {
+  const graded = revealsAnswers(row.status);
+  return {
+    id: row.id,
+    testId: context.testId,
+    lessonId: context.lessonId,
+    courseId: context.courseId,
+    status: attemptApiStatus(row.status),
+    result: attemptApiResult(row.status),
+    cycle: row.cycle,
+    attemptNumber: row.attemptNumber,
+    scorePercent: graded ? row.score : null,
+    correctCount: graded ? row.correctCount : null,
+    totalQuestions: row.totalQuestions ?? row._count.questions,
+    passingScore: row.passingScore,
+    startedAt: row.startedAt,
+    expiresAt: row.expiresAt,
+    submittedAt: row.submittedAt,
+  };
+}
+
+function toListSummary(row: ListRow): MyAttemptSummaryDto {
+  return {
+    ...toSummary(row, {
+      testId: row.testId,
+      courseId: row.courseId,
+      lessonId: row.test.courseLessonId,
+    }),
+    testName: row.test.name,
+  };
+}
+
+function toStaffAttempt(
+  row: ListRow,
+  group: { id: string; name: string } | null,
+): StaffTestAttemptDto {
+  return {
+    ...toListSummary(row),
+    maxAttempts: row.test.maxAttempts,
+    studentId: row.studentId,
+    firstName: row.student.firstName,
+    lastName: row.student.lastName,
+    groupId: group?.id ?? null,
+    groupName: group?.name ?? null,
+  };
+}
+
+function paginate(total: number, page: number, limit: number) {
+  return { page, limit, total, totalPages: Math.ceil(total / limit) };
 }
 
 @Injectable()
@@ -381,10 +578,11 @@ export class TestAttemptsService {
   constructor(private readonly prisma: PrismaService) {}
 
   /**
-   * Починає спробу. Кожен успішний старт пише новий рядок.
+   * Починає спробу. Кожен успішний старт пише новий рядок з номером у циклі.
    * Незавершена і ще не прострочена спроба цього тесту не дублюється.
+   * Тест уроку не вимагає позначки «урок пройдено»: матеріали переглядати не обов’язково.
    */
-  async start(actor: User, testId: string): Promise<AttemptDetailDto> {
+  async start(actor: User, testId: string): Promise<TestAttemptDto> {
     assertStudent(actor);
     await this.requireOrganization(actor.organizationId);
     const now = new Date();
@@ -429,34 +627,11 @@ export class TestAttemptsService {
           `Attempt expired attemptId=${open.id} testId=${testId} studentId=${actor.id} organizationId=${actor.organizationId}`,
         );
       }
-      const history = await tx.theoryTestAttempt.findMany({
-        where: {
-          testId,
-          studentId: actor.id,
-          organizationId: actor.organizationId,
-        },
-        select: historySelect,
-      });
-      const decision = nextAttemptAvailability(test.maxAttempts, history, now);
-      if (!decision.nextAttemptAvailable) {
-        throw attemptConflict(
-          decision.unavailableReason ??
-            NextAttemptBlockReason.ATTEMPTS_EXHAUSTED,
-          decision.openAttemptId,
-          Boolean(test.courseLessonId),
-        );
-      }
-      if (test.courseLessonId) {
-        await this.assertLessonReady(
-          tx,
-          actor,
-          test.courseId,
-          test.courseLessonId,
-        );
-      }
+      const slot = await this.nextSlot(tx, actor, test, now);
+      let attempt: AttemptRow;
       try {
-        return await tx.theoryTestAttempt.create({
-          data: this.attemptData(actor, test, now),
+        attempt = await tx.theoryTestAttempt.create({
+          data: this.attemptData(actor, test, now, slot),
           select: attemptSelect,
         });
       } catch (error) {
@@ -468,36 +643,352 @@ export class TestAttemptsService {
         }
         throw error;
       }
+      return this.attemptView(tx, actor.organizationId, attempt, now);
     });
 
     this.logger.log(
-      `Attempt started attemptId=${created.id} testId=${testId} studentId=${actor.id} expiresAt=${created.expiresAt?.toISOString() ?? 'none'} organizationId=${actor.organizationId}`,
+      `Attempt started attemptId=${created.id} testId=${testId} studentId=${actor.id} cycle=${created.cycle} attemptNumber=${created.attemptNumber} expiresAt=${created.expiresAt?.toISOString() ?? 'none'} organizationId=${actor.organizationId}`,
     );
-    return toAttempt(created);
+    return created;
   }
 
   /**
-   * Питання і варіанти цієї спроби. isCorrect немає, доки спробу не перевірено.
-   * Якщо дедлайн уже минув, спроба тут же закривається як EXPIRED.
+   * Питання, варіанти і збережені відповіді цієї спроби: за цим запитом студент продовжує тест.
+   * isCorrect немає, доки спробу не перевірено. Якщо дедлайн уже минув, спроба тут же закривається як EXPIRED.
    */
-  async get(
-    actor: User,
-    testId: string,
-    attemptId: string,
-  ): Promise<AttemptDetailDto> {
+  async get(actor: User, attemptId: string): Promise<TestAttemptDto> {
     assertStudent(actor);
     await this.requireOrganization(actor.organizationId);
     const now = new Date();
 
-    const attempt = await this.prisma.$transaction(async (tx) => {
-      const locked = await this.lockOwnAttempt(tx, actor, testId, attemptId);
+    return this.prisma.$transaction(async (tx) => {
+      const locked = await this.lockOwnAttempt(tx, actor, attemptId);
       const current = await this.expireIfNeeded(tx, locked, now);
       if (current.status === TheoryTestAttemptStatus.IN_PROGRESS) {
-        await this.assertCanContinue(tx, actor, current.courseId, testId);
+        await this.assertCanContinue(
+          tx,
+          actor,
+          current.courseId,
+          current.testId,
+        );
       }
-      return current;
+      return this.attemptView(tx, actor.organizationId, current, now);
     });
-    return toAttempt(attempt);
+  }
+
+  /**
+   * Зберігає проміжні відповіді відкритої спроби, щоб їх можна було відновити після перезавантаження.
+   * Для кожного питання зі списку збережений вибір замінюється, решта питань лишається як була.
+   * Правильність тут не перевіряється і не повертається. Закрита спроба відповідей не приймає (409).
+   */
+  async saveAnswers(
+    actor: User,
+    attemptId: string,
+    payload: SaveAttemptAnswersDto,
+  ): Promise<TestAttemptDto> {
+    assertStudent(actor);
+    await this.requireOrganization(actor.organizationId);
+    const now = new Date();
+
+    const outcome = await this.prisma.$transaction(
+      async (tx): Promise<SaveOutcome> => {
+        const locked = await this.lockOwnAttempt(tx, actor, attemptId);
+        if (locked.status !== TheoryTestAttemptStatus.IN_PROGRESS) {
+          return { closed: attemptApiStatus(locked.status) };
+        }
+        if (isAttemptExpired(locked.expiresAt, now)) {
+          await this.markExpired(tx, locked, now);
+          this.logger.log(
+            `Attempt expired attemptId=${locked.id} testId=${locked.testId} studentId=${actor.id} organizationId=${actor.organizationId}`,
+          );
+          return { closed: AttemptApiStatus.EXPIRED };
+        }
+        await this.assertCanContinue(tx, actor, locked.courseId, locked.testId);
+        assertFieldErrors(
+          selectionErrors(snapshotQuestions(locked), payload.answers),
+        );
+        await this.writeAnswers(tx, locked, payload.answers, false);
+        const saved = await tx.theoryTestAttempt.findFirst({
+          where: { id: locked.id },
+          select: attemptSelect,
+        });
+        if (!saved) {
+          throw new NotFoundException(ATTEMPT_NOT_FOUND_MESSAGE);
+        }
+        return {
+          attempt: await this.attemptView(tx, actor.organizationId, saved, now),
+        };
+      },
+    );
+
+    if ('closed' in outcome) {
+      throw new ConflictException({
+        statusCode: 409,
+        message:
+          outcome.closed === AttemptApiStatus.EXPIRED
+            ? ATTEMPT_EXPIRED_MESSAGE
+            : ATTEMPT_COMPLETED_MESSAGE,
+        status: outcome.closed,
+      });
+    }
+    return outcome.attempt;
+  }
+
+  /**
+   * Перевіряє відповіді на сервері: бал, correctCount і PASSED/FAILED рахує лише він.
+   * answers у тілі замінюють усі збережені; без answers перевіряється те, що збережено через PATCH answers.
+   * Повтор submit тієї самої спроби повертає вже збережений результат і нічого не пише.
+   * Після дедлайну відповіді відхиляються, а спроба стає EXPIRED без оцінки.
+   * Провал не знімає позначку «урок пройдено»: нова спроба доступна, поки не витрачено всі спроби циклу.
+   */
+  async submit(
+    actor: User,
+    attemptId: string,
+    payload: SubmitAttemptDto,
+  ): Promise<TestAttemptDto> {
+    assertStudent(actor);
+    await this.requireOrganization(actor.organizationId);
+    const now = new Date();
+
+    return this.prisma.$transaction(async (tx) => {
+      const locked = await this.lockOwnAttempt(tx, actor, attemptId);
+      if (locked.status !== TheoryTestAttemptStatus.IN_PROGRESS) {
+        return this.attemptView(tx, actor.organizationId, locked, now);
+      }
+      if (isAttemptExpired(locked.expiresAt, now)) {
+        const expired = await this.markExpired(tx, locked, now);
+        this.logger.log(
+          `Attempt expired attemptId=${locked.id} testId=${locked.testId} studentId=${actor.id} organizationId=${actor.organizationId}`,
+        );
+        return this.attemptView(tx, actor.organizationId, expired, now);
+      }
+      await this.assertCanContinue(tx, actor, locked.courseId, locked.testId);
+      const snapshot = snapshotQuestions(locked);
+      const submitted = payload.answers;
+      if (submitted) {
+        assertFieldErrors(selectionErrors(snapshot, submitted));
+      }
+      const grade = gradeAttempt(
+        snapshot,
+        submitted ?? savedAnswers(locked),
+        locked.passingScore,
+      );
+      if (submitted) {
+        await this.writeAnswers(tx, locked, submitted, true);
+      }
+      const status = grade.passed
+        ? TheoryTestAttemptStatus.PASSED
+        : TheoryTestAttemptStatus.FAILED;
+      const updated = await tx.theoryTestAttempt.update({
+        where: { id: locked.id },
+        data: {
+          status,
+          score: grade.score,
+          correctCount: grade.correctCount,
+          totalQuestions: grade.totalQuestions,
+          submittedAt: now,
+        },
+        select: attemptSelect,
+      });
+      if (!locked.test.courseLessonId) {
+        await tx.theoryTestResult.upsert({
+          where: {
+            studentId_courseId: {
+              studentId: actor.id,
+              courseId: locked.courseId,
+            },
+          },
+          create: {
+            organizationId: actor.organizationId,
+            courseId: locked.courseId,
+            studentId: actor.id,
+            testId: locked.testId,
+            attemptId: locked.id,
+            status: grade.passed
+              ? TheoryTestStatus.PASSED
+              : TheoryTestStatus.FAILED,
+            score: grade.score,
+            takenAt: now,
+          },
+          update: {
+            testId: locked.testId,
+            attemptId: locked.id,
+            status: grade.passed
+              ? TheoryTestStatus.PASSED
+              : TheoryTestStatus.FAILED,
+            score: grade.score,
+            takenAt: now,
+          },
+        });
+      }
+      await syncTheoryCompletion(tx, actor.id, actor.organizationId);
+      this.logger.log(
+        `Attempt submitted attemptId=${locked.id} testId=${locked.testId} studentId=${actor.id} status=${status} score=${grade.score} organizationId=${actor.organizationId}`,
+      );
+      return this.attemptView(tx, actor.organizationId, updated, now);
+    });
+  }
+
+  /**
+   * Закриває спробу, якщо серверний дедлайн справді минув. Клієнтський таймер цього не вирішує:
+   * до expiresAt спроба лишається IN_PROGRESS і повертається без змін. Уже закрита спроба — теж без змін.
+   */
+  async expire(actor: User, attemptId: string): Promise<TestAttemptDto> {
+    assertStudent(actor);
+    await this.requireOrganization(actor.organizationId);
+    const now = new Date();
+
+    return this.prisma.$transaction(async (tx) => {
+      const locked = await this.lockOwnAttempt(tx, actor, attemptId);
+      const current = await this.expireIfNeeded(tx, locked, now);
+      return this.attemptView(tx, actor.organizationId, current, now);
+    });
+  }
+
+  /**
+   * Мої спроби цього тесту за всі цикли і стан поточного: скільки спроб лишилося,
+   * чи можна почати нову і яку відкриту спробу продовжити.
+   */
+  async listOwn(actor: User, testId: string): Promise<OwnTestAttemptsDto> {
+    assertStudent(actor);
+    await this.requireOrganization(actor.organizationId);
+    const now = new Date();
+
+    return this.prisma.$transaction(async (tx) => {
+      const test = await this.requireOutcomeTest(
+        tx,
+        actor.organizationId,
+        testId,
+      );
+      await this.expireOwnOpen(tx, actor, testId, now);
+      const history = await this.loadHistory(
+        tx,
+        actor.organizationId,
+        testId,
+        actor.id,
+      );
+      const canTake = await this.canTakeTest(tx, actor, test.courseId, test);
+      if (history.length === 0 && !canTake) {
+        await this.assertCanContinue(tx, actor, test.courseId, testId);
+      }
+      const lessonId = test.courseLessonId;
+      const cycle = lessonId
+        ? await this.currentCycle(tx, actor.organizationId, actor.id, lessonId)
+        : 1;
+      const decision = nextAttemptAvailability(
+        test.maxAttempts,
+        history,
+        now,
+        cycle,
+      );
+      const passed = history.some(
+        (attempt) => attempt.status === TheoryTestAttemptStatus.PASSED,
+      );
+      let reason: NextAttemptBlockReason | null = passed
+        ? NextAttemptBlockReason.ALREADY_PASSED
+        : decision.unavailableReason;
+      let available = decision.nextAttemptAvailable && !passed;
+      const lessonOpen =
+        !lessonId ||
+        !canTake ||
+        (await this.isLessonOpen(tx, actor, test.courseId, lessonId));
+      if (
+        (!canTake || !lessonOpen) &&
+        (reason === null || reason === NextAttemptBlockReason.IN_PROGRESS)
+      ) {
+        available = false;
+        reason = NextAttemptBlockReason.TEST_UNAVAILABLE;
+      }
+      const context: SummaryContext = {
+        testId: test.id,
+        courseId: test.courseId,
+        lessonId,
+      };
+      return {
+        testId: test.id,
+        lessonId,
+        maxAttempts: test.maxAttempts,
+        cycle,
+        passed,
+        attemptsUsed: decision.attemptsStarted,
+        attemptsLeft: decision.attemptsRemaining,
+        nextAttemptAvailable: available,
+        unavailableReason: reason,
+        openAttemptId: decision.openAttemptId,
+        ...(lessonId &&
+        !passed &&
+        reason === NextAttemptBlockReason.ATTEMPTS_EXHAUSTED
+          ? { message: LESSON_RETRY_MESSAGE }
+          : {}),
+        attempts: [...history]
+          .sort(
+            (left, right) =>
+              right.startedAt.getTime() - left.startedAt.getTime(),
+          )
+          .map((attempt) => toSummary(attempt, context)),
+      };
+    });
+  }
+
+  /** Усі мої спроби по всіх тестах, від новішої, зі сторінками. */
+  async listMyAttempts(
+    actor: User,
+    query: MyTestAttemptsQueryDto = {},
+  ): Promise<MyTestAttemptListDto> {
+    assertStudent(actor);
+    await this.requireOrganization(actor.organizationId);
+    const now = new Date();
+    const page = query.page ?? DEFAULT_PAGE;
+    const limit = query.limit ?? DEFAULT_LIMIT;
+
+    await this.expireOverdue(
+      { organizationId: actor.organizationId, studentId: actor.id },
+      now,
+    );
+    const where: Prisma.TheoryTestAttemptWhereInput = {
+      organizationId: actor.organizationId,
+      studentId: actor.id,
+      ...(query.testId ? { testId: query.testId } : {}),
+      ...(query.lessonId ? { test: { courseLessonId: query.lessonId } } : {}),
+      ...statusFilter(query.status, query.result),
+    };
+    const [total, rows] = await Promise.all([
+      this.prisma.theoryTestAttempt.count({ where }),
+      this.prisma.theoryTestAttempt.findMany({
+        where,
+        select: listSelect,
+        orderBy: [{ startedAt: 'desc' }, { id: 'asc' }],
+        skip: (page - 1) * limit,
+        take: limit,
+      }),
+    ]);
+    return {
+      attempts: rows.map((row) => toListSummary(row)),
+      pagination: paginate(total, page, limit),
+    };
+  }
+
+  /**
+   * Спроби студентів цього тесту. ADMIN бачить усю свою автошколу, TEACHER — лише студентів своїх груп
+   * на курсі тесту (інакше 403, якщо курс не призначено жодній його групі).
+   */
+  listForTest(
+    actor: User,
+    testId: string,
+    query: StaffTestAttemptsQueryDto = {},
+  ): Promise<StaffTestAttemptListDto> {
+    return this.listStaffAttempts(actor, testId, query);
+  }
+
+  /**
+   * Спроби студентів по всіх тестах автошколи з фільтрами groupId, studentId і testId.
+   * TEACHER бачить лише студентів своїх груп на курсах цих груп.
+   */
+  listAttempts(
+    actor: User,
+    query: StaffAllTestAttemptsQueryDto = {},
+  ): Promise<StaffTestAttemptListDto> {
+    return this.listStaffAttempts(actor, query.testId, query);
   }
 
   /**
@@ -526,7 +1017,15 @@ export class TestAttemptsService {
       if (history.length === 0 && !canTake) {
         await this.assertCanContinue(tx, actor, test.courseId, testId);
       }
-      return toOutcome(test, actor.id, history, now, canTake);
+      const cycle = test.courseLessonId
+        ? await this.currentCycle(
+            tx,
+            actor.organizationId,
+            actor.id,
+            test.courseLessonId,
+          )
+        : undefined;
+      return toOutcome(test, actor.id, history, now, canTake, cycle);
     });
   }
 
@@ -555,7 +1054,10 @@ export class TestAttemptsService {
       actor.organizationId,
       test.courseId,
     );
-    await this.expireOverdue(actor.organizationId, testId, now);
+    await this.expireOverdue(
+      { organizationId: actor.organizationId, testId },
+      now,
+    );
     const attempts = await this.prisma.theoryTestAttempt.findMany({
       where: {
         testId,
@@ -565,6 +1067,14 @@ export class TestAttemptsService {
       select: historySelect,
       orderBy: { startedAt: 'desc' },
     });
+    const cycles = test.courseLessonId
+      ? await this.cyclesFor(
+          this.prisma,
+          actor.organizationId,
+          test.courseLessonId,
+          [...students.keys()],
+        )
+      : null;
     const byStudent = new Map<string, HistoryRow[]>();
     for (const attempt of attempts) {
       const list = byStudent.get(attempt.studentId) ?? [];
@@ -588,6 +1098,7 @@ export class TestAttemptsService {
             history,
             now,
             testOpen && person.active,
+            cycles ? (cycles.get(studentId) ?? 1) : undefined,
           ),
           firstName: person.firstName,
           lastName: person.lastName,
@@ -621,7 +1132,10 @@ export class TestAttemptsService {
       test.courseId,
       studentId,
     );
-    await this.expireOverdue(actor.organizationId, testId, now, studentId);
+    await this.expireOverdue(
+      { organizationId: actor.organizationId, testId, studentId },
+      now,
+    );
     const history = await this.loadHistory(
       this.prisma,
       actor.organizationId,
@@ -634,138 +1148,211 @@ export class TestAttemptsService {
       test.courseId,
       test,
     );
+    const cycle = test.courseLessonId
+      ? await this.currentCycle(
+          this.prisma,
+          actor.organizationId,
+          studentId,
+          test.courseLessonId,
+        )
+      : undefined;
     return {
-      ...toOutcome(test, studentId, history, now, canTake),
+      ...toOutcome(test, studentId, history, now, canTake, cycle),
       firstName: person.firstName,
       lastName: person.lastName,
       attempts: toAttemptSummaries(history),
     };
   }
 
-  /**
-   * Перевіряє відповіді на сервері. Повтор того самого submit не пише другий результат.
-   * Після дедлайну відповіді відхиляються, а спроба стає EXPIRED.
-   */
-  async submit(
+  private async listStaffAttempts(
     actor: User,
-    testId: string,
-    attemptId: string,
-    payload: SubmitAttemptDto,
-  ): Promise<AttemptDetailDto> {
-    assertStudent(actor);
+    testId: string | undefined,
+    query: StaffTestAttemptsQueryDto,
+  ): Promise<StaffTestAttemptListDto> {
+    assertCanReadResults(actor);
     await this.requireOrganization(actor.organizationId);
     const now = new Date();
+    const page = query.page ?? DEFAULT_PAGE;
+    const limit = query.limit ?? DEFAULT_LIMIT;
+    const isTeacher = actor.role === UserRole.TEACHER;
 
-    const saved = await this.prisma.$transaction(async (tx) => {
-      const locked = await this.lockOwnAttempt(tx, actor, testId, attemptId);
-      if (locked.status !== TheoryTestAttemptStatus.IN_PROGRESS) {
-        return { attempt: locked, message: undefined };
-      }
-      if (isAttemptExpired(locked.expiresAt, now)) {
-        const expired = await this.markExpired(tx, locked, now);
-        this.logger.log(
-          `Attempt expired attemptId=${locked.id} testId=${testId} studentId=${actor.id} organizationId=${actor.organizationId}`,
-        );
-        return { attempt: expired, message: undefined };
-      }
-      await this.assertCanContinue(tx, actor, locked.courseId, testId);
-      assertFieldErrors(
-        selectionErrors(
-          locked.format,
-          locked.questions.map((question) => ({
-            id: question.sourceQuestionId,
-            options: question.options.map((option) => ({
-              id: option.sourceOptionId,
-            })),
-          })),
-          payload.answers,
-        ),
+    let testCourseId: string | null = null;
+    if (testId) {
+      const test = await this.requireOutcomeTest(
+        this.prisma,
+        actor.organizationId,
+        testId,
       );
-      const { score, passed } = gradeAttempt(
-        locked.questions.map((question) => ({
-          id: question.sourceQuestionId,
-          options: question.options.map((option) => ({
-            id: option.sourceOptionId,
-            isCorrect: option.isCorrect,
-          })),
-        })),
-        payload.answers,
-        locked.passingScore,
-      );
-      await this.writeAnswers(tx, locked, payload.answers);
-      const status = passed
-        ? TheoryTestAttemptStatus.PASSED
-        : TheoryTestAttemptStatus.FAILED;
-      const updated = await tx.theoryTestAttempt.update({
-        where: { id: locked.id },
-        data: { status, score, submittedAt: now },
-        select: attemptSelect,
+      testCourseId = test.courseId;
+    }
+    if (query.groupId) {
+      const group = await this.prisma.group.findFirst({
+        where: { id: query.groupId, organizationId: actor.organizationId },
+        select: { id: true, teacherId: true },
       });
-      const linked = await tx.theoryTest.findFirst({
-        where: { id: testId, organizationId: actor.organizationId },
-        select: { courseLessonId: true },
-      });
-      const courseLessonId = linked?.courseLessonId ?? null;
-      if (courseLessonId && !passed) {
-        await tx.courseLessonCompletion.deleteMany({
-          where: {
-            studentId: actor.id,
-            lessonId: courseLessonId,
-            organizationId: actor.organizationId,
-          },
-        });
+      if (!group) {
+        throw new NotFoundException(GROUP_NOT_FOUND_MESSAGE);
       }
-      if (!courseLessonId) {
-        await tx.theoryTestResult.upsert({
-          where: {
-            studentId_courseId: {
-              studentId: actor.id,
-              courseId: locked.courseId,
+      if (isTeacher && group.teacherId !== actor.id) {
+        throw new ForbiddenException('Insufficient permissions');
+      }
+    }
+
+    const scopeGroups =
+      isTeacher || query.groupId
+        ? await this.prisma.group.findMany({
+            where: {
+              organizationId: actor.organizationId,
+              courseId: testCourseId ?? { not: null },
+              ...(isTeacher ? { teacherId: actor.id } : {}),
+              ...(query.groupId ? { id: query.groupId } : {}),
             },
-          },
-          create: {
-            organizationId: actor.organizationId,
-            courseId: locked.courseId,
-            studentId: actor.id,
-            testId: locked.testId,
-            attemptId: locked.id,
-            status: passed ? TheoryTestStatus.PASSED : TheoryTestStatus.FAILED,
-            score,
-            takenAt: now,
-          },
-          update: {
-            testId: locked.testId,
-            attemptId: locked.id,
-            status: passed ? TheoryTestStatus.PASSED : TheoryTestStatus.FAILED,
-            score,
-            takenAt: now,
-          },
-        });
+            select: { id: true, courseId: true },
+          })
+        : null;
+    if (scopeGroups && scopeGroups.length === 0) {
+      if (testId && isTeacher && !query.groupId) {
+        throw new ForbiddenException('Insufficient permissions');
       }
-      await syncTheoryCompletion(tx, actor.id, actor.organizationId);
-      this.logger.log(
-        `Attempt submitted attemptId=${locked.id} testId=${testId} studentId=${actor.id} status=${status} score=${score} organizationId=${actor.organizationId}`,
-      );
-      return {
-        attempt: updated,
-        message: courseLessonId && !passed ? LESSON_RETRY_MESSAGE : undefined,
-      };
-    });
-    return toAttempt(saved.attempt, saved.message);
+      return { attempts: [], pagination: paginate(0, page, limit) };
+    }
+
+    await this.expireOverdue(
+      { organizationId: actor.organizationId, ...(testId ? { testId } : {}) },
+      now,
+    );
+    const where: Prisma.TheoryTestAttemptWhereInput = {
+      organizationId: actor.organizationId,
+      ...(testId ? { testId } : {}),
+      ...(query.studentId ? { studentId: query.studentId } : {}),
+      ...statusFilter(query.status, query.result),
+      AND: [
+        { student: { role: UserRole.STUDENT, deletedAt: null } },
+        ...(scopeGroups
+          ? [
+              {
+                OR: scopeGroups.map((group) => ({
+                  courseId: group.courseId,
+                  student: {
+                    enrollments: {
+                      some: {
+                        groupId: group.id,
+                        status: { in: [...VISIBLE_ENROLLMENT] },
+                      },
+                    },
+                  },
+                })),
+              },
+            ]
+          : []),
+      ],
+    };
+    const [total, rows] = await Promise.all([
+      this.prisma.theoryTestAttempt.count({ where }),
+      this.prisma.theoryTestAttempt.findMany({
+        where,
+        select: listSelect,
+        orderBy: [{ startedAt: 'desc' }, { id: 'asc' }],
+        skip: (page - 1) * limit,
+        take: limit,
+      }),
+    ]);
+    const groups = await this.groupsFor(actor, rows, query.groupId);
+    return {
+      attempts: rows.map((row) =>
+        toStaffAttempt(
+          row,
+          groups.get(`${row.studentId}:${row.courseId}`) ?? null,
+        ),
+      ),
+      pagination: paginate(total, page, limit),
+    };
   }
 
-  /** Урок тесту відкритий і вже позначений пройденим. Інакше нову спробу не починаємо. */
-  private async assertLessonReady(
+  /** Група студента на курсі кожної спроби. ACTIVE зарахування важливіше за COMPLETED. */
+  private async groupsFor(
+    actor: User,
+    rows: ListRow[],
+    groupId?: string,
+  ): Promise<Map<string, { id: string; name: string }>> {
+    const found = new Map<string, { id: string; name: string }>();
+    if (rows.length === 0) {
+      return found;
+    }
+    const enrollments = await this.prisma.enrollment.findMany({
+      where: {
+        studentId: { in: [...new Set(rows.map((row) => row.studentId))] },
+        status: { in: [...VISIBLE_ENROLLMENT] },
+        group: {
+          organizationId: actor.organizationId,
+          courseId: { in: [...new Set(rows.map((row) => row.courseId))] },
+          ...(actor.role === UserRole.TEACHER ? { teacherId: actor.id } : {}),
+          ...(groupId ? { id: groupId } : {}),
+        },
+      },
+      select: {
+        studentId: true,
+        status: true,
+        group: { select: { id: true, name: true, courseId: true } },
+      },
+    });
+    const activeKeys = new Set<string>();
+    for (const enrollment of enrollments) {
+      if (!enrollment.group.courseId) {
+        continue;
+      }
+      const key = `${enrollment.studentId}:${enrollment.group.courseId}`;
+      const active = enrollment.status === EnrollmentStatus.ACTIVE;
+      if (found.has(key) && (activeKeys.has(key) || !active)) {
+        continue;
+      }
+      found.set(key, {
+        id: enrollment.group.id,
+        name: enrollment.group.name,
+      });
+      if (active) {
+        activeKeys.add(key);
+      }
+    }
+    return found;
+  }
+
+  /**
+   * Цикл і номер наступної спроби. Для уроку це поточний цикл студента й слоти, що вже зайняті;
+   * без уроку (старий тест курсу) цикл завжди 1. Закритий урок — 403, вичерпані спроби — 409.
+   */
+  private async nextSlot(
     tx: Prisma.TransactionClient,
     actor: User,
-    courseId: string,
-    lessonId: string,
-  ): Promise<void> {
+    test: CatalogTest,
+    now: Date,
+  ): Promise<AttemptSlot> {
+    const lessonId = test.courseLessonId;
+    if (!lessonId) {
+      const history = await tx.theoryTestAttempt.findMany({
+        where: {
+          testId: test.id,
+          studentId: actor.id,
+          organizationId: actor.organizationId,
+        },
+        select: historySelect,
+      });
+      const decision = nextAttemptAvailability(test.maxAttempts, history, now);
+      if (!decision.nextAttemptAvailable) {
+        throw attemptConflict(
+          decision.unavailableReason ??
+            NextAttemptBlockReason.ATTEMPTS_EXHAUSTED,
+          decision.openAttemptId,
+        );
+      }
+      return { cycle: 1, attemptNumber: decision.attemptsStarted + 1 };
+    }
     const gate = await loadLessonGate(
       tx,
       actor.organizationId,
-      courseId,
+      test.courseId,
       actor.id,
+      now,
     );
     if (
       !gate.ordered.some((lesson) => lesson.id === lessonId) ||
@@ -773,16 +1360,122 @@ export class TestAttemptsService {
     ) {
       throw new ForbiddenException(LESSON_LOCKED_MESSAGE);
     }
-    if (!gate.completed.has(lessonId)) {
+    const state = gate.tests.get(lessonId);
+    if (!state || state.testId !== test.id) {
+      throw new ForbiddenException(TEST_NOT_PUBLISHED_MESSAGE);
+    }
+    if (!state.nextAttemptAvailable) {
       throw attemptConflict(
-        NextAttemptBlockReason.LESSON_NOT_COMPLETED,
-        null,
+        state.unavailableReason ?? NextAttemptBlockReason.ATTEMPTS_EXHAUSTED,
+        state.openAttemptId,
         true,
       );
     }
+    return { cycle: state.cycle, attemptNumber: state.attemptsUsed + 1 };
   }
 
-  private attemptData(actor: User, test: CatalogTest, now: Date) {
+  private async isLessonOpen(
+    db: Db,
+    actor: User,
+    courseId: string,
+    lessonId: string,
+  ): Promise<boolean> {
+    const gate = await loadLessonGate(
+      db,
+      actor.organizationId,
+      courseId,
+      actor.id,
+    );
+    return (
+      gate.ordered.some((lesson) => lesson.id === lessonId) &&
+      !gate.locked.has(lessonId)
+    );
+  }
+
+  /** Поточний цикл спроб студента в уроку: 1, доки він не проходив урок повторно після вичерпаних спроб. */
+  private async currentCycle(
+    db: Db,
+    organizationId: string,
+    studentId: string,
+    lessonId: string,
+  ): Promise<number> {
+    const completion = await db.courseLessonCompletion.findFirst({
+      where: { organizationId, studentId, lessonId },
+      select: { testCycle: true },
+    });
+    return completion?.testCycle ?? 1;
+  }
+
+  private async cyclesFor(
+    db: Db,
+    organizationId: string,
+    lessonId: string,
+    studentIds: string[],
+  ): Promise<Map<string, number>> {
+    const rows = await db.courseLessonCompletion.findMany({
+      where: { organizationId, lessonId, studentId: { in: studentIds } },
+      select: { studentId: true, testCycle: true },
+    });
+    return new Map(rows.map((row) => [row.studentId, row.testCycle]));
+  }
+
+  /**
+   * Спроба для відповіді клієнту: лічильники рахуються за її власним циклом.
+   * Повідомлення «Пройдіть урок ще раз.» є, коли спроби циклу вичерпано, тест не складено
+   * і студент ще не починав новий цикл.
+   */
+  private async attemptView(
+    db: Db,
+    organizationId: string,
+    attempt: AttemptRow,
+    now: Date,
+  ): Promise<TestAttemptDto> {
+    const history = await db.theoryTestAttempt.findMany({
+      where: {
+        organizationId,
+        testId: attempt.testId,
+        studentId: attempt.studentId,
+      },
+      select: historySelect,
+    });
+    const decision = nextAttemptAvailability(
+      attempt.test.maxAttempts,
+      history,
+      now,
+      attempt.cycle,
+    );
+    let message: string | undefined;
+    const lessonId = attempt.test.courseLessonId;
+    if (
+      lessonId &&
+      decision.unavailableReason === NextAttemptBlockReason.ATTEMPTS_EXHAUSTED
+    ) {
+      const cycle = await this.currentCycle(
+        db,
+        organizationId,
+        attempt.studentId,
+        lessonId,
+      );
+      if (attempt.cycle >= cycle) {
+        message = LESSON_RETRY_MESSAGE;
+      }
+    }
+    return toTestAttempt(
+      attempt,
+      {
+        attemptsUsed: decision.attemptsStarted,
+        attemptsLeft: decision.attemptsRemaining,
+      },
+      message,
+    );
+  }
+
+  private attemptData(
+    actor: User,
+    test: CatalogTest,
+    now: Date,
+    slot: AttemptSlot,
+  ) {
     const ordered = test.shuffleQuestions
       ? shuffleInPlace(test.questions)
       : test.questions;
@@ -793,6 +1486,8 @@ export class TestAttemptsService {
       studentId: actor.id,
       status: TheoryTestAttemptStatus.IN_PROGRESS,
       format: test.format,
+      cycle: slot.cycle,
+      attemptNumber: slot.attemptNumber,
       startedAt: now,
       expiresAt: attemptDeadline(now, test.timeLimitMinutes),
       passingScore: test.passingScore,
@@ -800,6 +1495,7 @@ export class TestAttemptsService {
       questions: {
         create: ordered.map((question, index) => ({
           sourceQuestionId: question.id,
+          type: question.type,
           text: question.text,
           position: index + 1,
           options: {
@@ -815,10 +1511,15 @@ export class TestAttemptsService {
     };
   }
 
+  /**
+   * Пише вибір студента. replaceAll стирає всі збережені відповіді (submit із answers),
+   * інакше замінюються лише відповіді на питання зі списку (проміжне збереження).
+   */
   private async writeAnswers(
     tx: Prisma.TransactionClient,
     attempt: AttemptRow,
-    answers: SubmitAttemptDto['answers'],
+    answers: AnswerSelection[],
+    replaceAll: boolean,
   ): Promise<void> {
     const questions = new Map(
       attempt.questions.map((question) => [
@@ -826,9 +1527,20 @@ export class TestAttemptsService {
         question,
       ]),
     );
-    await tx.theoryTestAttemptAnswer.deleteMany({
-      where: { attemptId: attempt.id },
-    });
+    if (replaceAll) {
+      await tx.theoryTestAttemptAnswer.deleteMany({
+        where: { attemptId: attempt.id },
+      });
+    } else {
+      const touched = answers
+        .map((answer) => questions.get(answer.questionId)?.id)
+        .filter((id): id is string => id !== undefined);
+      if (touched.length > 0) {
+        await tx.theoryTestAttemptAnswer.deleteMany({
+          where: { attemptId: attempt.id, questionId: { in: touched } },
+        });
+      }
+    }
     for (const answer of answers) {
       if (answer.optionIds.length === 0) {
         continue;
@@ -853,7 +1565,9 @@ export class TestAttemptsService {
                   'Варіант не належить цьому питанню.',
                 );
               }
-              return { questionId: question.id, optionId: snapshotOptionId };
+              // questionId тут не передається: Prisma бере його з відповіді через складений FK,
+              // а FK (optionId, questionId) у базі не дає обрати варіант іншого питання.
+              return { optionId: snapshotOptionId };
             }),
           },
         },
@@ -903,16 +1617,15 @@ export class TestAttemptsService {
     await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended(${key}::text, 0))`;
   }
 
+  /** Блокує рядок своєї спроби. Чужа або неіснуюча — 404. */
   private async lockOwnAttempt(
     tx: Prisma.TransactionClient,
     actor: User,
-    testId: string,
     attemptId: string,
   ): Promise<AttemptRow> {
     const rows = await tx.$queryRaw<Array<{ id: string }>>`
       SELECT id FROM theory_test_attempts
       WHERE id = ${attemptId}::uuid
-        AND test_id = ${testId}::uuid
         AND student_id = ${actor.id}::uuid
         AND organization_id = ${actor.organizationId}::uuid
       FOR UPDATE
@@ -984,7 +1697,7 @@ export class TestAttemptsService {
   }
 
   private async requireOutcomeTest(
-    db: Prisma.TransactionClient | PrismaService,
+    db: Db,
     organizationId: string,
     testId: string,
   ): Promise<OutcomeTest> {
@@ -1028,17 +1741,16 @@ export class TestAttemptsService {
     );
   }
 
+  /** Закриває прострочені відкриті спроби перед читанням списків, щоб статус у них був правдивий. */
   private expireOverdue(
-    organizationId: string,
-    testId: string,
+    scope: { organizationId: string; testId?: string; studentId?: string },
     now: Date,
-    studentId?: string,
   ): Promise<Prisma.BatchPayload> {
     return this.prisma.theoryTestAttempt.updateMany({
       where: {
-        organizationId,
-        testId,
-        ...(studentId ? { studentId } : {}),
+        organizationId: scope.organizationId,
+        ...(scope.testId ? { testId: scope.testId } : {}),
+        ...(scope.studentId ? { studentId: scope.studentId } : {}),
         status: TheoryTestAttemptStatus.IN_PROGRESS,
         expiresAt: { lte: now },
       },
@@ -1050,7 +1762,7 @@ export class TestAttemptsService {
   }
 
   private loadHistory(
-    db: Prisma.TransactionClient | PrismaService,
+    db: Db,
     organizationId: string,
     testId: string,
     studentId: string,
@@ -1063,7 +1775,7 @@ export class TestAttemptsService {
   }
 
   private async courseOpenForAttempts(
-    db: Prisma.TransactionClient | PrismaService,
+    db: Db,
     organizationId: string,
     courseId: string,
   ): Promise<boolean> {
@@ -1078,7 +1790,7 @@ export class TestAttemptsService {
   }
 
   private async canTakeTest(
-    db: Prisma.TransactionClient | PrismaService,
+    db: Db,
     actor: User,
     courseId: string,
     test: OutcomeTest,

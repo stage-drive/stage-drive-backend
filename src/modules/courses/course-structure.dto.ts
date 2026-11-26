@@ -19,6 +19,7 @@ import {
   ValidateIf,
 } from 'class-validator';
 import { IsPlainText } from '../../common/validators/plain-text.decorator';
+import { LessonTestProgressDto } from './course-progress.dto';
 import {
   COURSE_DESCRIPTION_LENGTH_MESSAGE,
   COURSE_DESCRIPTION_MAX_LENGTH,
@@ -192,10 +193,19 @@ export class LessonStructureDto {
   @ApiPropertyOptional({
     example: false,
     description:
-      'Лише у відповіді студента. true — попередній урок ще не пройдено або його тест не складено. ' +
+      'Лише у відповіді студента. true — попередній урок ще не завершено: тест не складено або, без тесту, урок не позначено пройденим. ' +
       'Тоді description порожній, а materials — [].',
   })
   locked?: boolean;
+
+  @ApiPropertyOptional({
+    type: LessonTestProgressDto,
+    nullable: true,
+    description:
+      'Лише у відповіді студента. Опублікований тест уроку і стан його спроб у поточному циклі ' +
+      '(passed, attemptsUsed, attemptsLeft, lockedNextUntilPassed). null — у уроку немає опублікованого тесту або урок ще закритий.',
+  })
+  test?: LessonTestProgressDto | null;
 
   @ApiProperty()
   createdAt: Date;

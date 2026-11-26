@@ -13,7 +13,7 @@ import {
   LicenseCategory,
   PaymentStatus,
   Prisma,
-  TheoryTestStatus,
+  TheoryTestAttemptStatus,
   TrainingStatus,
   Transmission,
   User,
@@ -150,8 +150,9 @@ describe('StudentsService', () => {
       findUnique: jest.fn(),
     },
     courseLesson: { findMany: jest.fn() },
-    courseLessonCompletion: { count: jest.fn() },
-    theoryTestResult: { findUnique: jest.fn() },
+    courseLessonCompletion: { findMany: jest.fn() },
+    theoryTest: { findMany: jest.fn() },
+    theoryTestAttempt: { findMany: jest.fn() },
     car: { findUnique: jest.fn() },
     drivingLesson: { findMany: jest.fn() },
     enrollment: {
@@ -964,17 +965,14 @@ describe('StudentsService', () => {
       UserRole.TEACHER,
       UserRole.INSTRUCTOR,
       UserRole.STUDENT,
-    ] as const)(
-      'rejects %s before writing',
-      async (role) => {
-        await expect(
-          service.create(actor(role), payload),
-        ).rejects.toBeInstanceOf(ForbiddenException);
-        expect(prisma.organization.findUnique).not.toHaveBeenCalled();
-        expect(prisma.user.create).not.toHaveBeenCalled();
-        expect(emailQueue.enqueue).not.toHaveBeenCalled();
-      },
-    );
+    ] as const)('rejects %s before writing', async (role) => {
+      await expect(service.create(actor(role), payload)).rejects.toBeInstanceOf(
+        ForbiddenException,
+      );
+      expect(prisma.organization.findUnique).not.toHaveBeenCalled();
+      expect(prisma.user.create).not.toHaveBeenCalled();
+      expect(emailQueue.enqueue).not.toHaveBeenCalled();
+    });
 
     it('returns 404 when the organization is deleted', async () => {
       prisma.organization.findUnique.mockResolvedValue({
@@ -2643,25 +2641,93 @@ describe('StudentsService', () => {
       });
     });
 
+    const profileWithPublishedCourse = () => ({
+      id: 'profile-1',
+      organizationId: 'org-1',
+      trainingStatus: TrainingStatus.ACTIVE,
+      group: {
+        course: {
+          id: 'course-1',
+          publicationStatus: CoursePublicationStatus.PUBLISHED,
+          status: CourseStatus.ACTIVE,
+        },
+      },
+    });
+    const singleLesson = () => [
+      { id: 'lesson-1', position: 1, chapter: { position: 1 } },
+    ];
+    const lessonTestRow = () => ({
+      id: 'test-1',
+      courseLessonId: 'lesson-1',
+      maxAttempts: 3,
+    });
+    const attemptRow = (status: TheoryTestAttemptStatus) => ({
+      id: 'attempt-1',
+      testId: 'test-1',
+      status,
+      cycle: 1,
+      expiresAt: null,
+    });
+
+    it('keeps ACTIVE while the lesson test is not passed, even if the lesson is marked as done', async () => {
+      prisma.user.findFirst.mockResolvedValue(statusRow(TrainingStatus.NEW));
+      prisma.student.findUnique.mockResolvedValue(profileWithPublishedCourse());
+      prisma.courseLesson.findMany.mockResolvedValue(singleLesson());
+      prisma.courseLessonCompletion.findMany.mockResolvedValue([
+        { lessonId: 'lesson-1', testCycle: 1 },
+      ]);
+      prisma.theoryTest.findMany.mockResolvedValueOnce([lessonTestRow()]);
+      prisma.theoryTestAttempt.findMany.mockResolvedValue([
+        attemptRow(TheoryTestAttemptStatus.FAILED),
+      ]);
+
+      const result = await service.changeTrainingStatus(
+        actor(UserRole.ADMIN),
+        'student-1',
+        { status: TrainingStatus.ACTIVE },
+      );
+
+      expect(prisma.student.update).toHaveBeenCalledTimes(1);
+      expect(prisma.enrollment.updateMany).not.toHaveBeenCalled();
+      expect(result.student?.trainingStatus).toBe(TrainingStatus.ACTIVE);
+    });
+
+    it('closes theory once the lesson test is PASSED, without a manual completion mark', async () => {
+      prisma.user.findFirst.mockResolvedValue(statusRow(TrainingStatus.NEW));
+      prisma.student.findUnique.mockResolvedValue(profileWithPublishedCourse());
+      prisma.courseLesson.findMany.mockResolvedValue(singleLesson());
+      prisma.courseLessonCompletion.findMany.mockResolvedValue([]);
+      prisma.theoryTest.findMany
+        .mockResolvedValueOnce([lessonTestRow()])
+        .mockResolvedValueOnce([]);
+      prisma.theoryTestAttempt.findMany.mockResolvedValue([
+        attemptRow(TheoryTestAttemptStatus.PASSED),
+      ]);
+
+      const result = await service.changeTrainingStatus(
+        actor(UserRole.ADMIN),
+        'student-1',
+        { status: TrainingStatus.ACTIVE },
+      );
+
+      expect(prisma.student.update).toHaveBeenCalledWith({
+        where: { id: 'profile-1' },
+        data: { trainingStatus: TrainingStatus.THEORY_COMPLETED },
+      });
+      expect(result.student?.trainingStatus).toBe(
+        TrainingStatus.THEORY_COMPLETED,
+      );
+    });
+
     it('closes theory when ACTIVE starts after the published course is already finished', async () => {
       prisma.user.findFirst.mockResolvedValue(statusRow(TrainingStatus.NEW));
-      prisma.student.findUnique.mockResolvedValue({
-        id: 'profile-1',
-        organizationId: 'org-1',
-        trainingStatus: TrainingStatus.ACTIVE,
-        group: {
-          course: {
-            id: 'course-1',
-            publicationStatus: CoursePublicationStatus.PUBLISHED,
-            status: CourseStatus.ACTIVE,
-          },
-        },
-      });
-      prisma.courseLesson.findMany.mockResolvedValue([{ id: 'lesson-1' }]);
-      prisma.courseLessonCompletion.count.mockResolvedValue(1);
-      prisma.theoryTestResult.findUnique.mockResolvedValue({
-        status: TheoryTestStatus.PASSED,
-      });
+      prisma.student.findUnique.mockResolvedValue(profileWithPublishedCourse());
+      prisma.courseLesson.findMany.mockResolvedValue(singleLesson());
+      prisma.courseLessonCompletion.findMany.mockResolvedValue([
+        { lessonId: 'lesson-1', testCycle: 1 },
+      ]);
+      // Урок без опублікованого тесту й без тесту всього курсу: досить позначки «пройдено».
+      prisma.theoryTest.findMany.mockResolvedValue([]);
 
       const result = await service.changeTrainingStatus(
         actor(UserRole.ADMIN),

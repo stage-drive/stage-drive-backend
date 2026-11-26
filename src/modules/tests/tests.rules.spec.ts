@@ -6,10 +6,15 @@ import {
   MULTIPLE_CORRECT_REQUIRED_MESSAGE,
   MULTIPLE_INCORRECT_REQUIRED_MESSAGE,
   publicationErrors,
+  PUBLISH_LESSON_REQUIRED_MESSAGE,
+  PUBLISH_MAX_ATTEMPTS_MESSAGE,
+  PUBLISH_NAME_REQUIRED_MESSAGE,
+  PUBLISH_PASSING_SCORE_MESSAGE,
   PUBLISH_QUESTIONS_REQUIRED_MESSAGE,
   questionRuleErrors,
   SINGLE_CORRECT_MESSAGE,
   SINGLE_EXCLUSIVE_MESSAGE,
+  testPublicationErrors,
   TRUE_FALSE_CORRECT_MESSAGE,
   TRUE_FALSE_EXCLUSIVE_MESSAGE,
   TRUE_FALSE_OPTIONS_MESSAGE,
@@ -90,19 +95,34 @@ describe('question rules', () => {
 
 describe('publication rules', () => {
   it('rejects a test without questions', () => {
-    expect(publicationErrors(TheoryTestFormat.SINGLE_CHOICE, [])).toEqual([
+    expect(publicationErrors([])).toEqual([
       { field: 'questions', message: PUBLISH_QUESTIONS_REQUIRED_MESSAGE },
     ]);
   });
 
-  it('names every question that does not match the format', () => {
+  it('names every question that does not match its own type', () => {
     expect(
-      publicationErrors(TheoryTestFormat.SINGLE_CHOICE, [
-        { options: [wrong, wrong] },
-        { options: [correct, wrong] },
+      publicationErrors([
+        { type: TheoryTestFormat.SINGLE_CHOICE, options: [wrong, wrong] },
+        { type: TheoryTestFormat.SINGLE_CHOICE, options: [correct, wrong] },
       ]),
     ).toEqual([
       { field: 'questions[0].options', message: SINGLE_CORRECT_MESSAGE },
+    ]);
+  });
+
+  it('checks each question against its own type in a mixed test', () => {
+    expect(
+      publicationErrors([
+        { type: TheoryTestFormat.SINGLE_CHOICE, options: [correct, wrong] },
+        {
+          type: TheoryTestFormat.MULTIPLE_CHOICE,
+          options: [correct, correct, wrong],
+        },
+        { type: TheoryTestFormat.TRUE_FALSE, options: [correct, wrong, wrong] },
+      ]),
+    ).toEqual([
+      { field: 'questions[2].options', message: TRUE_FALSE_OPTIONS_MESSAGE },
     ]);
   });
 
@@ -110,8 +130,61 @@ describe('publication rules', () => {
     expect(() => {
       throw new BadRequestException({
         statusCode: 400,
-        errors: publicationErrors(TheoryTestFormat.SINGLE_CHOICE, []),
+        errors: publicationErrors([]),
       });
     }).toThrow(BadRequestException);
+  });
+});
+
+describe('test publication rules (UC-003)', () => {
+  const complete = {
+    name: 'Тест уроку',
+    courseLessonId: 'lesson-1',
+    passingScore: 80,
+    maxAttempts: 3,
+  };
+
+  it('accepts a test with a name, lesson, threshold and attempt limit', () => {
+    expect(testPublicationErrors(complete)).toEqual([]);
+  });
+
+  it('requires a lesson', () => {
+    expect(
+      testPublicationErrors({ ...complete, courseLessonId: null }),
+    ).toEqual([
+      { field: 'lessonId', message: PUBLISH_LESSON_REQUIRED_MESSAGE },
+    ]);
+  });
+
+  it('requires a non-blank name', () => {
+    expect(testPublicationErrors({ ...complete, name: '   ' })).toEqual([
+      { field: 'name', message: PUBLISH_NAME_REQUIRED_MESSAGE },
+    ]);
+  });
+
+  it.each([0, 101, -5, 70.5])(
+    'rejects passingScore %p outside 1..100',
+    (passingScore) => {
+      expect(testPublicationErrors({ ...complete, passingScore })).toEqual([
+        { field: 'passingScore', message: PUBLISH_PASSING_SCORE_MESSAGE },
+      ]);
+    },
+  );
+
+  it.each([null, 0, -1])('rejects maxAttempts %p', (maxAttempts) => {
+    expect(testPublicationErrors({ ...complete, maxAttempts })).toEqual([
+      { field: 'maxAttempts', message: PUBLISH_MAX_ATTEMPTS_MESSAGE },
+    ]);
+  });
+
+  it('reports every problem at once', () => {
+    expect(
+      testPublicationErrors({
+        name: '',
+        courseLessonId: null,
+        passingScore: 0,
+        maxAttempts: null,
+      }).map((error) => error.field),
+    ).toEqual(['name', 'lessonId', 'passingScore', 'maxAttempts']);
   });
 });

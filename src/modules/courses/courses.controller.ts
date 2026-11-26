@@ -37,8 +37,9 @@ import {
   UpdateCoursePublicationDto,
 } from './courses.dto';
 import {
+  COURSE_ARCHIVE_ROLES,
   COURSE_LIST_ROLES,
-  COURSE_MANAGE_ROLES,
+  COURSE_WRITE_ROLES,
   CoursesService,
 } from './courses.service';
 
@@ -55,13 +56,16 @@ export class CoursesController {
   @ApiOperation({
     summary: 'Список теоретичних курсів своєї автошколи',
     description:
-      'Усі курси організації поточного ADMIN, відсортовані за назвою: id, назва, статус і publicationStatus. ' +
+      'ADMIN і TEACHER бачать усі курси своєї автошколи. ' +
+      'Поля: id, назва, статус і publicationStatus. ' +
       'Повну структуру (розділи, уроки, матеріали) повертає GET /courses/{courseId}. ' +
       'Групі можна призначити лише ACTIVE-курс (PATCH /groups/{id}/course). ' +
       'Курси інших організацій не повертаються. Якщо курсів немає, повертається порожній масив.',
   })
   @ApiOkResponse({ type: CourseListDto })
-  @ApiForbiddenResponse({ description: 'Список курсів доступний лише ADMIN.' })
+  @ApiForbiddenResponse({
+    description: 'Список курсів доступний ADMIN і TEACHER.',
+  })
   @ApiNotFoundResponse({
     description: 'Автошколу не знайдено або її видалено.',
   })
@@ -70,12 +74,12 @@ export class CoursesController {
   }
 
   @Post()
-  @Roles(...COURSE_MANAGE_ROLES)
+  @Roles(...COURSE_WRITE_ROLES)
   @HttpCode(HttpStatus.CREATED)
   @ApiOperation({
     summary: 'Створити теоретичний курс своєї автошколи',
     description:
-      'ADMIN створює курс у своїй організації. organizationId береться з access token і не приймається в тілі. ' +
+      'ADMIN або TEACHER створює курс у своїй організації. organizationId береться з access token і не приймається в тілі. ' +
       'Новий курс завжди має статус ACTIVE і publicationStatus DRAFT: студенти його ще не бачать. ' +
       'Назва унікальна серед активних курсів автошколи без урахування регістру. ' +
       'Опис необов’язковий: порожній рядок зберігається як null.',
@@ -85,7 +89,9 @@ export class CoursesController {
     description:
       'Некоректне тіло запиту. Тіло містить errors: [{ field, message }].',
   })
-  @ApiForbiddenResponse({ description: 'Створювати курси може лише ADMIN.' })
+  @ApiForbiddenResponse({
+    description: 'Створювати курси може ADMIN або TEACHER своєї автошколи.',
+  })
   @ApiNotFoundResponse({
     description: 'Автошколу не знайдено або її видалено.',
   })
@@ -98,11 +104,11 @@ export class CoursesController {
   }
 
   @Patch(':id')
-  @Roles(...COURSE_MANAGE_ROLES)
+  @Roles(...COURSE_WRITE_ROLES)
   @ApiOperation({
     summary: 'Редагувати теоретичний курс своєї автошколи',
     description:
-      'ADMIN змінює name або description курсу своєї організації. ' +
+      'ADMIN або TEACHER змінює name або description курсу своєї організації. ' +
       'Курс іншої автошколи повертає 404. null у description очищає опис. ' +
       'Статус, publicationStatus і organizationId цим запитом не змінюються.',
   })
@@ -116,7 +122,9 @@ export class CoursesController {
     description:
       'Некоректне тіло, порожнє тіло або id не UUID. Тіло містить errors: [{ field, message }].',
   })
-  @ApiForbiddenResponse({ description: 'Редагувати курси може лише ADMIN.' })
+  @ApiForbiddenResponse({
+    description: 'Редагувати курси може ADMIN або TEACHER своєї автошколи.',
+  })
   @ApiNotFoundResponse({
     description:
       'Курс не знайдено або він належить іншій автошколі. Також якщо автошколу видалено.',
@@ -134,11 +142,11 @@ export class CoursesController {
   }
 
   @Patch(':id/publication')
-  @Roles(...COURSE_MANAGE_ROLES)
+  @Roles(...COURSE_WRITE_ROLES)
   @ApiOperation({
     summary: 'Опублікувати або зняти з публікації теоретичний курс',
     description:
-      'ADMIN змінює publicationStatus курсу своєї автошколи. ' +
+      'ADMIN або TEACHER змінює publicationStatus курсу своєї автошколи. ' +
       'PUBLISHED відкриває розділи, уроки та матеріали студентам, у яких є активне зарахування ' +
       'в групу з цим курсом (GET /courses/current і GET /courses/{courseId}/content). ' +
       'DRAFT знову ховає контент, навіть якщо курс лишається призначеним групі. ' +
@@ -158,7 +166,9 @@ export class CoursesController {
       'Тіло містить errors: [{ field, message }].',
   })
   @ApiForbiddenResponse({
-    description: 'Змінювати публікацію курсу може лише ADMIN.',
+    description:
+      'Змінювати публікацію курсу може ADMIN або TEACHER своєї автошколи. ' +
+      'Архівований курс опублікувати не можна.',
   })
   @ApiNotFoundResponse({
     description:
@@ -176,7 +186,7 @@ export class CoursesController {
   }
 
   @Delete(':id')
-  @Roles(...COURSE_MANAGE_ROLES)
+  @Roles(...COURSE_ARCHIVE_ROLES)
   @ApiOperation({
     summary: 'Видалити теоретичний курс своєї автошколи',
     description:

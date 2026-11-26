@@ -33,6 +33,9 @@ import {
 
 export const GROUP_MANAGE_ROLES = [UserRole.ADMIN] as const;
 
+/** Список груп: ADMIN бачить усі групи автошколи, TEACHER — лише свої. */
+export const GROUP_LIST_ROLES = [UserRole.ADMIN, UserRole.TEACHER] as const;
+
 /** Склад групи з контактами студентів: ADMIN і викладач цієї групи. */
 export const GROUP_ROSTER_ROLES = [UserRole.ADMIN, UserRole.TEACHER] as const;
 
@@ -104,6 +107,12 @@ const groupStudentSelect = {
 type GroupStudentRow = Prisma.EnrollmentGetPayload<{
   select: typeof groupStudentSelect;
 }>;
+
+function assertCanListGroups(actor: User): void {
+  if (!(GROUP_LIST_ROLES as readonly UserRole[]).includes(actor.role)) {
+    throw new ForbiddenException('Insufficient permissions');
+  }
+}
 
 function assertCanManageGroups(actor: User): void {
   if (!(GROUP_MANAGE_ROLES as readonly UserRole[]).includes(actor.role)) {
@@ -177,11 +186,15 @@ export class GroupsService {
     private readonly studentsService: StudentsService,
   ) {}
 
-  async list(admin: User): Promise<GroupListDto> {
-    await this.requireOrganization(admin.organizationId);
+  async list(actor: User): Promise<GroupListDto> {
+    assertCanListGroups(actor);
+    await this.requireOrganization(actor.organizationId);
 
     const groups = await this.prisma.group.findMany({
-      where: { organizationId: admin.organizationId },
+      where: {
+        organizationId: actor.organizationId,
+        ...(actor.role === UserRole.TEACHER ? { teacherId: actor.id } : {}),
+      },
       include: groupListInclude,
       orderBy: { createdAt: 'desc' },
     });

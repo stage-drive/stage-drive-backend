@@ -179,6 +179,30 @@ describe('GroupsService', () => {
     expect(args.where).toEqual({ organizationId: 'org-1' });
   });
 
+  it('lists only groups taught by the teacher', async () => {
+    await service.list({
+      ...admin,
+      id: 'teacher-1',
+      role: UserRole.TEACHER,
+    } as never);
+
+    const [args] = prisma.group.findMany.mock.calls[0];
+    expect(args.where).toEqual({
+      organizationId: 'org-1',
+      teacherId: 'teacher-1',
+    });
+  });
+
+  it.each([UserRole.OWNER, UserRole.INSTRUCTOR, UserRole.STUDENT])(
+    'forbids %s to list groups',
+    async (role) => {
+      await expect(
+        service.list({ ...admin, role } as never),
+      ).rejects.toBeInstanceOf(ForbiddenException);
+      expect(prisma.group.findMany).not.toHaveBeenCalled();
+    },
+  );
+
   it('maps groups to the public shape without internal fields', async () => {
     prisma.group.findMany.mockResolvedValue([groupRow]);
 

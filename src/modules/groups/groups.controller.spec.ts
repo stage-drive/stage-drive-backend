@@ -6,7 +6,7 @@ import { AuthGuard } from '../auth/auth.guard';
 import { ROLES_KEY } from '../auth/roles.decorator';
 import { RolesGuard } from '../auth/roles.guard';
 import { GroupsController } from './groups.controller';
-import { GroupsService } from './groups.service';
+import { GROUP_LIST_ROLES, GroupsService } from './groups.service';
 
 describe('GroupsController', () => {
   it('applies AuthGuard and RolesGuard to the whole controller', () => {
@@ -16,14 +16,14 @@ describe('GroupsController', () => {
     ]);
   });
 
-  it('restricts the group list to ADMIN', () => {
+  it('opens the group list to ADMIN and TEACHER', () => {
     const roles = new Reflector().get<UserRole[]>(
       ROLES_KEY,
       // eslint-disable-next-line @typescript-eslint/unbound-method -- only reads decorator metadata, never invoked
       GroupsController.prototype.list,
     );
 
-    expect(roles).toEqual([UserRole.ADMIN]);
+    expect(roles).toEqual([...GROUP_LIST_ROLES]);
   });
 
   it('passes the current user to the service', async () => {

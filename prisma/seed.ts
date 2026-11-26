@@ -15,6 +15,8 @@ import {
   PaymentHistoryAction,
   PaymentStatus,
   PrismaClient,
+  TheoryTestFormat,
+  TheoryTestPublicationStatus,
   TrainingStatus,
   Transmission,
   UserRole,
@@ -56,6 +58,7 @@ const DEMO_MATERIAL_SIGNS_TEXT_ID = '71717171-7171-4717-8717-717171717171';
 const DEMO_MATERIAL_SIGNS_LINK_ID = '72727272-7272-4727-8727-727272727272';
 const DEMO_MATERIAL_CONTROL_VIDEO_ID = '73737373-7373-4737-8737-737373737373';
 const DEMO_MATERIAL_ENGINE_TEXT_ID = '74747474-7474-4747-8747-747474747474';
+const DEMO_TEST_SIGNS_ID = 'b1b1b1b1-b1b1-41b1-81b1-b1b1b1b1b1b1';
 const DEMO_GROUPED_STUDENT_ID = '13131313-1313-4131-8131-131313131313';
 const DEMO_GROUPED_PROFILE_ID = '14141414-1414-4141-8141-141414141414';
 const DEMO_DROPPED_STUDENT_ID = '15151515-1515-4151-8151-151515151515';
@@ -379,6 +382,67 @@ async function upsertMaterial(input: {
   });
 }
 
+type SeedTestQuestion = {
+  type: TheoryTestFormat;
+  text: string;
+  options: Array<{ text: string; isCorrect: boolean }>;
+};
+
+/**
+ * Опублікований тест уроку (maxAttempts завжди 3). Питання пересоздаються на кожен запуск,
+ * тож seed лишається повторюваним, а вже розпочаті спроби зберігають власний знімок питань.
+ */
+async function upsertLessonTest(input: {
+  id: string;
+  organizationId: string;
+  courseId: string;
+  lessonId: string;
+  name: string;
+  description: string;
+  passingScore: number;
+  timeLimitMinutes: number | null;
+  questions: SeedTestQuestion[];
+}) {
+  const data = {
+    organizationId: input.organizationId,
+    courseId: input.courseId,
+    courseLessonId: input.lessonId,
+    name: input.name,
+    description: input.description,
+    format: TheoryTestFormat.SINGLE_CHOICE,
+    passingScore: input.passingScore,
+    timeLimitMinutes: input.timeLimitMinutes,
+    maxAttempts: 3,
+    shuffleQuestions: false,
+    publicationStatus: TheoryTestPublicationStatus.PUBLISHED,
+  };
+  const test = await prisma.theoryTest.upsert({
+    where: { id: input.id },
+    update: data,
+    create: { id: input.id, ...data },
+  });
+  await prisma.theoryQuestion.deleteMany({ where: { testId: test.id } });
+  for (const [index, question] of input.questions.entries()) {
+    await prisma.theoryQuestion.create({
+      data: {
+        testId: test.id,
+        organizationId: input.organizationId,
+        type: question.type,
+        text: question.text,
+        position: index + 1,
+        options: {
+          create: question.options.map((option, optionIndex) => ({
+            text: option.text,
+            isCorrect: option.isCorrect,
+            position: optionIndex + 1,
+          })),
+        },
+      },
+    });
+  }
+  return test;
+}
+
 async function upsertCar(input: {
   id: string;
   organizationId: string;
@@ -685,6 +749,49 @@ async function main() {
     type: CourseMaterialType.TEXT,
     body: 'Двигун перетворює енергію палива на механічну роботу.',
     position: 1,
+  });
+  const signsTest = await upsertLessonTest({
+    id: DEMO_TEST_SIGNS_ID,
+    organizationId: organization.id,
+    courseId: courseB.id,
+    lessonId: DEMO_LESSON_SIGNS_ID,
+    name: 'Тест: дорожні знаки',
+    description:
+      'Тест уроку «Дорожні знаки»: одна відповідь, кілька відповідей і так/ні. Три спроби, ліміт 10 хвилин.',
+    passingScore: 60,
+    timeLimitMinutes: 10,
+    questions: [
+      {
+        type: TheoryTestFormat.SINGLE_CHOICE,
+        text: 'Що означає знак «Дати дорогу»?',
+        options: [
+          {
+            text: 'Водій має поступитися дорогою транспорту на головній дорозі',
+            isCorrect: true,
+          },
+          { text: 'Дозволено рух лише в одному напрямку', isCorrect: false },
+          { text: 'Рух будь-якого транспорту заборонено', isCorrect: false },
+        ],
+      },
+      {
+        type: TheoryTestFormat.MULTIPLE_CHOICE,
+        text: 'Які з наведених знаків належать до попереджувальних?',
+        options: [
+          { text: 'Небезпечний поворот', isCorrect: true },
+          { text: 'Нерівна дорога', isCorrect: true },
+          { text: 'Рух без зупинки заборонено', isCorrect: false },
+          { text: 'Обмеження максимальної швидкості', isCorrect: false },
+        ],
+      },
+      {
+        type: TheoryTestFormat.TRUE_FALSE,
+        text: 'Знак «Рух без зупинки заборонено» вимагає зупинитися перед стоп-лінією.',
+        options: [
+          { text: 'Так', isCorrect: true },
+          { text: 'Ні', isCorrect: false },
+        ],
+      },
+    ],
   });
 
   const activeGroup = await upsertGroup({
@@ -1017,6 +1124,15 @@ async function main() {
   console.log(`  lesson знаки: ${DEMO_LESSON_SIGNS_ID}`);
   console.log(`  lesson регулювання: ${DEMO_LESSON_CONTROL_ID}`);
   console.log(`  lesson двигун: ${DEMO_LESSON_ENGINE_ID}`);
+  console.log(
+    `  PUBLISHED lesson test "${signsTest.name}" on lesson знаки (3 questions: SINGLE_CHOICE, MULTIPLE_CHOICE, TRUE_FALSE; passingScore 60, 10 min, 3 attempts): ${signsTest.id}`,
+  );
+  console.log(
+    `    admin: GET /api/tests?lessonId=${DEMO_LESSON_SIGNS_ID} and GET /api/tests/${signsTest.id} (with isCorrect).`,
+  );
+  console.log(
+    `    student ${DEMO_GROUPED_EMAIL}: first PATCH /api/courses/${courseB.id}/publication {"publicationStatus":"PUBLISHED"} as ADMIN, then GET /api/lessons/${DEMO_LESSON_SIGNS_ID}/test and POST /api/tests/${signsTest.id}/attempts.`,
+  );
   console.log(`  material text: ${DEMO_MATERIAL_SIGNS_TEXT_ID}`);
   console.log(
     'GET /api/courses/{courseId} — only ADMIN. Chapters, lessons and materials by position.',
