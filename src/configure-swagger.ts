@@ -24,6 +24,10 @@ export function configureSwagger(app: INestApplication) {
       'tests',
       'Теоретичні тести: створення, питання, варіанти, публікація, спроба, перевірка, passed/failed і ліміт спроб',
     )
+    .addTag(
+      'notifications',
+      'Сповіщення поточного користувача: розклад, практика, тести й оплати',
+    )
     .addBearerAuth()
     .build();
 

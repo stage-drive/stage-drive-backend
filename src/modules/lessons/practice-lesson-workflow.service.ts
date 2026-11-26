@@ -4,6 +4,7 @@ import {
   Injectable,
   Logger,
   NotFoundException,
+  Optional,
 } from '@nestjs/common';
 import {
   BookingConfirmation,
@@ -12,6 +13,7 @@ import {
   UserRole,
 } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
+import { NotificationsService } from '../notifications/notifications.service';
 import { CONFIRMATION_DEADLINE_HOURS } from './availability';
 import { practiceBookingStatus, toPracticeLessonDto } from './lesson-view';
 import { CancelLessonDto, PracticeLessonDto } from './lessons.dto';
@@ -92,7 +94,10 @@ function assertPending(lesson: PracticeLessonRow): void {
 export class PracticeLessonWorkflowService {
   private readonly logger = new Logger(PracticeLessonWorkflowService.name);
 
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    @Optional() private readonly notifications?: NotificationsService,
+  ) {}
 
   /**
    * PENDING → CONFIRMED не пізніше ніж за CONFIRMATION_DEADLINE_HOURS до
@@ -139,6 +144,15 @@ export class PracticeLessonWorkflowService {
     this.logger.log(
       `Practice booking confirmed lessonId=${saved.id} scheduledAt=${saved.scheduledAt.toISOString()} actorId=${actor.id} organizationId=${actor.organizationId}`,
     );
+    await this.notifications?.emit({
+      kind: 'practice.confirmed',
+      organizationId: actor.organizationId,
+      actorId: actor.id,
+      lessonId: saved.id,
+      studentId: saved.studentId,
+      instructorId: saved.instructorId,
+      scheduledAt: saved.scheduledAt,
+    });
     return toPracticeLessonDto(saved);
   }
 
@@ -175,6 +189,15 @@ export class PracticeLessonWorkflowService {
     this.logger.log(
       `Practice booking rejected lessonId=${saved.id} scheduledAt=${saved.scheduledAt.toISOString()} actorId=${actor.id} organizationId=${actor.organizationId}`,
     );
+    await this.notifications?.emit({
+      kind: 'practice.rejected',
+      organizationId: actor.organizationId,
+      actorId: actor.id,
+      lessonId: saved.id,
+      studentId: saved.studentId,
+      instructorId: saved.instructorId,
+      scheduledAt: saved.scheduledAt,
+    });
     return toPracticeLessonDto(saved);
   }
 
@@ -261,6 +284,21 @@ export class PracticeLessonWorkflowService {
     this.logger.log(
       `Practice lesson outcome recorded lessonId=${saved.id} status=${saved.status} actorId=${actor.id} organizationId=${actor.organizationId}`,
     );
+    if (
+      saved.status === LessonStatus.COMPLETED ||
+      saved.status === LessonStatus.NO_SHOW
+    ) {
+      await this.notifications?.emit({
+        kind: 'practice.outcome',
+        organizationId: actor.organizationId,
+        actorId: actor.id,
+        lessonId: saved.id,
+        studentId: saved.studentId,
+        scheduledAt: saved.scheduledAt,
+        outcome:
+          saved.status === LessonStatus.COMPLETED ? 'COMPLETED' : 'NO_SHOW',
+      });
+    }
     return toPracticeLessonDto(saved);
   }
 

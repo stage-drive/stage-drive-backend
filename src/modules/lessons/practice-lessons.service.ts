@@ -4,6 +4,7 @@ import {
   Injectable,
   Logger,
   NotFoundException,
+  Optional,
 } from '@nestjs/common';
 import {
   BookingConfirmation,
@@ -18,6 +19,7 @@ import {
   UserStatus,
 } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
+import { NotificationsService } from '../notifications/notifications.service';
 import { STUDENT_NOT_FOUND_MESSAGE } from '../students/students.service';
 import {
   BOOKING_MIN_LEAD_HOURS,
@@ -162,6 +164,7 @@ export class PracticeLessonsService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly payment: PracticePaymentService,
+    @Optional() private readonly notifications?: NotificationsService,
   ) {}
 
   /**
@@ -405,6 +408,15 @@ export class PracticeLessonsService {
     this.logger.log(
       `Practice lesson booked lessonId=${saved.id} studentId=${actor.id} instructorId=${profile.instructorId} carId=${profile.carId} scheduledAt=${saved.scheduledAt.toISOString()} durationMin=${saved.durationMin} organizationId=${actor.organizationId}`,
     );
+    await this.notifications?.emit({
+      kind: 'practice.booked',
+      organizationId: actor.organizationId,
+      actorId: actor.id,
+      lessonId: saved.id,
+      studentId: actor.id,
+      instructorId: profile.instructorId,
+      scheduledAt: saved.scheduledAt,
+    });
     return toPracticeLessonDto(saved);
   }
 

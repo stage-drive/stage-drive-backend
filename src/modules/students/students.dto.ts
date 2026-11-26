@@ -242,6 +242,41 @@ export class StudentInstructorSummaryDto {
   lastName: string;
 }
 
+/** Короткий прогрес теорії для рядка таблиці. Без списку уроків картки. */
+export class StudentListTheoryProgressDto {
+  @ApiProperty({
+    example: 12,
+    minimum: 0,
+    description:
+      'Скільки уроків курсу групи вже пройдено. Береться зі знімка CourseProgress.',
+  })
+  completedLessonCount: number;
+
+  @ApiProperty({
+    example: 20,
+    minimum: 0,
+    description:
+      'Скільки уроків у знімку CourseProgress. Якщо знімка ще немає, це кількість опублікованих уроків курсу. Без курсу — 0.',
+  })
+  totalLessonCount: number;
+}
+
+/** Короткий прогрес практики для рядка таблиці. */
+export class StudentListPracticeProgressDto {
+  @ApiProperty({
+    example: 4,
+    description:
+      'Сума годин практичних занять зі статусом COMPLETED. Та сама величина, що completedHours у картці.',
+  })
+  completedHours: number;
+
+  @ApiProperty({
+    example: 40,
+    description: 'Скільки годин практики треба відкатати.',
+  })
+  requiredHours: number;
+}
+
 export class StudentListItemDto {
   @ApiProperty({ example: '77777777-7777-7777-7777-777777777777' })
   id: string;
@@ -325,6 +360,20 @@ export class StudentListItemDto {
       'null для TEACHER та INSTRUCTOR: оплат вони не бачать.',
   })
   paymentStatus: PaymentStatus | null;
+
+  @ApiProperty({
+    type: StudentListTheoryProgressDto,
+    description:
+      'Прогрес теорії курсу поточної групи: пройдені уроки зі знімка CourseProgress. Без курсу обидва лічильники 0.',
+  })
+  theoryProgress: StudentListTheoryProgressDto;
+
+  @ApiProperty({
+    type: StudentListPracticeProgressDto,
+    description:
+      'Прогрес практики: проведені години і обов’язкові 40. Без проведених занять completedHours дорівнює 0.',
+  })
+  practiceProgress: StudentListPracticeProgressDto;
 
   @ApiProperty({ example: '2026-01-02T00:00:00.000Z' })
   createdAt: Date;

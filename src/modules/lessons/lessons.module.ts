@@ -1,5 +1,6 @@
 import { Module } from '@nestjs/common';
 import { AuthModule } from '../auth/auth.module';
+import { NotificationsModule } from '../notifications/notifications.module';
 import { InstructorScheduleController } from './instructor-schedule.controller';
 import { InstructorScheduleService } from './instructor-schedule.service';
 import { LessonAttendanceService } from './lesson-attendance.service';
@@ -14,7 +15,7 @@ import { PracticeRequestExpiryJob } from './practice-request-expiry.job';
 import { TheoryContentService } from './theory-content.service';
 
 @Module({
-  imports: [AuthModule],
+  imports: [AuthModule, NotificationsModule],
   controllers: [
     LessonsController,
     PracticeLessonsController,

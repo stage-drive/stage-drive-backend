@@ -4,6 +4,7 @@ import {
   Injectable,
   Logger,
   NotFoundException,
+  Optional,
 } from '@nestjs/common';
 import {
   PaymentHistoryAction,
@@ -23,6 +24,7 @@ import { searchConditions } from '../../common/prisma/user-search';
 import { localDate } from '../../common/time/zoned-time';
 import { fieldBadRequest } from '../../common/validation/field-error';
 import { PrismaService } from '../../prisma/prisma.service';
+import { NotificationsService } from '../notifications/notifications.service';
 import {
   IDEMPOTENCY_KEY_REUSED_MESSAGE,
   hashCreateRequest,
@@ -288,7 +290,10 @@ function isEmptyUpdate(payload: UpdatePaymentDto): boolean {
 export class PaymentsService {
   private readonly logger = new Logger(PaymentsService.name);
 
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    @Optional() private readonly notifications?: NotificationsService,
+  ) {}
 
   /** UC-001: студенти автошколи з актуальним статусом і останньою оплатою. */
   async overview(
@@ -579,6 +584,17 @@ export class PaymentsService {
       this.logger.log(
         `Payment created paymentId=${saved.id} studentId=${saved.studentId} status=${saved.status} amount=${formatAmount(saved.amount)} currency=${saved.currency} actorId=${actor.id} organizationId=${actor.organizationId}`,
       );
+      await this.notifications?.emit({
+        kind: 'payment.recorded',
+        organizationId: actor.organizationId,
+        actorId: actor.id,
+        paymentId: saved.id,
+        studentId: saved.studentId,
+        status: saved.status,
+        purpose: saved.purpose,
+        amount: formatAmount(saved.amount),
+        currency: saved.currency,
+      });
     }
     return toPaymentDto(saved);
   }
@@ -784,6 +800,17 @@ export class PaymentsService {
     this.logger.log(
       `Payment status changed paymentId=${paymentId} studentId=${saved.payment.studentId} previousStatus=${saved.previousStatus} newStatus=${saved.payment.status} actorId=${actor.id} organizationId=${actor.organizationId}`,
     );
+    await this.notifications?.emit({
+      kind: 'payment.status_changed',
+      organizationId: actor.organizationId,
+      actorId: actor.id,
+      paymentId: saved.payment.id,
+      studentId: saved.payment.studentId,
+      status: saved.payment.status,
+      purpose: saved.payment.purpose,
+      amount: formatAmount(saved.payment.amount),
+      currency: saved.payment.currency,
+    });
     return toPaymentDto(saved.payment);
   }
 

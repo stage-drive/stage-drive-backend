@@ -26,7 +26,13 @@ import {
   ApiTags,
   ApiUnauthorizedResponse,
 } from '@nestjs/swagger';
-import { LicenseCategory, PaymentStatus, TrainingStatus, User, UserStatus } from '@prisma/client';
+import {
+  LicenseCategory,
+  PaymentStatus,
+  TrainingStatus,
+  User,
+  UserStatus,
+} from '@prisma/client';
 import { AuthGuard } from '../auth/auth.guard';
 import { CurrentUser } from '../auth/current-user.decorator';
 import { Roles } from '../auth/roles.decorator';
@@ -72,7 +78,8 @@ export class StudentsController {
       'ADMIN бачить студентів лише своєї організації. ' +
       'TEACHER — лише студентів своїх груп. INSTRUCTOR — лише студентів, закріплених за ним. ' +
       'STUDENT цей список не відкриває: власна картка читається через GET /api/students/me. ' +
-      'У рядку є навчальний статус, група, інструктор, category, transmission і статус оплати. ' +
+      'У рядку є навчальний статус, група, інструктор, category, transmission, статус оплати, ' +
+      'theoryProgress (пройдені й усі уроки курсу групи) і practiceProgress (проведені години з 40). ' +
       'Пошук, sortBy/sortOrder і пагінація page/limit лишаються. ' +
       'status фільтрує обліковий статус. trainingStatus, groupId, instructorId, category і paymentStatus — окремі фільтри.',
   })

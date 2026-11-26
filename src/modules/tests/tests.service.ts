@@ -5,6 +5,7 @@ import {
   Injectable,
   Logger,
   NotFoundException,
+  Optional,
 } from '@nestjs/common';
 import {
   CoursePublicationStatus,
@@ -19,6 +20,7 @@ import {
   UserRole,
 } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
+import { NotificationsService } from '../notifications/notifications.service';
 import {
   assertInsertPosition,
   assertMovePosition,
@@ -357,7 +359,10 @@ async function lockTest(
 export class TestsService {
   private readonly logger = new Logger(TestsService.name);
 
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    @Optional() private readonly notifications?: NotificationsService,
+  ) {}
 
   /**
    * Тести своєї автошколи. TEACHER бачить тести курсів своїх груп.
@@ -742,6 +747,19 @@ export class TestsService {
         `Test publication changed testId=${saved.id} publicationStatus=${saved.publicationStatus} organizationId=${actor.organizationId} actorId=${actor.id}`,
       );
     }
+    if (
+      changed &&
+      saved.publicationStatus === TheoryTestPublicationStatus.PUBLISHED
+    ) {
+      await this.notifications?.emit({
+        kind: 'test.published',
+        organizationId: actor.organizationId,
+        actorId: actor.id,
+        testId: saved.id,
+        courseId: saved.courseId,
+        name: saved.name,
+      });
+    }
     return toTest(saved);
   }
 
@@ -812,9 +830,7 @@ export class TestsService {
       },
       select: { publicationStatus: true },
     });
-    if (
-      lesson?.publicationStatus === CourseLessonPublicationStatus.PUBLISHED
-    ) {
+    if (lesson?.publicationStatus === CourseLessonPublicationStatus.PUBLISHED) {
       throw new ConflictException(PUBLISHED_LESSON_KEEPS_TEST_MESSAGE);
     }
   }
