@@ -284,6 +284,15 @@ enum NotificationReadStatus {
   READ
 }
 
+/// Куди веде сповіщення. Пара з entityId: або обидва є, або обидва порожні.
+enum NotificationEntityType {
+  THEORY_LESSON
+  PRACTICE_LESSON
+  TEST
+  TEST_ATTEMPT
+  PAYMENT
+}
+
 model Organization {
   id                      String                   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   name                    String                   @db.VarChar(255)
@@ -1193,7 +1202,8 @@ model PaymentHistory {
 /// створити друге сповіщення тому самому отримувачу.
 /// Складений FK (recipientId, organizationId) → users(id, organizationId):
 /// сповіщення не прив’язати до людини іншої автошколи.
-/// CHECK у міграції: текст не з пробілів; readAt є тоді й лише тоді, коли readStatus = READ.
+/// CHECK у міграції: текст не з пробілів; readAt є тоді й лише тоді, коли readStatus = READ;
+/// entityType і entityId або разом заповнені, або разом порожні.
 model Notification {
   id             String                 @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   organizationId String                 @map("organization_id") @db.Uuid
@@ -1205,8 +1215,12 @@ model Notification {
   readStatus     NotificationReadStatus @default(UNREAD) @map("read_status")
   createdAt      DateTime               @default(now()) @map("created_at")
   readAt         DateTime?              @map("read_at")
+  /// Сутність, з якої створено сповіщення. null — переходити нікуди.
+  /// Без FK: видалена сутність лишає сповіщення, а перехід відповідає 404.
+  entityType     NotificationEntityType? @map("entity_type")
+  entityId       String?                 @map("entity_id") @db.Uuid
   /// Ідемпотентність події в межах автошколи й отримувача.
-  dedupeKey      String                 @map("dedupe_key") @db.VarChar(200)
+  dedupeKey      String                  @map("dedupe_key") @db.VarChar(200)
 
   @@unique([organizationId, recipientId, dedupeKey])
   @@index([organizationId, recipientId, createdAt])

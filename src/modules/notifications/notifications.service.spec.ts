@@ -1,10 +1,15 @@
 import { ForbiddenException, Logger, NotFoundException } from '@nestjs/common';
 import {
+  CoursePublicationStatus,
+  CourseStatus,
+  NotificationEntityType,
   NotificationReadStatus,
   NotificationType,
   PaymentStatus,
   Prisma,
+  TheoryTestPublicationStatus,
   User,
+  UserRole,
   UserStatus,
 } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
@@ -12,13 +17,15 @@ import { NotificationEvent } from './notification-events';
 import {
   NOTIFICATION_NOT_FOUND_MESSAGE,
   NotificationsService,
+  RELATED_ENTITY_MISSING_MESSAGE,
+  RELATED_ENTITY_NOT_FOUND_MESSAGE,
 } from './notifications.service';
 
 const ORG = 'org-1';
 const WHEN = new Date('2026-11-26T08:00:00.000Z');
 
-function actor(id = 'admin-1'): User {
-  return { id, organizationId: ORG, role: 'ADMIN' } as User;
+function actor(id = 'admin-1', role: UserRole = UserRole.ADMIN): User {
+  return { id, organizationId: ORG, role } as User;
 }
 
 function uniqueConstraintError() {
@@ -34,14 +41,20 @@ describe('NotificationsService', () => {
     organization: { findUnique: jest.fn() },
     user: { findFirst: jest.fn(), findMany: jest.fn() },
     group: { findFirst: jest.fn() },
-    enrollment: { findMany: jest.fn() },
+    enrollment: { findMany: jest.fn(), findFirst: jest.fn() },
     theoryTest: { findFirst: jest.fn() },
+    theoryTestAttempt: { findFirst: jest.fn() },
+    lesson: { findFirst: jest.fn() },
+    drivingLesson: { findFirst: jest.fn() },
+    course: { findFirst: jest.fn() },
+    payment: { findFirst: jest.fn() },
     notification: {
       create: jest.fn(),
       count: jest.fn(),
       findMany: jest.fn(),
       findFirst: jest.fn(),
       update: jest.fn(),
+      updateMany: jest.fn(),
     },
   };
   let service: NotificationsService;
@@ -110,6 +123,8 @@ describe('NotificationsService', () => {
           dedupeKey: string;
           readStatus: string;
           organizationId: string;
+          entityType: string;
+          entityId: string;
         },
     );
     expect(rows.map((row) => row.recipientId).sort()).toEqual([
@@ -124,6 +139,8 @@ describe('NotificationsService', () => {
     ).toBe(true);
     expect(rows.every((row) => row.organizationId === ORG)).toBe(true);
     expect(rows[0].dedupeKey).toBe('schedule:lesson-1:created');
+    expect(rows[0].entityType).toBe(NotificationEntityType.THEORY_LESSON);
+    expect(rows[0].entityId).toBe('lesson-1');
     expect(rows[0].text).toContain('ПДР');
     expect(rows[0].text).toContain('10:00');
     expect(prisma.user.findMany).toHaveBeenCalledWith(
@@ -236,6 +253,7 @@ describe('NotificationsService', () => {
       { studentId: 'student-1' },
       { studentId: 'student-1' },
     ]);
+    const publishedAt = new Date('2026-11-26T12:00:00.000Z');
     const published: NotificationEvent = {
       kind: 'test.published',
       organizationId: ORG,
@@ -243,14 +261,41 @@ describe('NotificationsService', () => {
       testId: 'test-1',
       courseId: 'course-1',
       name: 'Знаки',
+      publishedAt,
     };
     prisma.user.findMany.mockResolvedValue([{ id: 'student-1' }]);
     await expect(service.record(published)).resolves.toBe(1);
     expect(prisma.notification.create).toHaveBeenLastCalledWith({
       data: expect.objectContaining({
         type: NotificationType.TEST_PUBLISHED,
-        dedupeKey: 'test:test-1:published',
+        dedupeKey: `test:test-1:published:${publishedAt.toISOString()}`,
         recipientId: 'student-1',
+      }),
+    });
+  });
+
+  it('skips a retry of the same publication and notifies a later one', async () => {
+    const first = new Date('2026-11-26T12:00:00.000Z');
+    const later = new Date('2026-11-26T13:00:00.000Z');
+    prisma.enrollment.findMany.mockResolvedValue([{ studentId: 'student-1' }]);
+    prisma.user.findMany.mockResolvedValue([{ id: 'student-1' }]);
+    const published = (publishedAt: Date): NotificationEvent => ({
+      kind: 'test.published',
+      organizationId: ORG,
+      actorId: 'teacher-1',
+      testId: 'test-1',
+      courseId: 'course-1',
+      name: 'Знаки',
+      publishedAt,
+    });
+
+    await expect(service.record(published(first))).resolves.toBe(1);
+    prisma.notification.create.mockRejectedValueOnce(uniqueConstraintError());
+    await expect(service.record(published(first))).resolves.toBe(0);
+    await expect(service.record(published(later))).resolves.toBe(1);
+    expect(prisma.notification.create).toHaveBeenLastCalledWith({
+      data: expect.objectContaining({
+        dedupeKey: `test:test-1:published:${later.toISOString()}`,
       }),
     });
   });
@@ -308,6 +353,8 @@ describe('NotificationsService', () => {
         readStatus: NotificationReadStatus.UNREAD,
         createdAt: WHEN,
         readAt: null,
+        entityType: NotificationEntityType.THEORY_LESSON,
+        entityId: 'lesson-1',
       },
     ]);
 
@@ -317,8 +364,17 @@ describe('NotificationsService', () => {
       limit: 10,
     });
 
-    expect(list.items).toHaveLength(1);
+    expect(list.items).toEqual([
+      expect.objectContaining({
+        id: 'n-1',
+        entity: {
+          type: NotificationEntityType.THEORY_LESSON,
+          id: 'lesson-1',
+        },
+      }),
+    ]);
     expect(list.pagination.total).toBe(1);
+    expect(list.unreadCount).toBe(1);
     expect(prisma.notification.findMany).toHaveBeenCalledWith(
       expect.objectContaining({
         where: {
@@ -328,6 +384,14 @@ describe('NotificationsService', () => {
         },
       }),
     );
+
+    prisma.notification.count.mockResolvedValue(0);
+    prisma.notification.findMany.mockResolvedValue([]);
+    await expect(service.list(actor('student-1'))).resolves.toEqual({
+      items: [],
+      pagination: { page: 1, limit: 20, total: 0, totalPages: 0 },
+      unreadCount: 0,
+    });
 
     prisma.notification.count.mockResolvedValue(3);
     await expect(service.unreadCount(actor('student-1'))).resolves.toEqual({
@@ -348,9 +412,22 @@ describe('NotificationsService', () => {
       readStatus: NotificationReadStatus.READ,
       createdAt: WHEN,
       readAt: WHEN,
+      entityType: NotificationEntityType.PAYMENT,
+      entityId: 'pay-1',
     };
+    const readDto = {
+      id: 'n-1',
+      type: NotificationType.PAYMENT_RECORDED,
+      text: 'Оплату підтверджено.',
+      readStatus: NotificationReadStatus.READ,
+      createdAt: WHEN,
+      readAt: WHEN,
+      entity: { type: NotificationEntityType.PAYMENT, id: 'pay-1' },
+      unreadCount: 2,
+    };
+    prisma.notification.count.mockResolvedValue(2);
     prisma.notification.findFirst.mockResolvedValue(read);
-    await expect(service.markRead(actor(), 'n-1')).resolves.toEqual(read);
+    await expect(service.markRead(actor(), 'n-1')).resolves.toEqual(readDto);
     expect(prisma.notification.update).not.toHaveBeenCalled();
 
     prisma.notification.findFirst.mockResolvedValue({
@@ -359,7 +436,7 @@ describe('NotificationsService', () => {
       readAt: null,
     });
     prisma.notification.update.mockResolvedValue(read);
-    await expect(service.markRead(actor(), 'n-1')).resolves.toEqual(read);
+    await expect(service.markRead(actor(), 'n-1')).resolves.toEqual(readDto);
     expect(prisma.notification.update).toHaveBeenCalledWith(
       expect.objectContaining({
         data: expect.objectContaining({
@@ -367,5 +444,180 @@ describe('NotificationsService', () => {
         }),
       }),
     );
+
+    prisma.notification.findFirst.mockResolvedValue(read);
+    prisma.notification.count.mockResolvedValue(3);
+    prisma.notification.update.mockResolvedValue({
+      ...read,
+      readStatus: NotificationReadStatus.UNREAD,
+      readAt: null,
+    });
+    await expect(service.markUnread(actor(), 'n-1')).resolves.toEqual({
+      ...readDto,
+      readStatus: NotificationReadStatus.UNREAD,
+      readAt: null,
+      unreadCount: 3,
+    });
+    expect(prisma.notification.update).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        data: { readStatus: NotificationReadStatus.UNREAD, readAt: null },
+      }),
+    );
+  });
+
+  it('marks only the actor unread notifications and returns the new count', async () => {
+    prisma.notification.updateMany.mockResolvedValue({ count: 2 });
+    prisma.notification.count.mockResolvedValue(0);
+
+    await expect(service.markAllRead(actor('student-1'))).resolves.toEqual({
+      updated: 2,
+      unreadCount: 0,
+    });
+    expect(prisma.notification.updateMany).toHaveBeenCalledWith({
+      where: {
+        organizationId: ORG,
+        recipientId: 'student-1',
+        readStatus: NotificationReadStatus.UNREAD,
+      },
+      data: expect.objectContaining({
+        readStatus: NotificationReadStatus.READ,
+      }),
+    });
+  });
+
+  it('returns a theory lesson the teacher of that group can open', async () => {
+    prisma.notification.findFirst.mockResolvedValue({
+      entityType: NotificationEntityType.THEORY_LESSON,
+      entityId: 'lesson-1',
+    });
+    prisma.lesson.findFirst.mockResolvedValue({
+      groupId: 'group-1',
+      scheduledAt: WHEN,
+      group: { teacherId: 'teacher-1' },
+    });
+
+    await expect(
+      service.target(actor('teacher-1', UserRole.TEACHER), 'n-1'),
+    ).resolves.toEqual({
+      type: NotificationEntityType.THEORY_LESSON,
+      id: 'lesson-1',
+    });
+  });
+
+  it('hides another user notification and a missing or unlinked entity', async () => {
+    prisma.notification.findFirst.mockResolvedValue(null);
+    await expect(service.target(actor(), 'n-1')).rejects.toMatchObject({
+      message: NOTIFICATION_NOT_FOUND_MESSAGE,
+    });
+
+    prisma.notification.findFirst.mockResolvedValue({
+      entityType: null,
+      entityId: null,
+    });
+    await expect(service.target(actor(), 'n-1')).rejects.toMatchObject({
+      message: RELATED_ENTITY_MISSING_MESSAGE,
+    });
+
+    prisma.notification.findFirst.mockResolvedValue({
+      entityType: NotificationEntityType.PRACTICE_LESSON,
+      entityId: 'lesson-1',
+    });
+    prisma.drivingLesson.findFirst.mockResolvedValue(null);
+    await expect(
+      service.target(actor('student-1', UserRole.STUDENT), 'n-1'),
+    ).rejects.toMatchObject({
+      message: RELATED_ENTITY_NOT_FOUND_MESSAGE,
+    });
+  });
+
+  it('refuses a practice lesson and a payment the actor cannot open', async () => {
+    prisma.notification.findFirst.mockResolvedValue({
+      entityType: NotificationEntityType.PRACTICE_LESSON,
+      entityId: 'lesson-1',
+    });
+    prisma.drivingLesson.findFirst.mockResolvedValue({
+      studentId: 'student-1',
+      instructorId: 'instructor-1',
+    });
+
+    await expect(
+      service.target(actor('student-2', UserRole.STUDENT), 'n-1'),
+    ).rejects.toBeInstanceOf(ForbiddenException);
+    await expect(
+      service.target(actor('instructor-1', UserRole.INSTRUCTOR), 'n-1'),
+    ).resolves.toEqual({
+      type: NotificationEntityType.PRACTICE_LESSON,
+      id: 'lesson-1',
+    });
+
+    prisma.notification.findFirst.mockResolvedValue({
+      entityType: NotificationEntityType.PAYMENT,
+      entityId: 'pay-1',
+    });
+    prisma.payment.findFirst.mockResolvedValue({ studentId: 'student-1' });
+    await expect(
+      service.target(actor('teacher-1', UserRole.TEACHER), 'n-1'),
+    ).rejects.toBeInstanceOf(ForbiddenException);
+    await expect(
+      service.target(actor('student-1', UserRole.STUDENT), 'n-1'),
+    ).resolves.toEqual({
+      type: NotificationEntityType.PAYMENT,
+      id: 'pay-1',
+    });
+  });
+
+  it('refuses a draft test and opens a published test of the student course', async () => {
+    prisma.notification.findFirst.mockResolvedValue({
+      entityType: NotificationEntityType.TEST,
+      entityId: 'test-1',
+    });
+    prisma.theoryTest.findFirst.mockResolvedValue({
+      courseId: 'course-1',
+      publicationStatus: TheoryTestPublicationStatus.DRAFT,
+    });
+    await expect(
+      service.target(actor('student-1', UserRole.STUDENT), 'n-1'),
+    ).rejects.toBeInstanceOf(ForbiddenException);
+
+    prisma.theoryTest.findFirst.mockResolvedValue({
+      courseId: 'course-1',
+      publicationStatus: TheoryTestPublicationStatus.PUBLISHED,
+    });
+    prisma.course.findFirst.mockResolvedValue({
+      status: CourseStatus.ACTIVE,
+      publicationStatus: CoursePublicationStatus.PUBLISHED,
+    });
+    prisma.enrollment.findFirst.mockResolvedValue(null);
+    await expect(
+      service.target(actor('student-1', UserRole.STUDENT), 'n-1'),
+    ).rejects.toBeInstanceOf(ForbiddenException);
+
+    prisma.enrollment.findFirst.mockResolvedValue({ id: 'enroll-1' });
+    await expect(
+      service.target(actor('student-1', UserRole.STUDENT), 'n-1'),
+    ).resolves.toEqual({
+      type: NotificationEntityType.TEST,
+      id: 'test-1',
+    });
+  });
+
+  it('opens only the student own test attempt', async () => {
+    prisma.notification.findFirst.mockResolvedValue({
+      entityType: NotificationEntityType.TEST_ATTEMPT,
+      entityId: 'attempt-1',
+    });
+    prisma.theoryTestAttempt.findFirst.mockResolvedValue({
+      studentId: 'student-1',
+    });
+
+    await expect(
+      service.target(actor('student-2', UserRole.STUDENT), 'n-1'),
+    ).rejects.toBeInstanceOf(ForbiddenException);
+    await expect(
+      service.target(actor('student-1', UserRole.STUDENT), 'n-1'),
+    ).resolves.toEqual({
+      type: NotificationEntityType.TEST_ATTEMPT,
+      id: 'attempt-1',
+    });
   });
 });

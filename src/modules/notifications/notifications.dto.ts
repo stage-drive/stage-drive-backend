@@ -1,5 +1,9 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
-import { NotificationReadStatus, NotificationType } from '@prisma/client';
+import {
+  NotificationEntityType,
+  NotificationReadStatus,
+  NotificationType,
+} from '@prisma/client';
 import { Transform } from 'class-transformer';
 import { IsEnum, IsInt, IsOptional, Max, Min } from 'class-validator';
 
@@ -54,6 +58,22 @@ export class ListNotificationsQueryDto {
   limit?: number;
 }
 
+export class NotificationEntityDto {
+  @ApiProperty({
+    enum: NotificationEntityType,
+    description:
+      'THEORY_LESSON — заняття розкладу, PRACTICE_LESSON — практичне, TEST — тест, TEST_ATTEMPT — спроба, PAYMENT — оплата.',
+    example: NotificationEntityType.THEORY_LESSON,
+  })
+  type: NotificationEntityType;
+
+  @ApiProperty({
+    format: 'uuid',
+    description: 'Ідентифікатор пов’язаної сутності в автошколі отримувача.',
+  })
+  id: string;
+}
+
 export class NotificationDto {
   @ApiProperty({ format: 'uuid' })
   id: string;
@@ -75,6 +95,38 @@ export class NotificationDto {
 
   @ApiProperty({ format: 'date-time', nullable: true })
   readAt: Date | null;
+
+  @ApiProperty({
+    type: NotificationEntityDto,
+    nullable: true,
+    description:
+      'Куди веде сповіщення. null — подія не прив’язана до сутності. Наявність посилання не замінює перевірку доступу: її робить GET /notifications/{id}/target.',
+  })
+  entity: NotificationEntityDto | null;
+}
+
+export class NotificationStatusDto extends NotificationDto {
+  @ApiProperty({
+    description:
+      'Непрочитані цього користувача після зміни статусу. Індикатор можна оновити без окремого запиту.',
+    example: 1,
+  })
+  unreadCount: number;
+}
+
+export class MarkAllNotificationsReadDto {
+  @ApiProperty({
+    description: 'Скільки непрочитаних сповіщень щойно позначено прочитаними.',
+    example: 3,
+  })
+  updated: number;
+
+  @ApiProperty({
+    description:
+      'Непрочитані цього користувача після зміни. Зазвичай 0, якщо за цей час не з’явилося нове сповіщення.',
+    example: 0,
+  })
+  unreadCount: number;
 }
 
 export class NotificationPaginationDto {
@@ -97,6 +149,13 @@ export class NotificationListDto {
 
   @ApiProperty({ type: NotificationPaginationDto })
   pagination: NotificationPaginationDto;
+
+  @ApiProperty({
+    description:
+      'Усі непрочитані цього користувача, незалежно від фільтра readStatus і сторінки. Порожній список разом із 0 — порожній dropdown і Notification Center, не помилка.',
+    example: 2,
+  })
+  unreadCount: number;
 }
 
 export class UnreadNotificationCountDto {

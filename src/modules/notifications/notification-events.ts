@@ -54,6 +54,8 @@ type TestPublishedEvent = {
   testId: string;
   courseId: string;
   name: string;
+  /** Момент цієї публікації. Повтор того самого запиту не створює другого сповіщення, нова публікація — створює. */
+  publishedAt: Date;
 };
 
 type TestResultEvent = {
