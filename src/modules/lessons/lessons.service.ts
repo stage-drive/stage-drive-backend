@@ -5,6 +5,7 @@ import {
   Injectable,
   Logger,
   NotFoundException,
+  Optional,
 } from '@nestjs/common';
 import {
   BookingConfirmation,
@@ -24,6 +25,7 @@ import {
 } from '../../common/prisma/schedule-lock';
 import { localDate } from '../../common/time/zoned-time';
 import { PrismaService } from '../../prisma/prisma.service';
+import { NotificationsService } from '../notifications/notifications.service';
 import { GROUP_NOT_FOUND_MESSAGE } from '../groups/groups.service';
 import { STUDENT_NOT_FOUND_MESSAGE } from '../students/students.service';
 import {
@@ -546,6 +548,7 @@ export class LessonsService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly payment: PracticePaymentService,
+    @Optional() private readonly notifications?: NotificationsService,
   ) {}
 
   /**
@@ -668,6 +671,15 @@ export class LessonsService {
     this.logger.log(
       `Lesson created type=THEORY lessonId=${saved.id} groupId=${saved.groupId} delivery=${saved.delivery} scheduledAt=${saved.scheduledAt.toISOString()} durationMin=${saved.durationMin} actorId=${actor.id} organizationId=${actor.organizationId}`,
     );
+    await this.notifications?.emit({
+      kind: 'schedule.created',
+      organizationId: actor.organizationId,
+      actorId: actor.id,
+      lessonId: saved.id,
+      groupId: saved.groupId,
+      topic: saved.topic,
+      scheduledAt: saved.scheduledAt,
+    });
     return toTheoryLessonDto(saved);
   }
 
@@ -759,6 +771,15 @@ export class LessonsService {
     this.logger.log(
       `Lesson created type=PRACTICE lessonId=${saved.id} instructorId=${saved.instructorId} studentId=${saved.studentId} carId=${saved.carId} scheduledAt=${saved.scheduledAt.toISOString()} durationMin=${saved.durationMin} actorId=${actor.id} organizationId=${actor.organizationId}`,
     );
+    await this.notifications?.emit({
+      kind: 'practice.assigned',
+      organizationId: actor.organizationId,
+      actorId: actor.id,
+      lessonId: saved.id,
+      studentId: saved.studentId,
+      instructorId: saved.instructorId,
+      scheduledAt: saved.scheduledAt,
+    });
     return toPracticeLessonDto(saved);
   }
 
@@ -952,6 +973,16 @@ export class LessonsService {
       this.logger.log(
         `Practice booking rescheduled by student lessonId=${result.lesson.id} from=${result.from.toISOString()} to=${result.lesson.scheduledAt.toISOString()} actorId=${actor.id} organizationId=${actor.organizationId}`,
       );
+      await this.notifications?.emit({
+        kind: 'practice.rescheduled',
+        organizationId: actor.organizationId,
+        actorId: actor.id,
+        lessonId: result.lesson.id,
+        studentId: result.lesson.studentId,
+        instructorId: result.lesson.instructorId,
+        scheduledAt: result.lesson.scheduledAt,
+        awaitingConfirmation: true,
+      });
     }
     return toPracticeLessonDto(result.lesson);
   }
@@ -994,6 +1025,15 @@ export class LessonsService {
     this.logger.log(
       `Lesson cancelled type=THEORY lessonId=${saved.id} scheduledAt=${saved.scheduledAt.toISOString()} actorId=${actor.id} organizationId=${actor.organizationId}`,
     );
+    await this.notifications?.emit({
+      kind: 'schedule.cancelled',
+      organizationId: actor.organizationId,
+      actorId: actor.id,
+      lessonId: saved.id,
+      groupId: saved.groupId,
+      topic: saved.topic,
+      scheduledAt: saved.scheduledAt,
+    });
     return toTheoryLessonDto(saved);
   }
 
@@ -1046,6 +1086,15 @@ export class LessonsService {
     this.logger.log(
       `Lesson cancelled type=PRACTICE lessonId=${saved.id} scheduledAt=${saved.scheduledAt.toISOString()} actorId=${actor.id} organizationId=${actor.organizationId}`,
     );
+    await this.notifications?.emit({
+      kind: 'practice.cancelled',
+      organizationId: actor.organizationId,
+      actorId: actor.id,
+      lessonId: saved.id,
+      studentId: saved.studentId,
+      instructorId: saved.instructorId,
+      scheduledAt: saved.scheduledAt,
+    });
     return toPracticeLessonDto(saved);
   }
 
@@ -1216,6 +1265,17 @@ export class LessonsService {
         `Lesson updated type=THEORY lessonId=${result.lesson.id} fields=${result.changed.join(',')} scheduledAt=${result.lesson.scheduledAt.toISOString()} actorId=${actor.id} organizationId=${actor.organizationId}`,
       );
     }
+    if (result.changed.includes('scheduledAt')) {
+      await this.notifications?.emit({
+        kind: 'schedule.rescheduled',
+        organizationId: actor.organizationId,
+        actorId: actor.id,
+        lessonId: result.lesson.id,
+        groupId: result.lesson.groupId,
+        topic: result.lesson.topic,
+        scheduledAt: result.lesson.scheduledAt,
+      });
+    }
     return toTheoryLessonDto(result.lesson);
   }
 
@@ -1327,6 +1387,19 @@ export class LessonsService {
       this.logger.log(
         `Lesson updated type=PRACTICE lessonId=${result.lesson.id} fields=${result.changed.join(',')} scheduledAt=${result.lesson.scheduledAt.toISOString()} actorId=${actor.id} organizationId=${actor.organizationId}`,
       );
+    }
+    if (result.changed.includes('scheduledAt')) {
+      await this.notifications?.emit({
+        kind: 'practice.rescheduled',
+        organizationId: actor.organizationId,
+        actorId: actor.id,
+        lessonId: result.lesson.id,
+        studentId: result.lesson.studentId,
+        instructorId: result.lesson.instructorId,
+        scheduledAt: result.lesson.scheduledAt,
+        awaitingConfirmation:
+          result.lesson.confirmationStatus === BookingConfirmation.PENDING,
+      });
     }
     return toPracticeLessonDto(result.lesson);
   }

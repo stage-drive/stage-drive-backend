@@ -10,6 +10,7 @@ import {
   EnrollmentStatus,
   GroupStatus,
   CarStatus,
+  LessonStatus,
   LicenseCategory,
   PaymentStatus,
   Prisma,
@@ -149,12 +150,19 @@ describe('StudentsService', () => {
       delete: jest.fn(),
       findUnique: jest.fn(),
     },
-    courseLesson: { findMany: jest.fn() },
+    courseLesson: {
+      findMany: jest.fn(),
+      groupBy: jest.fn().mockResolvedValue([]),
+    },
     courseLessonCompletion: { findMany: jest.fn() },
     theoryTest: { findMany: jest.fn() },
     theoryTestAttempt: { findMany: jest.fn() },
     car: { findUnique: jest.fn() },
-    drivingLesson: { findMany: jest.fn() },
+    drivingLesson: {
+      findMany: jest.fn(),
+      groupBy: jest.fn().mockResolvedValue([]),
+    },
+    courseProgress: { findMany: jest.fn().mockResolvedValue([]) },
     enrollment: {
       findFirst: jest.fn(),
       findUnique: jest.fn(),
@@ -187,6 +195,9 @@ describe('StudentsService', () => {
     prisma.organization.findUnique.mockResolvedValue(organization);
     prisma.user.findMany.mockResolvedValue([]);
     prisma.user.count.mockResolvedValue(0);
+    prisma.drivingLesson.groupBy.mockResolvedValue([]);
+    prisma.courseProgress.findMany.mockResolvedValue([]);
+    prisma.courseLesson.groupBy.mockResolvedValue([]);
     prisma.$queryRaw.mockResolvedValue([]);
     prisma.$transaction.mockImplementation(
       (callback: (tx: typeof prisma) => unknown) => callback(prisma),
@@ -221,6 +232,8 @@ describe('StudentsService', () => {
           group: null,
           instructor: null,
           paymentStatus: 'NOT_PAID',
+          theoryProgress: { completedLessonCount: 0, totalLessonCount: 0 },
+          practiceProgress: { completedHours: 0, requiredHours: 40 },
           createdAt: row.createdAt,
         },
       ],
@@ -357,6 +370,131 @@ describe('StudentsService', () => {
       category: LicenseCategory.B,
       transmission: Transmission.MANUAL,
     });
+  });
+
+  it('returns theory from CourseProgress and completed practice hours', async () => {
+    prisma.user.findMany.mockResolvedValue([
+      {
+        ...studentRow(),
+        studentProfile: {
+          organizationId: 'org-1',
+          category: null,
+          transmission: null,
+          trainingStatus: TrainingStatus.ACTIVE,
+          group: {
+            id: 'group-1',
+            name: 'Група B',
+            organizationId: 'org-1',
+            teacherId: 'teacher-1',
+            course: { id: 'course-1', organizationId: 'org-1' },
+          },
+          instructor: null,
+          currentPayment: null,
+        },
+      },
+    ]);
+    prisma.user.count.mockResolvedValue(1);
+    prisma.courseProgress.findMany.mockResolvedValue([
+      {
+        studentId: 'student-1',
+        courseId: 'course-1',
+        completedLessonCount: 12,
+        totalLessonCount: 20,
+      },
+    ]);
+    prisma.drivingLesson.groupBy.mockResolvedValue([
+      { studentId: 'student-1', _sum: { durationMin: 240 } },
+    ]);
+
+    const result = await service.list(actor(UserRole.ADMIN), {});
+
+    expect(result.students[0].theoryProgress).toEqual({
+      completedLessonCount: 12,
+      totalLessonCount: 20,
+    });
+    expect(result.students[0].practiceProgress).toEqual({
+      completedHours: 4,
+      requiredHours: 40,
+    });
+    expect(prisma.courseProgress.findMany).toHaveBeenCalledTimes(1);
+    expect(prisma.drivingLesson.groupBy).toHaveBeenCalledWith({
+      by: ['studentId'],
+      where: {
+        organizationId: 'org-1',
+        studentId: { in: ['student-1'] },
+        status: LessonStatus.COMPLETED,
+      },
+      _sum: { durationMin: true },
+    });
+    expect(prisma.courseLesson.groupBy).not.toHaveBeenCalled();
+  });
+
+  it('uses published lesson count when CourseProgress is not stored yet', async () => {
+    prisma.user.findMany.mockResolvedValue([
+      {
+        ...studentRow(),
+        studentProfile: {
+          organizationId: 'org-1',
+          category: null,
+          transmission: null,
+          group: {
+            id: 'group-1',
+            name: 'Група B',
+            organizationId: 'org-1',
+            teacherId: 'teacher-1',
+            course: { id: 'course-1', organizationId: 'org-1' },
+          },
+          instructor: null,
+          currentPayment: null,
+        },
+      },
+    ]);
+    prisma.user.count.mockResolvedValue(1);
+    prisma.courseLesson.groupBy.mockResolvedValue([
+      { courseId: 'course-1', _count: { id: 20 } },
+    ]);
+
+    const result = await service.list(actor(UserRole.ADMIN), {});
+
+    expect(result.students[0].theoryProgress).toEqual({
+      completedLessonCount: 0,
+      totalLessonCount: 20,
+    });
+    expect(result.students[0].practiceProgress).toEqual({
+      completedHours: 0,
+      requiredHours: 40,
+    });
+  });
+
+  it('does not count a course from another organization', async () => {
+    prisma.user.findMany.mockResolvedValue([
+      {
+        ...studentRow(),
+        studentProfile: {
+          organizationId: 'org-1',
+          category: null,
+          transmission: null,
+          group: {
+            id: 'group-1',
+            name: 'Група B',
+            organizationId: 'org-1',
+            teacherId: 'teacher-1',
+            course: { id: 'course-2', organizationId: 'org-2' },
+          },
+          instructor: null,
+          currentPayment: null,
+        },
+      },
+    ]);
+    prisma.user.count.mockResolvedValue(1);
+
+    const result = await service.list(actor(UserRole.ADMIN), {});
+
+    expect(result.students[0].theoryProgress).toEqual({
+      completedLessonCount: 0,
+      totalLessonCount: 0,
+    });
+    expect(prisma.courseProgress.findMany).not.toHaveBeenCalled();
   });
 
   it('returns null category and transmission when the profile belongs to another organization', async () => {

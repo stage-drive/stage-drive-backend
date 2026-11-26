@@ -7,6 +7,7 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import {
+  CourseLessonPublicationStatus,
   CoursePublicationStatus,
   CourseStatus,
   EnrollmentStatus,
@@ -207,6 +208,7 @@ const studentSelect = {
           name: true,
           organizationId: true,
           teacherId: true,
+          course: { select: { id: true, organizationId: true } },
         },
       },
       instructor: {
@@ -660,7 +662,14 @@ function isVisibleStudent(row: StudentRow, organizationId: string): boolean {
   );
 }
 
-function toStudentListItem(actor: User, row: StudentRow): StudentListItemDto {
+function toStudentListItem(
+  actor: User,
+  row: StudentRow,
+  progress: {
+    theory: { completedLessonCount: number; totalLessonCount: number };
+    practice: { completedHours: number };
+  },
+): StudentListItemDto {
   const profile =
     row.studentProfile &&
     row.studentProfile.organizationId === row.organizationId
@@ -703,8 +712,28 @@ function toStudentListItem(actor: User, row: StudentRow): StudentListItemDto {
     group,
     instructor,
     paymentStatus,
+    theoryProgress: progress.theory,
+    practiceProgress: {
+      completedHours: progress.practice.completedHours,
+      requiredHours: REQUIRED_PRACTICE_HOURS,
+    },
     createdAt: row.createdAt,
   };
+}
+
+const EMPTY_LIST_THEORY = { completedLessonCount: 0, totalLessonCount: 0 };
+
+/** Курс поточної групи, лише якщо він цієї ж автошколи. */
+function listCourseId(row: StudentRow): string | null {
+  const profile = row.studentProfile;
+  if (!profile || profile.organizationId !== row.organizationId) {
+    return null;
+  }
+  const course = profile.group?.course;
+  if (!course || course.organizationId !== row.organizationId) {
+    return null;
+  }
+  return course.id;
 }
 
 function canStaffViewStudent(actor: User, row: StudentCardRow): boolean {
@@ -1246,16 +1275,125 @@ export class StudentsService {
       }),
       this.prisma.user.count({ where }),
     ]);
+    const visible = rows.filter((row) =>
+      isVisibleStudent(row, actor.organizationId),
+    );
+    const progress = await this.listProgress(actor.organizationId, visible);
 
     return {
-      students: rows
-        .filter((row) => isVisibleStudent(row, actor.organizationId))
-        .map((row) => toStudentListItem(actor, row)),
+      students: visible.map((row) =>
+        toStudentListItem(actor, row, progress.forStudent(row.id)),
+      ),
       pagination: {
         page,
         limit,
         total,
         totalPages: total === 0 ? 0 : Math.ceil(total / limit),
+      },
+    };
+  }
+
+  /**
+   * Прогрес сторінки списку без запиту на кожного студента.
+   * Теорія — знімок CourseProgress курсу групи. Поки знімка немає,
+   * знаменник дорівнює кількості опублікованих уроків цього курсу.
+   * Практика — сума тривалості COMPLETED, як completedHours у картці.
+   */
+  private async listProgress(organizationId: string, rows: StudentRow[]) {
+    const blank = () => ({
+      theory: { ...EMPTY_LIST_THEORY },
+      practice: { completedHours: 0 },
+    });
+    if (rows.length === 0) {
+      return { forStudent: (_studentId: string) => blank() };
+    }
+
+    const pairs = rows.flatMap((row) => {
+      const courseId = listCourseId(row);
+      return courseId ? [{ studentId: row.id, courseId }] : [];
+    });
+    const studentIds = rows.map((row) => row.id);
+    const [snapshots, practiceSums] = await Promise.all([
+      pairs.length === 0
+        ? []
+        : this.prisma.courseProgress.findMany({
+            where: {
+              organizationId,
+              OR: pairs.map((pair) => ({
+                studentId: pair.studentId,
+                courseId: pair.courseId,
+              })),
+            },
+            select: {
+              studentId: true,
+              courseId: true,
+              completedLessonCount: true,
+              totalLessonCount: true,
+            },
+          }),
+      this.prisma.drivingLesson.groupBy({
+        by: ['studentId'],
+        where: {
+          organizationId,
+          studentId: { in: studentIds },
+          status: LessonStatus.COMPLETED,
+        },
+        _sum: { durationMin: true },
+      }),
+    ]);
+
+    const snapshotByStudent = new Map(
+      snapshots.map((row) => [row.studentId, row] as const),
+    );
+    const missingCourseIds = [
+      ...new Set(
+        pairs
+          .filter((pair) => !snapshotByStudent.has(pair.studentId))
+          .map((pair) => pair.courseId),
+      ),
+    ];
+    const lessonCounts =
+      missingCourseIds.length === 0
+        ? []
+        : await this.prisma.courseLesson.groupBy({
+            by: ['courseId'],
+            where: {
+              courseId: { in: missingCourseIds },
+              publicationStatus: CourseLessonPublicationStatus.PUBLISHED,
+              course: { organizationId },
+            },
+            _count: { id: true },
+          });
+    const totalByCourse = new Map(
+      lessonCounts.map((row) => [row.courseId, row._count.id] as const),
+    );
+    const hoursByStudent = new Map(
+      practiceSums.map(
+        (row) =>
+          [row.studentId, minutesToHours(row._sum.durationMin ?? 0)] as const,
+      ),
+    );
+
+    return {
+      forStudent(studentId: string) {
+        const pair = pairs.find((item) => item.studentId === studentId);
+        const snapshot = pair ? snapshotByStudent.get(studentId) : undefined;
+        const theory =
+          snapshot && snapshot.courseId === pair?.courseId
+            ? {
+                completedLessonCount: snapshot.completedLessonCount,
+                totalLessonCount: snapshot.totalLessonCount,
+              }
+            : pair
+              ? {
+                  completedLessonCount: 0,
+                  totalLessonCount: totalByCourse.get(pair.courseId) ?? 0,
+                }
+              : { ...EMPTY_LIST_THEORY };
+        return {
+          theory,
+          practice: { completedHours: hoursByStudent.get(studentId) ?? 0 },
+        };
       },
     };
   }

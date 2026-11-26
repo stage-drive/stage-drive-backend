@@ -4,6 +4,7 @@ import {
   Injectable,
   Logger,
   NotFoundException,
+  Optional,
 } from '@nestjs/common';
 import {
   CoursePublicationStatus,
@@ -18,6 +19,7 @@ import {
 } from '@prisma/client';
 import { fieldBadRequest } from '../../common/validation/field-error';
 import { PrismaService } from '../../prisma/prisma.service';
+import { NotificationsService } from '../notifications/notifications.service';
 import {
   LESSON_LOCKED_MESSAGE,
   LESSON_RETRY_MESSAGE,
@@ -575,7 +577,10 @@ function paginate(total: number, page: number, limit: number) {
 export class TestAttemptsService {
   private readonly logger = new Logger(TestAttemptsService.name);
 
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    @Optional() private readonly notifications?: NotificationsService,
+  ) {}
 
   /**
    * Починає спробу. Кожен успішний старт пише новий рядок з номером у циклі.
@@ -749,8 +754,15 @@ export class TestAttemptsService {
     assertStudent(actor);
     await this.requireOrganization(actor.organizationId);
     const now = new Date();
+    let graded: {
+      attemptId: string;
+      testId: string;
+      passed: boolean;
+      correctCount: number;
+      totalQuestions: number;
+    } | null = null;
 
-    return this.prisma.$transaction(async (tx) => {
+    const view = await this.prisma.$transaction(async (tx) => {
       const locked = await this.lockOwnAttempt(tx, actor, attemptId);
       if (locked.status !== TheoryTestAttemptStatus.IN_PROGRESS) {
         return this.attemptView(tx, actor.organizationId, locked, now);
@@ -822,11 +834,32 @@ export class TestAttemptsService {
         });
       }
       await syncTheoryCompletion(tx, actor.id, actor.organizationId);
+      graded = {
+        attemptId: locked.id,
+        testId: locked.testId,
+        passed: grade.passed,
+        correctCount: grade.correctCount,
+        totalQuestions: grade.totalQuestions,
+      };
       this.logger.log(
         `Attempt submitted attemptId=${locked.id} testId=${locked.testId} studentId=${actor.id} status=${status} score=${grade.score} organizationId=${actor.organizationId}`,
       );
       return this.attemptView(tx, actor.organizationId, updated, now);
     });
+    if (graded) {
+      await this.notifications?.emit({
+        kind: 'test.result',
+        organizationId: actor.organizationId,
+        actorId: actor.id,
+        studentId: actor.id,
+        attemptId: graded.attemptId,
+        testId: graded.testId,
+        passed: graded.passed,
+        correctCount: graded.correctCount,
+        totalQuestions: graded.totalQuestions,
+      });
+    }
+    return view;
   }
 
   /**

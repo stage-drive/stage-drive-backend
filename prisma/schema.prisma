@@ -258,6 +258,32 @@ enum TimeOffType {
   OTHER
 }
 
+/// Бізнес-подія, з якої створено сповіщення. Один тип — один сенс тексту.
+enum NotificationType {
+  SCHEDULE_CREATED
+  SCHEDULE_RESCHEDULED
+  SCHEDULE_CANCELLED
+  PRACTICE_BOOKED
+  PRACTICE_ASSIGNED
+  PRACTICE_CONFIRMED
+  PRACTICE_REJECTED
+  PRACTICE_CANCELLED
+  PRACTICE_RESCHEDULED
+  PRACTICE_COMPLETED
+  PRACTICE_NO_SHOW
+  TEST_PUBLISHED
+  TEST_PASSED
+  TEST_FAILED
+  PAYMENT_RECORDED
+  PAYMENT_STATUS_CHANGED
+}
+
+/// Статус прочитання. READ лише разом із readAt (CHECK у міграції).
+enum NotificationReadStatus {
+  UNREAD
+  READ
+}
+
 model Organization {
   id                      String                   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   name                    String                   @db.VarChar(255)
@@ -288,6 +314,7 @@ model Organization {
   paymentHistory          PaymentHistory[]
   theoryTests             TheoryTest[]
   theoryTestAttempts      TheoryTestAttempt[]
+  notifications           Notification[]
 
   @@index([deletedAt])
   @@map("organizations")
@@ -340,6 +367,7 @@ model User {
   studentPayments          Payment[]                @relation("StudentPayments")
   createdPayments          Payment[]                @relation("CreatedPayments")
   paymentChanges           PaymentHistory[]         @relation("PaymentChanges")
+  notifications            Notification[]           @relation("ReceivedNotifications")
 
   /// Ціль складених FK з instructor_working_hours, instructor_time_offs, payments
   /// і payment_history: запис не прив’язати до людини іншої автошколи.
@@ -1158,4 +1186,30 @@ model PaymentHistory {
   @@index([organizationId, changedAt])
   @@index([changedById])
   @@map("payment_history")
+}
+
+/// Сповіщення користувача своєї автошколи. Рядок створює лише бекенд у відповідь
+/// на погоджену бізнес-подію. dedupeKey не дає повтору тієї самої події
+/// створити друге сповіщення тому самому отримувачу.
+/// Складений FK (recipientId, organizationId) → users(id, organizationId):
+/// сповіщення не прив’язати до людини іншої автошколи.
+/// CHECK у міграції: текст не з пробілів; readAt є тоді й лише тоді, коли readStatus = READ.
+model Notification {
+  id             String                 @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  organizationId String                 @map("organization_id") @db.Uuid
+  organization   Organization           @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  recipientId    String                 @map("recipient_id") @db.Uuid
+  recipient      User                   @relation("ReceivedNotifications", fields: [recipientId, organizationId], references: [id, organizationId], onDelete: Cascade)
+  type           NotificationType
+  text           String                 @db.VarChar(500)
+  readStatus     NotificationReadStatus @default(UNREAD) @map("read_status")
+  createdAt      DateTime               @default(now()) @map("created_at")
+  readAt         DateTime?              @map("read_at")
+  /// Ідемпотентність події в межах автошколи й отримувача.
+  dedupeKey      String                 @map("dedupe_key") @db.VarChar(200)
+
+  @@unique([organizationId, recipientId, dedupeKey])
+  @@index([organizationId, recipientId, createdAt])
+  @@index([recipientId, readStatus])
+  @@map("notifications")
 }
